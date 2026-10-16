@@ -226,7 +226,9 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
 * **Preferences: Write keymap.ini** writes `%APPDATA%\Penmark\keymap.ini` with every
   command and its current keys, then opens it in the app for `.ini` files. Each line
   is `command = keys`, such as `redo = Ctrl+Y, Ctrl+Shift+Z`; an empty value removes
-  the shortcut, and commands left out keep their defaults. A key given to a command
+  the shortcut, and commands left out keep their defaults. Palette commands without
+  a default shortcut (fonts, folder settings, table actions, …) are listed with an
+  empty value, ready to be given one. A key given to a command
   in the file is taken from any command that has it by default. The file is reloaded
   when Penmark gets focus (or when it is saved in Penmark), and problems in it show
   in the status bar. Caret movement, Enter, Tab, Backspace, Delete, and keys inside
