@@ -12,8 +12,9 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | `Ctrl+R` | Open a recent folder, or **Open Folder…** |
 | `Ctrl+Shift+E` | Show / hide the explorer |
 | `Ctrl+0` | Focus the explorer (`Esc` returns to the editor) |
+| `Alt+Left` / `Alt+Right`, mouse back / forward | Previous / next file, where you left it |
 | `Ctrl+N` | New document |
-| `Ctrl+O` | Open a file (or drop one on the window) |
+| `Ctrl+O` | Open a file (or, without a folder, drop one on the window) |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+W` | Close the file |
 | `Ctrl+Shift+N` / `Ctrl+Shift+W` | New window / close window |
@@ -24,13 +25,20 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | --- | --- |
 | `Up` / `Down`, `Left` / `Right` | Move, collapse / expand folders |
 | `Enter` or click | Open the file, or open / close the folder |
+| `A` / `Shift+A` | New file / new folder |
 | `F2` | Rename (type `folder/name.md` to move it) |
 | `Delete` | Move to the Recycle Bin |
 | `Ctrl+X` then `Ctrl+V` | Move into the selected folder |
 | Drag and drop | Move onto a folder (or below the files: the top folder) |
 | Right-click | New file, new folder, rename, delete, reveal in File Explorer |
 
-**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit.
+The buttons at the top of the explorer make a new file or folder, and the funnel shows only Markdown files (hiding `data` folders and other files).
+
+**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit. With autosave on, Penmark also saves before switching files or closing.
+
+## Attachments
+
+With a folder open, drop files on a note to copy them into a `data` folder next to it and link them where the drop caret shows. Images are linked as images on a line of their own. `Ctrl+V` does the same for files copied in File Explorer, and saves a copied image (a screenshot, say) as `data/pasted-….png`.
 
 ## Formatting
 
@@ -50,7 +58,9 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 
 Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 
-Type `/` at the start of a line or after a space for the slash menu: **Code block**, **Table** and **Heading 1**–**5**. Keep typing to filter it, `Enter` inserts, `Esc` closes.
+Type `/` at the start of a line or after a space for the slash menu: **Code block**, **Table**, **Task**, **Heading 1**–**5**, **Horizontal rule**, **Today** / **Yesterday** / **Tomorrow**, and **Run**, **Shell** and **Start command** links. Keep typing to filter it, `Enter` inserts, `Esc` closes.
+
+Type `[[` to link to another note in the folder: pick it from the list as you type.
 
 ## Tables
 
@@ -58,6 +68,7 @@ Type `/` at the start of a line or after a space for the slash menu: **Code bloc
 | --- | --- |
 | `Tab` / `Shift+Tab` | Next / previous cell (adds a row at the end) |
 | `Up` / `Down` | Cell above / below |
+| `Shift+Up` / `Shift+Down` | Select cells down the column (`Delete` empties them) |
 | `Enter` / `Ctrl+Enter` | Next row / insert a row below |
 | Right-click a cell | Align column, insert or delete rows and columns, delete table |
 
@@ -74,7 +85,8 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | `Alt+Up` / `Alt+Down` | Move line |
 | `Shift+Alt+Up` / `Shift+Alt+Down` | Copy line up / down |
 | `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |
-| `Ctrl+C` / `Ctrl+X` | Copy / cut (the whole line when nothing is selected) |
+| `Ctrl+C` / `Ctrl+X` | Copy / cut (the whole line when nothing is selected; in code, `Ctrl+C` copies the code block or inline code) |
+| Right-click code | Copy the code block or inline code |
 | `Enter` | New line, continuing lists and quotes |
 | `Shift+Enter` | New line without continuing the list |
 
@@ -85,9 +97,31 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | `F1` or `Ctrl+Shift+P` | Command palette (fonts, rendering options, folder settings, table actions, …) |
 | `Ctrl+F` | Find (`Enter`/`F3` next, `Shift+Enter`/`Shift+F3` previous) |
 | `Ctrl+G` | Go to line |
-| `Ctrl+Click` | Open link (`[[Note]]` links open `Note.md` next to this file) |
+| Click a link | Open it (`Ctrl+Click` on the line you are editing; `[[Note]]` opens the note) |
+| `Ctrl+Shift+O` | Show / hide the outline of headings |
 | `Ctrl+Shift+V` | Toggle source mode |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+Numpad0` | Zoom in / out (5% steps) / reset; the zoom is remembered |
 | `Ctrl+Shift+T` | Light / dark theme |
+
+The palette also sets the **UI font size**, the **code font** and the **code font size**.
+
+## Command links
+
+A link whose target starts with `run:` runs a program; `shell:` runs the text with `cmd`. Wrap the target in `<...>` so it can hold spaces. Options go in the title, separated by `;`:
+
+```markdown
+[Run script](<run:%USERPROFILE%\venv\Scripts\python.exe my_script.py> "cwd=%USERPROFILE%\proj; window=keep")
+[Build](<shell:make > build.log 2>&1> "wait")
+[Open](<shell:start "" "%USERPROFILE%\report.pdf">)
+```
+
+| Option | Meaning |
+| --- | --- |
+| `cwd=` | Working folder (default: the note's folder) |
+| `window=hidden`, `show`, `keep` | No console, a console, or one that stays open (default: `show` for `run:`, `hidden` for `shell:`) |
+| `wait` / `detach` | Report the exit code when it ends / don't (default) |
+| `confirm` | Always ask before running |
+
+Penmark shows the full command and asks before running it the first time, and again whenever the link changes. Hover a command link to see the command it will run.
 
 This page: **Help: Keyboard Shortcuts** in the command palette.
