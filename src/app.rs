@@ -1635,13 +1635,19 @@ impl App {
         self.changed(false);
     }
 
-    /// Keeps a caret in a table inside its cell's text (not on padding or pipes).
+    /// Keeps a caret in a table inside its cell (not on leading padding or pipes).
+    /// Spaces typed after the text stay reachable: the caret may sit anywhere up to
+    /// the padding space before the cell's closing pipe.
     fn snap_to_cell(&mut self) {
         if self.anchor != self.cursor || self.grid_block() == 0 {
             return;
         }
         if let Some(cell) = self.cell_at(self.cursor) {
-            let col = self.cursor.col.clamp(cell.range.start, cell.range.end);
+            let line = &self.doc.lines[self.cursor.line];
+            let rest = &line[cell.range.end..];
+            let pipe = rest.find('|').map_or(line.len(), |i| cell.range.end + i);
+            let limit = pipe.saturating_sub(1).max(cell.range.end);
+            let col = self.cursor.col.clamp(cell.range.start, limit);
             let p = Pos::new(self.cursor.line, col);
             self.anchor = p;
             self.cursor = p;

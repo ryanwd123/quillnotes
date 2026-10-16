@@ -248,6 +248,9 @@ pub struct TableBox {
     col_x: Vec<f32>,
     col_w: Vec<f32>,
     rows: Vec<(Vec<Cellbox>, f32)>,
+    /// Width of a space, for a caret after a cell's trailing spaces (which the
+    /// trimmed cell text does not include).
+    space_w: f32,
 }
 
 impl TableBox {
@@ -972,7 +975,20 @@ impl View {
                 *h = f32::max(*h, cell.tb.height.get() + 2.0 * pad_y);
             }
         }
-        TableBox { col_x, col_w, rows }
+        let space_w = unsafe {
+            let f = self.format(Family::Body, size, 400);
+            let mut m = DWRITE_TEXT_METRICS::default();
+            if let Ok(l) = self.dw.CreateTextLayout(&[b' ' as u16], &f, 1.0e5, 1.0e5) {
+                let _ = l.GetMetrics(&mut m);
+            }
+            m.widthIncludingTrailingWhitespace
+        };
+        TableBox {
+            col_x,
+            col_w,
+            rows,
+            space_w,
+        }
     }
 
     /// Lays out every line. `active` is the inclusive line range being edited; `grid`
@@ -1539,6 +1555,9 @@ impl View {
                 let c = t.cell_at_col(*r, p.col);
                 let tb = &t.rows[*r].0.get(c)?.tb;
                 let (x, y, h) = tb.caret(tb.s2d(p.col));
+                // Past the cell's text the caret is in spaces typed after it.
+                let text_end = *tb.d2s.last().unwrap() as usize;
+                let x = x + p.col.saturating_sub(text_end) as f32 * t.space_w;
                 let top = row.y + (row.h - tb.height.get()) / 2.0;
                 Some((row.x + t.col_x[c] + 10.0 * self.zoom + x, top + y, h))
             }
