@@ -132,12 +132,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let mut pt = POINT::default();
                 let _ = GetCursorPos(&mut pt);
                 let _ = ScreenToClient(hwnd, &mut pt);
-                let id = if app.is_text_area(pt.x, pt.y) {
-                    IDC_IBEAM
-                } else {
-                    IDC_ARROW
-                };
-                SetCursor(LoadCursorW(None, id).ok());
+                SetCursor(LoadCursorW(None, app.cursor_at(pt.x, pt.y)).ok());
                 LRESULT(1)
             }
             WM_TIMER => {

@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Gdi::{InvalidateRect, MONITOR_DEFAULTTONULL, Monit
 use windows::Win32::UI::Input::Ime::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::HSTRING;
+use windows::core::{HSTRING, PCWSTR};
 
 use crate::doc::{self, Document, EditKind, Pos};
 use crate::markdown::{self, Align, Kind, LineInfo};
@@ -1473,8 +1473,52 @@ impl App {
     // -----------------------------------------------------------------------
     // Clipboard, undo
 
+    /// The code at `p`: a whole fenced code block (without its fences), or the
+    /// inline code span containing `p`. The bool is true for a block.
+    fn code_at(&mut self, p: Pos) -> Option<(String, bool)> {
+        self.infos();
+        let infos = &self.infos;
+        let info = infos[p.line];
+        if info.block != 0 && matches!(info.kind, Kind::Code | Kind::Fence) {
+            let code: Vec<&str> = (0..infos.len())
+                .filter(|&l| infos[l].block == info.block && infos[l].kind == Kind::Code)
+                .map(|l| {
+                    let line = &self.doc.lines[l];
+                    &line[infos[l].content.min(line.len())..]
+                })
+                .collect();
+            return Some((code.join("\n"), true));
+        }
+        if matches!(info.kind, Kind::Comment) {
+            return None;
+        }
+        let line = &self.doc.lines[p.line];
+        let inl = markdown::parse_inline(line, info.content.min(line.len()), line.len());
+        inl.spans
+            .iter()
+            .find(|(r, st)| *st == markdown::Style::Code && r.start <= p.col && p.col <= r.end)
+            .map(|(r, _)| (line[r.clone()].to_string(), false))
+    }
+
+    /// Copies the code block or inline code at `p`. Returns false if there is none.
+    fn copy_code(&mut self, p: Pos) -> bool {
+        let Some((code, block)) = self.code_at(p) else {
+            return false;
+        };
+        platform::set_clipboard(self.hwnd, &code);
+        self.say(if block {
+            "Copied the code block"
+        } else {
+            "Copied the inline code"
+        });
+        true
+    }
+
     fn copy(&mut self, cut: bool) {
         let (a, b) = self.sel();
+        if a == b && !cut && self.copy_code(a) {
+            return;
+        }
         if a == b {
             // Whole line, like most code editors.
             let l = a.line;
@@ -2097,7 +2141,8 @@ impl App {
         }
     }
 
-    /// Right-click: in a table, place the caret in the cell and show the table menu.
+    /// Right-click: copy the code under the mouse, or in a table, place the caret in
+    /// the cell and show the table menu.
     pub fn on_right_click(&mut self, x: i32, y: i32) {
         if self.palette.is_some() {
             return;
@@ -2118,6 +2163,9 @@ impl App {
                 .hit(&self.doc.lines, &infos, dx, dy + self.scroll)
                 .pos,
         );
+        if self.copy_code(p) {
+            return;
+        }
         if self.cell_at(p).is_none() {
             return;
         }
@@ -2693,7 +2741,10 @@ impl App {
             self.drag = Drag::None;
             return;
         }
-        if ctrl_down()
+        // Rendered links open on click; on a line being edited, Ctrl+click.
+        if count == 1
+            && !shift_down()
+            && (!hit.active || ctrl_down())
             && let Some(link) = hit.link
         {
             self.drag = Drag::None;
@@ -2867,8 +2918,26 @@ impl App {
         self.invalidate();
     }
 
+    /// The mouse cursor for a client point (pixels): a hand over a link that a click
+    /// would open, the I-beam over text, else the arrow.
+    pub fn cursor_at(&mut self, x: i32, y: i32) -> PCWSTR {
+        if !self.is_text_area(x, y) {
+            return IDC_ARROW;
+        }
+        let (dx, dy) = self.to_dip(x, y);
+        self.ensure_layout();
+        let infos = std::mem::take(&mut self.infos);
+        let hit = self.view.hit(&self.doc.lines, &infos, dx, dy + self.scroll);
+        self.infos = infos;
+        if hit.link.is_some() && (!hit.active || ctrl_down()) {
+            IDC_HAND
+        } else {
+            IDC_IBEAM
+        }
+    }
+
     /// Whether the I-beam cursor applies at this client point (pixels).
-    pub fn is_text_area(&self, x: i32, y: i32) -> bool {
+    fn is_text_area(&self, x: i32, y: i32) -> bool {
         let (dx, dy) = self.to_dip(x, y);
         let over_palette = self.palette.is_some()
             && self
@@ -3111,6 +3180,25 @@ enum ListStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An editor without a window, holding `text`.
+    pub(super) fn app(text: &str) -> App {
+        let mut a = App::new(View::new(false).unwrap());
+        a.doc = Document::from_bytes(text.as_bytes(), None).0;
+        a
+    }
+
+    #[test]
+    fn code_at_cursor() {
+        let mut a = app("a `x y` b\n\n```rs\nfn f() {}\n  g();\n```\n- item\n  ```\n  in list\n  ```");
+        assert_eq!(a.code_at(Pos::new(0, 4)), Some(("x y".into(), false)));
+        assert_eq!(a.code_at(Pos::new(0, 0)), None);
+        assert_eq!(a.code_at(Pos::new(0, 8)), None);
+        let block = Some(("fn f() {}\n  g();".to_string(), true));
+        assert_eq!(a.code_at(Pos::new(2, 0)), block);
+        assert_eq!(a.code_at(Pos::new(4, 1)), block);
+        assert_eq!(a.code_at(Pos::new(8, 3)), Some(("in list".into(), true)));
+    }
 
     #[test]
     fn zoom_steps() {

@@ -52,20 +52,21 @@ pub enum Ink {
     PaletteBg,
     PaletteSel,
     Shadow,
+    LinkBg,
 }
-const INK_COUNT: usize = 25;
+const INK_COUNT: usize = 26;
 
 const DARK: [u32; INK_COUNT] = [
     0xFF1B1B1B, 0xFFD4D4D4, 0xFFEDEDED, 0xFF6E6E6E, 0xFF5AA9FF, 0xFF24272D, 0xFF2D3036, 0xFF4E5664,
     0x80264F78, 0xFFE6E6E6, 0xFF161616, 0xFF8E8E8E, 0xFF3C3C3C, 0xFF232528, 0x70857000, 0xFF5AA9FF,
     0x40FFFFFF, 0xFF4F8EF7, 0xFF3FB950, 0xFFD29922, 0xFFF85149, 0xFFA371F7, 0xFF252629, 0xFF2F4058,
-    0x24000000,
+    0x24000000, 0xFF1E3550,
 ];
 const LIGHT: [u32; INK_COUNT] = [
     0xFFFFFFFF, 0xFF24292F, 0xFF101418, 0xFF9AA0A6, 0xFF0969DA, 0xFFF4F5F7, 0xFFEEF0F2, 0xFFD0D7DE,
     0x6699C8FF, 0xFF111111, 0xFFF3F3F3, 0xFF6A6A6A, 0xFFE1E4E8, 0xFFF6F8FA, 0x80FFE066, 0xFF0969DA,
     0x40000000, 0xFF0969DA, 0xFF1A7F37, 0xFF9A6700, 0xFFCF222E, 0xFF8250DF, 0xFFFFFFFF, 0xFFE3ECF8,
-    0x0C000000,
+    0x0C000000, 0xFFDDEEFF,
 ];
 
 fn color(argb: u32) -> D2D1_COLOR_F {
@@ -350,6 +351,8 @@ pub struct HitResult {
     pub pos: Pos,
     pub link: Option<String>,
     pub checkbox: bool,
+    /// The row shows its Markdown source (links there are edited, not followed).
+    pub active: bool,
 }
 
 /// Which font a text format uses.
@@ -808,8 +811,8 @@ impl View {
                         ));
                     }
                     Style::Link => {
-                        let _ = layout.SetUnderline(true, rr);
                         let _ = layout.SetDrawingEffect(self.brush(Ink::Link), rr);
+                        bgs.push((rr.startPosition, rr.startPosition + rr.length, Ink::LinkBg));
                     }
                     Style::Image => {
                         let _ = layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rr);
@@ -1642,6 +1645,7 @@ impl View {
             pos: Pos::new(i, 0),
             link: None,
             checkbox: false,
+            active: row.active,
         };
         match &row.vis {
             Vis::Text(tb) => {
