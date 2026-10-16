@@ -105,6 +105,26 @@ const SIDEBAR_W: f32 = 250.0;
 const SIDEBAR_HEADER_H: f32 = 34.0;
 const SIDEBAR_ROW_H: f32 = 24.0;
 const SIDEBAR_INDENT: f32 = 14.0;
+const HEADER_H: f32 = 30.0;
+const OUTLINE_W: f32 = 240.0;
+
+/// The file name bar above the document.
+pub struct HeaderView<'a> {
+    pub name: &'a str,
+    /// The file's folder, shown dimmed after the name.
+    pub folder: &'a str,
+    pub dirty: bool,
+}
+
+/// The outline panel: the document's headings.
+pub struct OutlineView<'a> {
+    /// (level, text) of each heading.
+    pub items: Vec<(u8, &'a str)>,
+    /// The heading the caret is under.
+    pub current: Option<usize>,
+    pub hover: Option<usize>,
+    pub scroll: f32,
+}
 
 pub struct SidebarRow {
     pub name: String,
@@ -469,6 +489,8 @@ pub struct View {
     pub cell_sel: Option<(usize, usize, usize)>,
     /// Whether the explorer panel is shown on the left.
     pub explorer: bool,
+    /// Whether the outline panel is shown on the right.
+    pub outline: bool,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -526,6 +548,7 @@ impl View {
                 grid_geom: None,
                 cell_sel: None,
                 explorer: false,
+                outline: false,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -570,6 +593,29 @@ impl View {
     /// Left edge of the editor area.
     pub fn inset(&self) -> f32 {
         if self.explorer { self.sidebar_w() } else { 0.0 }
+    }
+
+    pub fn outline_w(&self) -> f32 {
+        (OUTLINE_W * self.ui()).round()
+    }
+
+    /// Right edge of the editor area.
+    pub fn right(&self) -> f32 {
+        if self.outline {
+            self.w - self.outline_w()
+        } else {
+            self.w
+        }
+    }
+
+    /// Height of the file name bar; the document starts below it.
+    pub fn header_h(&self) -> f32 {
+        (HEADER_H * self.ui()).round()
+    }
+
+    /// Height of the document viewport.
+    pub fn view_h(&self) -> f32 {
+        self.h - self.status_h() - self.header_h()
     }
 
     /// Code font size relative to the text it is in.
@@ -1150,7 +1196,7 @@ impl View {
         let max_w = opt(num::CONTENT_WIDTH);
         let margin = 48.0 * z;
         let inset = self.inset();
-        let area = self.w - inset;
+        let area = self.right() - inset;
         self.cw = (area - 2.0 * margin).min(max_w).max(120.0);
         self.x0 = (inset + ((area - self.cw) / 2.0).max(16.0)).floor();
         let (x0, cw) = (self.x0, self.cw);
@@ -1676,7 +1722,7 @@ impl View {
     }
 
     pub fn max_scroll(&self) -> f32 {
-        let view_h = self.h - self.status_h();
+        let view_h = self.view_h();
         (self.total_h + view_h * 0.5 - view_h).max(0.0)
     }
 
@@ -1799,19 +1845,22 @@ impl View {
         popup: Option<&PopupView>,
         mouse: Option<(f32, f32)>,
         sidebar: Option<&SidebarView>,
+        header: &HeaderView,
+        outline: Option<&OutlineView>,
     ) {
         if self.ensure_target(hwnd).is_err() {
             return;
         }
         let rt = self.rt.clone().unwrap();
         let z = self.zoom;
-        let view_h = self.h - self.status_h();
+        let view_h = self.view_h();
+        let head = self.header_h();
         unsafe {
             rt.BeginDraw();
             rt.Clear(Some(&color(self.palette()[Ink::Bg as usize])));
-            rt.SetTransform(&Matrix3x2::translation(0.0, -scroll));
+            rt.SetTransform(&Matrix3x2::translation(0.0, head - scroll));
             rt.PushAxisAlignedClip(
-                &rect(self.inset(), scroll, self.w, scroll + view_h),
+                &rect(self.inset(), scroll, self.right(), scroll + view_h),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
 
@@ -1856,7 +1905,7 @@ impl View {
                 );
             }
             if let Some(m) = mouse {
-                self.paint_table_ui(&rt, (m.0, m.1 + scroll));
+                self.paint_table_ui(&rt, (m.0, m.1 - head + scroll));
             }
             rt.PopAxisAlignedClip();
             rt.SetTransform(&Matrix3x2::identity());
@@ -1865,17 +1914,22 @@ impl View {
             let content = self.total_h + view_h * 0.5;
             if content > view_h + 1.0 {
                 let th = (view_h * view_h / content).max(30.0);
-                let ty = scroll / self.max_scroll().max(1.0) * (view_h - th);
+                let ty = head + scroll / self.max_scroll().max(1.0) * (view_h - th);
+                let r = self.right();
                 let rr = D2D1_ROUNDED_RECT {
-                    rect: rect(self.w - 8.0, ty + 2.0, self.w - 3.0, ty + th - 2.0),
+                    rect: rect(r - 8.0, ty + 2.0, r - 3.0, ty + th - 2.0),
                     radiusX: 2.5,
                     radiusY: 2.5,
                 };
                 rt.FillRoundedRectangle(&rr, self.brush(Ink::Scrollbar));
             }
 
+            self.paint_header(&rt, header);
             if let Some(sb) = sidebar {
                 self.paint_sidebar(&rt, sb);
+            }
+            if let Some(o) = outline {
+                self.paint_outline(&rt, o);
             }
             self.paint_status(&rt, status);
             self.popup_geom = None;
@@ -2185,9 +2239,9 @@ impl View {
         let k = self.ui();
         let (pw, item_h, pad, hint_w) = (240.0 * k, 30.0 * k, 4.0 * k, 80.0 * k);
         let ph = p.items.len() as f32 * item_h + 2.0 * pad;
-        let view_h = self.h - self.status_h();
-        let (cy, ch) = (cy - scroll, ch.max(self.base()));
-        let top = if cy + ch + 4.0 + ph <= view_h || cy - 4.0 - ph < 0.0 {
+        let (head, view_h) = (self.header_h(), self.view_h());
+        let (cy, ch) = (cy - scroll + head, ch.max(self.base()));
+        let top = if cy + ch + 4.0 + ph <= head + view_h || cy - 4.0 - ph < head {
             cy + ch + 4.0
         } else {
             cy - 4.0 - ph
@@ -2232,9 +2286,9 @@ impl View {
                     rt.FillRoundedRectangle(&rr, self.brush(Ink::PaletteSel));
                 }
                 let wide: Vec<u16> = item.label.encode_utf16().collect();
-                if let Ok(l) = self
-                    .dw
-                    .CreateTextLayout(&wide, &label_f, pw - hint_w - 10.0 * k, item_h)
+                if let Ok(l) =
+                    self.dw
+                        .CreateTextLayout(&wide, &label_f, pw - hint_w - 10.0 * k, item_h)
                 {
                     let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                     let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -2544,6 +2598,136 @@ impl View {
         }
     }
 
+    /// One line of panel text: no wrapping, trimmed with an ellipsis-free cut.
+    fn panel_text(
+        &self,
+        text: &str,
+        f: &IDWriteTextFormat,
+        w: f32,
+        h: f32,
+    ) -> Option<IDWriteTextLayout> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let l = unsafe { self.dw.CreateTextLayout(&wide, f, w.max(1.0), h) }.ok()?;
+        let trim = DWRITE_TRIMMING {
+            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+            delimiter: 0,
+            delimiterCount: 0,
+        };
+        unsafe {
+            let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            let _ = l.SetTrimming(&trim, None);
+        }
+        Some(l)
+    }
+
+    /// The file name bar across the top of the editor area.
+    unsafe fn paint_header(&mut self, rt: &ID2D1HwndRenderTarget, hv: &HeaderView) {
+        let k = self.ui();
+        let (l, r, h) = (self.inset(), self.right(), self.header_h());
+        let name_f = self.format(Family::Ui, 13.0, 600);
+        let small = self.format(Family::Ui, 12.0, 400);
+        // Line the name up with the text when there is room.
+        let x = (self.x0).max(l + 12.0 * k).min(r - 40.0 * k).max(l + 4.0);
+        unsafe {
+            rt.FillRectangle(&rect(l, 0.0, r, h), self.brush(Ink::StatusBg));
+            rt.FillRectangle(&rect(l, h - 1.0, r, h), self.brush(Ink::Rule));
+            let name = if hv.dirty {
+                format!("{} \u{25cf}", hv.name)
+            } else {
+                hv.name.to_string()
+            };
+            let Some(nl) = self.panel_text(&name, &name_f, r - x - 8.0 * k, h) else {
+                return;
+            };
+            rt.DrawTextLayout(
+                v2(x, 0.0),
+                &nl,
+                self.brush(Ink::Text),
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+            if hv.folder.is_empty() {
+                return;
+            }
+            let mut m = DWRITE_TEXT_METRICS::default();
+            let _ = nl.GetMetrics(&mut m);
+            let fx = x + m.width + 10.0 * k;
+            if let Some(fl) = self.panel_text(hv.folder, &small, r - fx - 8.0 * k, h) {
+                rt.DrawTextLayout(
+                    v2(fx, 0.0),
+                    &fl,
+                    self.brush(Ink::StatusText),
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+    }
+
+    /// The outline panel on the right: a title, then one row per heading.
+    unsafe fn paint_outline(&mut self, rt: &ID2D1HwndRenderTarget, o: &OutlineView) {
+        let k = self.ui();
+        let (x0, bottom) = (self.right(), self.h - self.status_h());
+        let (header_h, row_h) = (self.sidebar_header_h(), self.sidebar_row_h());
+        let title_f = self.format(Family::Ui, 11.5, 600);
+        let row_f = self.format(Family::Ui, 13.0, 400);
+        let current_f = self.format(Family::Ui, 13.0, 600);
+        let w = self.w - x0;
+        unsafe {
+            rt.FillRectangle(&rect(x0, 0.0, self.w, bottom), self.brush(Ink::StatusBg));
+            rt.FillRectangle(&rect(x0, 0.0, x0 + 1.0, bottom), self.brush(Ink::Rule));
+            if let Some(l) = self.panel_text("OUTLINE", &title_f, w - 28.0 * k, header_h) {
+                rt.DrawTextLayout(
+                    v2(x0 + 14.0 * k, 0.0),
+                    &l,
+                    self.brush(Ink::StatusText),
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+            if o.items.is_empty() {
+                if let Some(l) = self.panel_text("No headings", &row_f, w - 28.0 * k, row_h) {
+                    rt.DrawTextLayout(
+                        v2(x0 + 14.0 * k, header_h),
+                        &l,
+                        self.brush(Ink::Dim),
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+                return;
+            }
+            rt.PushAxisAlignedClip(
+                &rect(x0 + 1.0, header_h, self.w, bottom),
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+            let min_level = o.items.iter().map(|i| i.0).min().unwrap_or(1);
+            for (i, &(level, text)) in o.items.iter().enumerate() {
+                let y = header_h + i as f32 * row_h - o.scroll;
+                if y + row_h < header_h || y > bottom {
+                    continue;
+                }
+                if o.hover == Some(i) {
+                    rt.FillRectangle(
+                        &rect(x0 + 1.0, y, self.w, y + row_h),
+                        self.brush(Ink::TableHeader),
+                    );
+                }
+                let current = o.current == Some(i);
+                let tx = x0 + (14.0 + (level - min_level) as f32 * 12.0) * k;
+                let f = if current { &current_f } else { &row_f };
+                let text = if text.is_empty() { "(untitled)" } else { text };
+                if let Some(l) = self.panel_text(text, f, self.w - tx - 8.0 * k, row_h) {
+                    let ink = if current { Ink::Accent } else { Ink::Text };
+                    rt.DrawTextLayout(
+                        v2(tx, y),
+                        &l,
+                        self.brush(ink),
+                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                    );
+                }
+            }
+            rt.PopAxisAlignedClip();
+        }
+    }
+
     /// New file, new folder and the notes-only filter, drawn as line icons.
     unsafe fn paint_sidebar_buttons(&self, rt: &ID2D1HwndRenderTarget, sb: &SidebarView) {
         let k = self.ui();
@@ -2563,7 +2747,11 @@ impl View {
                     radiusX: 4.0,
                     radiusY: 4.0,
                 };
-                let ink = if on { Ink::PaletteSel } else { Ink::TableHeader };
+                let ink = if on {
+                    Ink::PaletteSel
+                } else {
+                    Ink::TableHeader
+                };
                 unsafe { rt.FillRoundedRectangle(&rr, self.brush(ink)) };
             }
             let ink = if on { Ink::Accent } else { Ink::StatusText };

@@ -19,12 +19,13 @@ use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
-    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SidebarButton, Status, TableUi, View,
+    HeaderView, OutlineView, PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SidebarButton,
+    Status, TableUi, View,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
 use crate::table::{self, Grid, TableCmd};
-use crate::workspace::{Entry, FolderSettings};
+use crate::workspace::{self, Entry, FolderSettings};
 
 pub const APP_NAME: &str = "Penmark";
 
@@ -181,6 +182,13 @@ pub struct App {
     last_edit: Instant,
     seen_version: u64,
     autosave_failed: Option<u64>,
+    /// The outline panel and its headings (line, level, text) for a doc version.
+    outline: bool,
+    outline_items: (u64, Vec<(usize, u8, String)>),
+    outline_scroll: f32,
+    outline_hover: Option<usize>,
+    /// The heading last shown as current, to scroll it into view when it changes.
+    outline_current: Option<usize>,
     /// Files to go back / forward to (most recent last).
     back: Vec<NavEntry>,
     forward: Vec<NavEntry>,
@@ -244,6 +252,7 @@ impl App {
         if let Some(pct) = settings.get("zoom").and_then(|z| z.parse::<f32>().ok()) {
             view.zoom = clamp_zoom(pct / 100.0);
         }
+        view.outline = settings.get("outline") == Some("on");
         App {
             hwnd: HWND::default(),
             doc: Document::new(),
@@ -290,6 +299,11 @@ impl App {
             last_edit: Instant::now(),
             seen_version: 0,
             autosave_failed: None,
+            outline: settings.get("outline") == Some("on"),
+            outline_items: (0, Vec::new()),
+            outline_scroll: 0.0,
+            outline_hover: None,
+            outline_current: None,
             back: Vec::new(),
             forward: Vec::new(),
             restoring_placement: false,
@@ -369,7 +383,7 @@ impl App {
     }
 
     fn view_h(&self) -> f32 {
-        self.view.h - self.view.status_h()
+        self.view.view_h()
     }
 
     fn clamp_scroll(&mut self) {
@@ -403,7 +417,7 @@ impl App {
                     dwStyle: CFS_POINT,
                     ptCurrentPos: POINT {
                         x: (x * k) as i32,
-                        y: ((y - self.scroll) * k) as i32,
+                        y: ((y - self.scroll + self.view.header_h()) * k) as i32,
                     },
                     rcArea: RECT::default(),
                 };
@@ -727,6 +741,7 @@ impl App {
                 VK_0 if !shift => self.focus_explorer(),
                 VK_N if shift => self.new_window(),
                 VK_N => self.new_doc(),
+                VK_O if shift => self.toggle_outline(),
                 VK_O => self.open(),
                 VK_S if shift => {
                     self.save_as();
@@ -2285,6 +2300,10 @@ impl App {
             return self.tree_right_click(dy, x, y);
         }
         self.ensure_layout();
+        if self.over_outline(dx, dy) || dy < self.view.header_h() {
+            return;
+        }
+        let dy = dy - self.view.header_h();
         if let Some(TableUi::ColumnHandle(c)) = self.view.table_ui_at(dx, dy + self.scroll) {
             self.focus_column(c);
             return self.table_menu(x, y);
@@ -2610,6 +2629,7 @@ impl App {
             Target::Command(Command::NewFile) => self.new_item_prompt(false),
             Target::Command(Command::NewFolder) => self.new_item_prompt(true),
             Target::Command(Command::ToggleExplorer) => self.toggle_explorer(),
+            Target::Command(Command::ToggleOutline) => self.toggle_outline(),
             Target::Command(Command::FolderSettings) => self.folder_settings_palette(),
             Target::Command(Command::ToggleSource) => self.toggle_source(),
             Target::Command(Command::ToggleTheme) => self.toggle_theme(),
@@ -2718,6 +2738,7 @@ impl App {
 
     pub fn paint(&mut self) {
         self.ensure_layout();
+        let outline_current = self.outline_state();
         let (a, b) = self.sel();
         let status_left;
         let status_right;
@@ -2854,6 +2875,33 @@ impl App {
                 cs.col,
             )
         });
+        let doc_name = self.doc_name();
+        let folder = match (
+            &self.folder,
+            self.doc.path.as_deref().and_then(Path::parent),
+        ) {
+            (Some(root), Some(dir)) if workspace::contains(root, dir) => {
+                workspace::relative(root, dir)
+            }
+            (_, Some(dir)) => dir.to_string_lossy().into_owned(),
+            _ => String::new(),
+        };
+        let header = HeaderView {
+            name: &doc_name,
+            folder: &folder,
+            dirty: self.doc.is_dirty(),
+        };
+        let outline = outline_current.map(|current| OutlineView {
+            items: self
+                .outline_items
+                .1
+                .iter()
+                .map(|(_, n, t)| (*n, t.as_str()))
+                .collect(),
+            current,
+            hover: self.outline_hover,
+            scroll: self.outline_scroll,
+        });
         let infos = std::mem::take(&mut self.infos);
         self.view.paint(
             self.hwnd,
@@ -2868,6 +2916,8 @@ impl App {
             popup.as_ref(),
             self.mouse.filter(|_| self.palette.is_none()),
             sidebar.as_ref(),
+            &header,
+            outline.as_ref(),
         );
         self.infos = infos;
     }
@@ -2897,6 +2947,14 @@ impl App {
             self.tree_focus = false;
             self.invalidate();
         }
+        if self.over_outline(dx, dy) {
+            return self.outline_click(dy);
+        }
+        // From here on, y is relative to the top of the document viewport.
+        let dy = dy - self.view.header_h();
+        if dy < 0.0 {
+            return;
+        }
         if let Some(ui) = self.view.table_ui_at(dx, dy + self.scroll) {
             return self.table_ui_click(ui, x, y);
         }
@@ -2908,7 +2966,7 @@ impl App {
         }
         self.ensure_layout();
         let content = self.view.total_h + self.view_h() * 0.5;
-        if dx >= self.view.w - 12.0 && content > self.view_h() {
+        if dx >= self.view.right() - 12.0 && content > self.view_h() {
             let vh = self.view_h();
             let th = (vh * vh / content).max(30.0);
             let ty = self.scroll / self.view.max_scroll().max(1.0) * (vh - th);
@@ -2992,10 +3050,12 @@ impl App {
                 if self.explorer_visible() {
                     self.tree_mouse_move(dx, dy);
                 }
+                self.outline_mouse_move(dx, dy);
                 self.hover(dx, dy);
             }
-            Drag::Scrollbar(_) => self.drag_scrollbar(dy),
+            Drag::Scrollbar(_) => self.drag_scrollbar(dy - self.view.header_h()),
             drag => {
+                let dy = dy - self.view.header_h();
                 let vh = self.view_h();
                 if dy < 0.0 {
                     self.scroll = (self.scroll + dy).max(0.0);
@@ -3055,7 +3115,7 @@ impl App {
             self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
         }
         self.mouse = Some((x, y));
-        let doc_y = y + self.scroll;
+        let doc_y = y - self.view.header_h() + self.scroll;
         let state = (
             self.view.near_grid(x, doc_y),
             self.view.table_ui_at(x, doc_y),
@@ -3070,7 +3130,7 @@ impl App {
     pub fn on_mouse_leave(&mut self) {
         self.tracking_leave = false;
         self.mouse = None;
-        if self.tree_button.take().is_some() {
+        if self.tree_button.take().is_some() || self.outline_hover.take().is_some() {
             self.invalidate();
         }
         if self.table_hover.0 {
@@ -3098,6 +3158,9 @@ impl App {
         }
         if self.mouse.is_some_and(|(x, y)| self.over_explorer(x, y)) {
             return self.tree_wheel(delta);
+        }
+        if self.mouse.is_some_and(|(x, y)| self.over_outline(x, y)) {
+            return self.outline_wheel(delta);
         }
         if ctrl_down() {
             self.set_zoom(self.view.zoom + if delta > 0 { ZOOM_STEP } else { -ZOOM_STEP });
@@ -3128,7 +3191,8 @@ impl App {
         let (dx, dy) = self.to_dip(x, y);
         self.ensure_layout();
         let infos = std::mem::take(&mut self.infos);
-        let hit = self.view.hit(&self.doc.lines, &infos, dx, dy + self.scroll);
+        let doc_y = dy - self.view.header_h() + self.scroll;
+        let hit = self.view.hit(&self.doc.lines, &infos, dx, doc_y);
         self.infos = infos;
         if hit.link.is_some() && (!hit.active || ctrl_down()) {
             IDC_HAND
@@ -3145,17 +3209,134 @@ impl App {
                 .view
                 .palette_geom
                 .is_some_and(|g| dx >= g.left && dx <= g.right && dy >= g.top && dy <= g.bottom);
-        let over_table_ui = self.view.table_ui_at(dx, dy + self.scroll).is_some();
+        let head = self.view.header_h();
+        let over_table_ui = self.view.table_ui_at(dx, dy - head + self.scroll).is_some();
         !over_palette
             && !over_table_ui
             && !self.over_explorer(dx, dy)
-            && dy < self.view_h()
-            && dx < self.view.w - 12.0
+            && dy >= head
+            && dy < head + self.view_h()
+            && dx < self.view.right() - 12.0
+    }
+
+    /// Whether a client point (DIPs) is over the outline panel.
+    fn over_outline(&self, x: f32, y: f32) -> bool {
+        self.outline && x >= self.view.right() && y < self.view.h - self.view.status_h()
+    }
+
+    // -----------------------------------------------------------------------
+    // Outline
+
+    /// Ctrl+Shift+O: show or hide the outline of the document's headings.
+    fn toggle_outline(&mut self) {
+        self.outline = !self.outline;
+        self.view.outline = self.outline;
+        let on = self.outline;
+        let _ = Settings::update(|s| s.set("outline", if on { "on" } else { "off" }));
+        self.outline_current = None;
+        self.relayout();
+        self.scroll_to_caret();
+    }
+
+    /// The document's headings: (line, level, text), cached per version.
+    fn outline_items(&mut self) -> &[(usize, u8, String)] {
+        if self.outline_items.0 != self.doc.version {
+            self.infos();
+            let items = (0..self.doc.lines.len())
+                .filter_map(|l| match self.infos[l].kind {
+                    Kind::Heading(n) => Some((
+                        l,
+                        n,
+                        markdown::plain_text(&self.doc.lines[l], self.infos[l].content),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            self.outline_items = (self.doc.version, items);
+        }
+        &self.outline_items.1
+    }
+
+    fn outline_row_at(&mut self, y: f32) -> Option<usize> {
+        let header_h = self.view.sidebar_header_h();
+        if y < header_h {
+            return None;
+        }
+        let i = ((y - header_h + self.outline_scroll) / self.view.sidebar_row_h()) as usize;
+        (i < self.outline_items().len()).then_some(i)
+    }
+
+    fn clamp_outline_scroll(&mut self) {
+        let n = self.outline_items().len() as f32;
+        let h = self.view.h - self.view.status_h() - self.view.sidebar_header_h();
+        let max = (n * self.view.sidebar_row_h() - h).max(0.0);
+        self.outline_scroll = self.outline_scroll.clamp(0.0, max);
+    }
+
+    /// Click on a heading: move the caret there and scroll it to the top.
+    fn outline_click(&mut self, y: f32) {
+        let Some(i) = self.outline_row_at(y) else {
+            return;
+        };
+        let l = self.outline_items()[i].0;
+        let p = Pos::new(l, self.infos[l].content);
+        self.set_sel(p, p);
+        self.changed(false);
+        if let Some(row) = self.view.rows.get(l) {
+            self.scroll = row.y - 8.0 * self.view.zoom;
+            self.clamp_scroll();
+        }
+        self.invalidate();
+    }
+
+    fn outline_mouse_move(&mut self, x: f32, y: f32) {
+        let hover = if self.over_outline(x, y) {
+            self.outline_row_at(y)
+        } else {
+            None
+        };
+        if hover != self.outline_hover {
+            self.outline_hover = hover;
+            self.invalidate();
+        }
+    }
+
+    fn outline_wheel(&mut self, delta: i16) {
+        self.outline_scroll -= delta as f32 / 120.0 * 3.0 * self.view.sidebar_row_h();
+        self.clamp_outline_scroll();
+        self.invalidate();
+    }
+
+    /// Updates the outline's current heading (scrolling it into view when it
+    /// changes); returns it, or None when the outline is hidden.
+    fn outline_state(&mut self) -> Option<Option<usize>> {
+        if !self.outline {
+            return None;
+        }
+        let line = self.cursor.line;
+        let current = self.outline_items().iter().rposition(|it| it.0 <= line);
+        if current != self.outline_current {
+            self.outline_current = current;
+            if let Some(i) = current {
+                let row_h = self.view.sidebar_row_h();
+                let h = self.view.h - self.view.status_h() - self.view.sidebar_header_h();
+                let top = i as f32 * row_h;
+                if top < self.outline_scroll {
+                    self.outline_scroll = top;
+                } else if top + row_h > self.outline_scroll + h {
+                    self.outline_scroll = top + row_h - h;
+                }
+            }
+        }
+        self.clamp_outline_scroll();
+        Some(current)
     }
 
     /// Whether a client point (DIPs) is over the explorer panel.
     fn over_explorer(&self, x: f32, y: f32) -> bool {
-        self.explorer_visible() && x < self.view.sidebar_w() && y < self.view_h()
+        self.explorer_visible()
+            && x < self.view.sidebar_w()
+            && y < self.view.h - self.view.status_h()
     }
 
     // -----------------------------------------------------------------------
@@ -3182,15 +3363,29 @@ impl App {
     /// in this window's history, at the position it was left.
     pub fn navigate(&mut self, back: bool) {
         let entry = loop {
-            let stack = if back { &mut self.back } else { &mut self.forward };
+            let stack = if back {
+                &mut self.back
+            } else {
+                &mut self.forward
+            };
             match stack.pop() {
                 Some(e) if e.path.is_file() => break e,
                 Some(_) => {}
-                None => return self.say(if back { "No previous file" } else { "No next file" }),
+                None => {
+                    return self.say(if back {
+                        "No previous file"
+                    } else {
+                        "No next file"
+                    });
+                }
             }
         };
         if !self.confirm_discard() {
-            let stack = if back { &mut self.back } else { &mut self.forward };
+            let stack = if back {
+                &mut self.back
+            } else {
+                &mut self.forward
+            };
             stack.push(entry);
             return;
         }
@@ -3200,7 +3395,11 @@ impl App {
             return; // Could not be read; open_path reported it.
         }
         if let Some(c) = current {
-            let other = if back { &mut self.forward } else { &mut self.back };
+            let other = if back {
+                &mut self.forward
+            } else {
+                &mut self.back
+            };
             other.push(c);
         }
         let p = self.doc.clamp(entry.cursor);
@@ -3448,7 +3647,8 @@ mod tests {
 
     #[test]
     fn code_at_cursor() {
-        let mut a = app("a `x y` b\n\n```rs\nfn f() {}\n  g();\n```\n- item\n  ```\n  in list\n  ```");
+        let mut a =
+            app("a `x y` b\n\n```rs\nfn f() {}\n  g();\n```\n- item\n  ```\n  in list\n  ```");
         assert_eq!(a.code_at(Pos::new(0, 4)), Some(("x y".into(), false)));
         assert_eq!(a.code_at(Pos::new(0, 0)), None);
         assert_eq!(a.code_at(Pos::new(0, 8)), None);

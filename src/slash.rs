@@ -148,7 +148,8 @@ pub fn table(line: &str, info: &LineInfo) -> LineEdit {
 pub fn rule(line: &str, info: &LineInfo, after_para: bool) -> LineEdit {
     let mut e = insert_block(line, info, &["---".into(), String::new()], (1, 0), 0, true);
     if after_para && e.start == info.qend {
-        e.text.insert_str(0, &format!("\n{}", line[..info.qend].trim_end()));
+        e.text
+            .insert_str(0, &format!("\n{}", line[..info.qend].trim_end()));
         e.caret.0 += 1;
     }
     e
@@ -273,7 +274,10 @@ mod tests {
         let e = rule("", &info(""), true);
         assert_eq!((e.text.as_str(), e.caret), ("\n---\n", (2, 0)));
         let e = rule("text", &info("text"), true);
-        assert_eq!((e.start, e.text.as_str(), e.caret), (4, "\n\n---\n", (3, 0)));
+        assert_eq!(
+            (e.start, e.text.as_str(), e.caret),
+            (4, "\n\n---\n", (3, 0))
+        );
         assert_eq!(date_text((2026, 10, 16), 0), "2026-10-16");
         assert_eq!(date_text((2026, 3, 1), -1), "2026-02-28");
         assert_eq!(date_text((2024, 3, 1), -1), "2024-02-29");

@@ -959,6 +959,43 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
     }
 }
 
+/// The text of `s[start..]` as rendered: delimiters removed, entities decoded, and
+/// a closing `#` sequence (as in `## Title ##`) dropped.
+pub fn plain_text(s: &str, start: usize) -> String {
+    let t = s.trim_end();
+    let t = match t.trim_end_matches('#') {
+        head if head.len() < t.len() && (head.len() <= start || head.ends_with([' ', '\t'])) => {
+            head.trim_end()
+        }
+        _ => t,
+    };
+    let end = t.len().max(start);
+    let inl = parse_inline(s, start, end);
+    let mut out = String::new();
+    let (mut h, mut k, mut i) = (0, 0, start);
+    while i < end {
+        while h < inl.hidden.len() && inl.hidden[h].end <= i {
+            h += 1;
+        }
+        if h < inl.hidden.len() && inl.hidden[h].start <= i {
+            i = inl.hidden[h].end;
+            continue;
+        }
+        while k < inl.subs.len() && inl.subs[k].0.start < i {
+            k += 1;
+        }
+        if k < inl.subs.len() && inl.subs[k].0.start == i {
+            out.push(inl.subs[k].1);
+            i = inl.subs[k].0.end;
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Counts words: CJK characters individually, other text split on whitespace.
 pub fn count_words(text: &str) -> usize {
     let mut count = 0;
@@ -1117,6 +1154,16 @@ mod tests {
             delim_row("|:--|:-:|--:|"),
             Some(vec![Align::Left, Align::Center, Align::Right])
         );
+    }
+
+    #[test]
+    fn plain() {
+        assert_eq!(
+            plain_text("## **Big** [link](x) &amp; `c` ##", 3),
+            "Big link & c"
+        );
+        assert_eq!(plain_text("# C#", 2), "C#");
+        assert_eq!(plain_text("# ###", 2), "");
     }
 
     #[test]

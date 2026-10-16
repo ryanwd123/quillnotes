@@ -646,7 +646,9 @@ impl App {
             SidebarButton::NotesOnly => {
                 self.notes_only = !self.notes_only;
                 let on = self.notes_only;
-                let _ = Settings::update(|s| s.set("explorer.notes_only", if on { "on" } else { "off" }));
+                let _ = Settings::update(|s| {
+                    s.set("explorer.notes_only", if on { "on" } else { "off" })
+                });
                 let rows = self.tree_rows();
                 self.clamp_tree_scroll(rows.len());
                 self.say(if on {
