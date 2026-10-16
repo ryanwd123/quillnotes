@@ -5,6 +5,7 @@ mod attach;
 mod command;
 mod doc;
 mod dragdrop;
+mod keymap;
 mod markdown;
 mod options;
 mod palette;

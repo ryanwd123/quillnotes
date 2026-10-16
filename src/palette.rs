@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::doc;
+use crate::keymap::{Action, Keymap};
 use crate::options::{Opt, RenderOptions};
 use crate::render::PALETTE_ROWS;
 use crate::table::TableCmd;
@@ -29,53 +30,74 @@ pub enum Command {
     ToggleSource,
     ToggleTheme,
     Help,
+    OpenSettingsFolder,
+    WriteKeymap,
     Table(TableCmd),
 }
 
-/// Every command, in the order shown for an empty query: (label, shortcut hint, command).
-const COMMANDS: &[(&str, &str, Command)] = &[
-    ("Go to File\u{2026}", "Ctrl+P", Command::QuickOpen),
+/// Every command, in the order shown for an empty query: (label, the action whose
+/// key is shown beside it, command).
+const COMMANDS: &[(&str, Option<Action>, Command)] = &[
+    (
+        "Go to File\u{2026}",
+        Some(Action::QuickOpen),
+        Command::QuickOpen,
+    ),
     (
         "Search: Find in Files",
-        "Ctrl+Shift+F",
+        Some(Action::SearchFiles),
         Command::SearchFiles,
     ),
-    ("File: Open Folder\u{2026}", "", Command::OpenFolder),
+    ("File: Open Folder\u{2026}", None, Command::OpenFolder),
     (
         "File: Open Recent Folder\u{2026}",
-        "Ctrl+R",
+        Some(Action::RecentFolders),
         Command::OpenRecent,
     ),
-    ("File: Close Folder", "", Command::CloseFolder),
-    ("File: New File in Folder\u{2026}", "", Command::NewFile),
-    ("File: New Folder\u{2026}", "", Command::NewFolder),
+    ("File: Close Folder", None, Command::CloseFolder),
+    ("File: New File in Folder\u{2026}", None, Command::NewFile),
+    ("File: New Folder\u{2026}", None, Command::NewFolder),
     (
         "View: Toggle Explorer",
-        "Ctrl+B",
+        Some(Action::ToggleExplorer),
         Command::ToggleExplorer,
     ),
     (
         "View: Toggle Outline",
-        "Ctrl+Shift+O",
+        Some(Action::ToggleOutline),
         Command::ToggleOutline,
     ),
-    ("Preferences: Folder Settings", "", Command::FolderSettings),
-    ("Font: Change Editor Font", "", Command::ChangeFont),
-    ("Font: Change Code Font", "", Command::ChangeCodeFont),
-    ("Font: Code Font Size", "", Command::CodeFontSize),
-    ("Preferences: UI Font Size", "", Command::UiFontSize),
-    ("View: Rendering Options", "", Command::RenderingOptions),
+    (
+        "Preferences: Folder Settings",
+        None,
+        Command::FolderSettings,
+    ),
+    ("Font: Change Editor Font", None, Command::ChangeFont),
+    ("Font: Change Code Font", None, Command::ChangeCodeFont),
+    ("Font: Code Font Size", None, Command::CodeFontSize),
+    ("Preferences: UI Font Size", None, Command::UiFontSize),
+    ("View: Rendering Options", None, Command::RenderingOptions),
     (
         "View: Toggle Source Mode",
-        "Ctrl+Shift+V",
+        Some(Action::ToggleSource),
         Command::ToggleSource,
     ),
     (
         "Preferences: Toggle Light/Dark Theme",
-        "Ctrl+Shift+T",
+        Some(Action::ToggleTheme),
         Command::ToggleTheme,
     ),
-    ("Help: Keyboard Shortcuts", "", Command::Help),
+    (
+        "Preferences: Open Settings Folder",
+        None,
+        Command::OpenSettingsFolder,
+    ),
+    (
+        "Preferences: Write keymap.ini (Edit Keyboard Shortcuts)",
+        None,
+        Command::WriteKeymap,
+    ),
+    ("Help: Keyboard Shortcuts", None, Command::Help),
 ];
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -257,10 +279,14 @@ impl Palette {
         p
     }
 
-    pub fn commands() -> Self {
+    /// All commands, with their keys from `keys`.
+    pub fn commands(keys: &Keymap) -> Self {
         let mut items: Vec<Item> = COMMANDS
             .iter()
-            .map(|&(label, detail, cmd)| Item::new(label, detail, Target::Command(cmd)))
+            .map(|&(label, action, cmd)| {
+                let hint = action.map(|a| keys.hint(a)).unwrap_or_default();
+                Item::new(label, hint, Target::Command(cmd))
+            })
             .collect();
         items.extend(TableCmd::ALL.iter().map(|&(cmd, label)| {
             let hint = if cmd == TableCmd::RowBelow {

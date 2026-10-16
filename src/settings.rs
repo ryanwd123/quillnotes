@@ -10,9 +10,14 @@ pub struct Settings {
     values: BTreeMap<String, String>,
 }
 
-fn path() -> Option<PathBuf> {
+/// The settings folder, `%APPDATA%\Penmark`.
+pub fn dir() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join(APP_NAME).join("settings.ini"))
+    Some(PathBuf::from(appdata).join(APP_NAME))
+}
+
+fn path() -> Option<PathBuf> {
+    dir().map(|d| d.join("settings.ini"))
 }
 
 impl Settings {

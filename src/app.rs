@@ -16,6 +16,7 @@ use windows::core::{HSTRING, PCWSTR};
 use crate::attach;
 use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
 use crate::doc::{self, Document, EditKind, Pos, find_ci};
+use crate::keymap::{self, Action, Chord, Keymap};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
@@ -213,6 +214,7 @@ pub struct App {
     /// Files to go back / forward to (most recent last).
     back: Vec<NavEntry>,
     forward: Vec<NavEntry>,
+    keymap: Keymap,
 }
 
 fn ctrl_down() -> bool {
@@ -264,6 +266,7 @@ impl App {
             view.zoom = clamp_zoom(pct / 100.0);
         }
         view.outline = settings.get("outline") == Some("on");
+        let (keymap, keymap_errors) = Keymap::load();
         App {
             hwnd: HWND::default(),
             doc: Document::new(),
@@ -278,7 +281,7 @@ impl App {
             caret_on: true,
             focused: true,
             layout_key: None,
-            message: None,
+            message: keymap_errors.first().map(|e| (e.clone(), Instant::now())),
             prompt: None,
             find_query: String::new(),
             drag: Drag::None,
@@ -320,6 +323,7 @@ impl App {
             next_command: 0,
             back: Vec::new(),
             forward: Vec::new(),
+            keymap,
             restoring_placement: false,
         }
     }
@@ -747,67 +751,20 @@ impl App {
         if !alt && self.grid_block() != 0 && self.table_key(key, ctrl, shift) {
             return true;
         }
-        let vk = key.0;
+        let chord = Chord {
+            vk: key.0,
+            ctrl,
+            shift,
+            alt,
+        };
+        if let Some(action) = self.keymap.action(chord) {
+            self.skip_char = chord.types_char();
+            self.run_action(action);
+            return true;
+        }
+        // Keys that keymap.ini cannot change.
         if ctrl {
             match key {
-                VK_P if shift => self.open_palette(Palette::commands()),
-                VK_P => self.quick_open(),
-                VK_F if shift => self.search_files(),
-                VK_R => self.recent_folders(),
-                VK_E if shift => self.toggle_explorer_focus(),
-                VK_0 if !shift => self.focus_explorer(),
-                VK_N if shift => self.new_window(),
-                VK_N => self.new_doc(),
-                VK_O if shift => self.toggle_outline(),
-                VK_O => self.open(),
-                VK_S if shift => {
-                    self.save_as();
-                }
-                VK_S => {
-                    self.save();
-                }
-                VK_W if shift => unsafe {
-                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                },
-                VK_W => self.new_doc(),
-                VK_Z if shift => self.undo(false),
-                VK_Z => self.undo(true),
-                VK_Y => self.undo(false),
-                VK_A => {
-                    self.set_sel(Pos::default(), self.doc.end());
-                    self.changed(false);
-                }
-                VK_C => self.copy(false),
-                VK_X if shift => self.toggle_wrap("~~"),
-                VK_X => self.copy(true),
-                VK_V if shift => self.toggle_source(),
-                VK_V => self.paste(),
-                VK_B if shift => self.toggle_wrap("**"),
-                VK_B => self.toggle_explorer(),
-                VK_I => self.toggle_wrap("*"),
-                VK_E => self.toggle_wrap("`"),
-                VK_H if shift => self.toggle_wrap("=="),
-                VK_K if shift => self.delete_lines(),
-                VK_K => self.make_link(),
-                VK_D if !shift => self.select_next_match(),
-                VK_L if !shift => self.select_line(),
-                VK_OEM_6 => self.indent(true),
-                VK_OEM_4 => self.indent(false),
-                VK_T if shift => self.toggle_theme(),
-                VK_F => self.open_prompt(PromptKind::Find),
-                VK_G => self.open_prompt(PromptKind::GoTo),
-                VK_OEM_2 => self.toggle_comment(),
-                VK_OEM_PLUS | VK_ADD => self.set_zoom(self.view.zoom + ZOOM_STEP),
-                VK_OEM_MINUS | VK_SUBTRACT => self.set_zoom(self.view.zoom - ZOOM_STEP),
-                VK_NUMPAD0 => self.set_zoom(1.0),
-                VK_1 | VK_2 | VK_3 | VK_4 | VK_5 | VK_6 if !shift => {
-                    self.set_heading((vk - VK_0.0) as u8)
-                }
-                VK_8 if shift => self.set_list(ListStyle::Bullet),
-                VK_7 if shift => self.set_list(ListStyle::Ordered),
-                VK_9 if shift => self.set_list(ListStyle::Task),
-                VK_OEM_PERIOD if shift => self.toggle_quote(),
-                VK_RETURN => self.open_line(!shift),
                 VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END | VK_BACK | VK_DELETE => {
                     self.nav_key(key, true, shift)
                 }
@@ -816,21 +773,9 @@ impl App {
             return true;
         }
         if alt {
-            match key {
-                VK_UP if shift => self.duplicate_lines(false),
-                VK_DOWN if shift => self.duplicate_lines(true),
-                VK_UP => self.move_lines(false),
-                VK_DOWN => self.move_lines(true),
-                VK_C => self.toggle_task(self.cursor.line),
-                VK_LEFT => self.navigate(true),
-                VK_RIGHT => self.navigate(false),
-                _ => return false,
-            }
-            return true;
+            return false;
         }
         match key {
-            VK_F1 => self.open_palette(Palette::commands()),
-            VK_F3 => self.find_next(!shift),
             VK_ESCAPE => {
                 if self.anchor != self.cursor {
                     self.anchor = self.cursor;
@@ -865,6 +810,132 @@ impl App {
             }
         }
         true
+    }
+
+    /// Runs a command bound in the keymap.
+    fn run_action(&mut self, action: Action) {
+        match action {
+            Action::Palette => self.open_palette(Palette::commands(&self.keymap)),
+            Action::QuickOpen => self.quick_open(),
+            Action::SearchFiles => self.search_files(),
+            Action::RecentFolders => self.recent_folders(),
+            Action::ToggleExplorer => self.toggle_explorer(),
+            Action::ExplorerFocus => self.toggle_explorer_focus(),
+            Action::FocusExplorer => self.focus_explorer(),
+            Action::ToggleOutline => self.toggle_outline(),
+            Action::NewWindow => self.new_window(),
+            Action::NewFile | Action::CloseFile => self.new_doc(),
+            Action::OpenFile => self.open(),
+            Action::Save => {
+                self.save();
+            }
+            Action::SaveAs => {
+                self.save_as();
+            }
+            Action::CloseWindow => unsafe {
+                let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            },
+            Action::Back => self.navigate(true),
+            Action::Forward => self.navigate(false),
+            Action::Undo => self.undo(true),
+            Action::Redo => self.undo(false),
+            Action::SelectAll => {
+                self.set_sel(Pos::default(), self.doc.end());
+                self.changed(false);
+            }
+            Action::Copy => self.copy(false),
+            Action::Cut => self.copy(true),
+            Action::Paste => self.paste(),
+            Action::Find => self.open_prompt(PromptKind::Find),
+            Action::FindNext => self.find_next(true),
+            Action::FindPrevious => self.find_next(false),
+            Action::GoToLine => self.open_prompt(PromptKind::GoTo),
+            Action::SelectNextMatch => self.select_next_match(),
+            Action::SelectLine => self.select_line(),
+            Action::Bold => self.toggle_wrap("**"),
+            Action::Italic => self.toggle_wrap("*"),
+            Action::Code => self.toggle_wrap("`"),
+            Action::Strikethrough => self.toggle_wrap("~~"),
+            Action::Highlight => self.toggle_wrap("=="),
+            Action::Link => self.make_link(),
+            Action::Heading(level) => self.set_heading(level),
+            Action::BulletList => self.set_list(ListStyle::Bullet),
+            Action::NumberedList => self.set_list(ListStyle::Ordered),
+            Action::TaskList => self.set_list(ListStyle::Task),
+            Action::Quote => self.toggle_quote(),
+            Action::ToggleTask => self.toggle_task(self.cursor.line),
+            Action::ToggleComment => self.toggle_comment(),
+            Action::Indent => self.indent(true),
+            Action::Outdent => self.indent(false),
+            Action::InsertLineBelow => self.open_line(true),
+            Action::InsertLineAbove => self.open_line(false),
+            Action::MoveLinesUp => self.move_lines(false),
+            Action::MoveLinesDown => self.move_lines(true),
+            Action::CopyLinesUp => self.duplicate_lines(false),
+            Action::CopyLinesDown => self.duplicate_lines(true),
+            Action::DeleteLines => self.delete_lines(),
+            Action::ToggleSource => self.toggle_source(),
+            Action::ToggleTheme => self.toggle_theme(),
+            Action::ZoomIn => self.set_zoom(self.view.zoom + ZOOM_STEP),
+            Action::ZoomOut => self.set_zoom(self.view.zoom - ZOOM_STEP),
+            Action::ZoomReset => self.set_zoom(1.0),
+        }
+    }
+
+    /// Picks up changes to keymap.ini, reporting the first problem in it.
+    fn reload_keymap(&mut self) {
+        if let Some(errors) = self.keymap.reload_if_changed() {
+            match errors.first() {
+                Some(e) => self.say(e.clone()),
+                None => self.say("Keyboard shortcuts reloaded"),
+            }
+        }
+    }
+
+    /// Opens the settings folder in Explorer.
+    fn open_settings_folder(&mut self) {
+        let Some(dir) = crate::settings::dir() else {
+            return self.say("No settings folder (APPDATA is not set)");
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return self.say(format!("Could not create {}: {e}", dir.display()));
+        }
+        platform::shell_open(self.hwnd, &dir.to_string_lossy());
+    }
+
+    /// Writes keymap.ini with every command and its current keys, and opens it.
+    fn write_keymap(&mut self) {
+        let Some(path) = keymap::path() else {
+            return self.say("No settings folder (APPDATA is not set)");
+        };
+        self.reload_keymap();
+        if path.exists()
+            && platform::message_box(
+                self.hwnd,
+                &format!(
+                    "{} already exists.\n\nReplace it with every command and its current \
+                     keys? Keys you changed are kept; comments are not.",
+                    path.display()
+                ),
+                APP_NAME,
+                MB_YESNO | MB_ICONQUESTION,
+            ) != IDYES
+        {
+            return;
+        }
+        let text = self.keymap.to_ini().replace('\n', "\r\n");
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, text));
+        match written {
+            Ok(()) => {
+                self.reload_keymap();
+                self.say(format!("Wrote {}", path.display()));
+                platform::shell_open(self.hwnd, &path.to_string_lossy());
+            }
+            Err(e) => self.say(format!("Could not write {}: {e}", path.display())),
+        }
     }
 
     fn nav_key(&mut self, key: VIRTUAL_KEY, ctrl: bool, shift: bool) {
@@ -1722,6 +1793,18 @@ impl App {
 
     fn prompt_key(&mut self, vk: u16, ctrl: bool, shift: bool) -> bool {
         let key = VIRTUAL_KEY(vk);
+        let chord = Chord {
+            vk,
+            ctrl,
+            shift,
+            alt: false,
+        };
+        if matches!(
+            self.keymap.action(chord),
+            Some(Action::Palette | Action::QuickOpen | Action::SearchFiles)
+        ) {
+            return false;
+        }
         let p = self.prompt.as_mut().unwrap();
         match key {
             VK_ESCAPE => {
@@ -1777,7 +1860,6 @@ impl App {
                     self.prompt_changed();
                 }
             }
-            VK_F if ctrl && shift => return false,
             VK_F | VK_G if ctrl => {}
             _ => return ctrl && !matches!(key, VK_F3),
         }
@@ -2626,6 +2708,12 @@ impl App {
     }
 
     fn palette_key(&mut self, key: VIRTUAL_KEY, ctrl: bool, shift: bool) {
+        let bound = self.keymap.action(Chord {
+            vk: key.0,
+            ctrl,
+            shift,
+            alt: false,
+        });
         let Some(p) = &mut self.palette else { return };
         let page = PALETTE_ROWS as isize;
         // In the options list, Left/Right change the selected value.
@@ -2643,10 +2731,14 @@ impl App {
             let steps = if key == VK_LEFT { -1 } else { 1 } * if shift { 5 } else { 1 };
             return self.change_folder_settings(|f| opt.adjust(f, steps));
         }
+        // The key that opened the command palette or the search closes it.
+        if bound == Some(Action::Palette)
+            || (bound == Some(Action::SearchFiles) && p.mode == Mode::Search)
+        {
+            return self.close_palette(true);
+        }
         match key {
             VK_ESCAPE => return self.close_palette(true),
-            VK_P if ctrl && shift => return self.close_palette(true),
-            VK_F if ctrl && shift && p.mode == Mode::Search => return self.close_palette(true),
             VK_RETURN => return self.palette_accept(),
             VK_UP => p.move_by(-1),
             VK_DOWN => p.move_by(1),
@@ -2721,6 +2813,8 @@ impl App {
             Target::Command(Command::FolderSettings) => self.folder_settings_palette(),
             Target::Command(Command::ToggleSource) => self.toggle_source(),
             Target::Command(Command::ToggleTheme) => self.toggle_theme(),
+            Target::Command(Command::OpenSettingsFolder) => self.open_settings_folder(),
+            Target::Command(Command::WriteKeymap) => self.write_keymap(),
             Target::Command(Command::Help) => {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).arg("--help").spawn();
@@ -2819,6 +2913,7 @@ impl App {
             self.rescan();
         }
         if focused {
+            self.reload_keymap();
             self.restart_blink();
             self.update_ime();
         }
@@ -3603,6 +3698,9 @@ impl App {
                 self.doc.mark_saved();
                 self.say("Saved");
                 self.update_title();
+                if keymap::path().as_deref() == Some(path) {
+                    self.reload_keymap();
+                }
                 if new_path && self.folder.is_some() {
                     self.rescan();
                     self.remember_file();
@@ -4067,5 +4165,23 @@ mod tests {
         assert_eq!((clamp_zoom(1.07) * 100.0).round(), 105.0);
         assert_eq!((clamp_zoom(0.1) * 100.0).round(), 60.0);
         assert_eq!((clamp_zoom(9.0) * 100.0).round(), 300.0);
+    }
+
+    #[test]
+    fn keys_run_keymap_commands() {
+        let mut a = app("word");
+        a.set_sel(Pos::new(0, 0), Pos::new(0, 4));
+        a.keymap = Keymap::parse("").0;
+        assert!(a.editor_key(VK_B, true, true, false));
+        assert_eq!(a.doc.lines[0], "**word**");
+        // A rebound key runs its new command, and the old key does nothing.
+        a.keymap = Keymap::parse("bold = Ctrl+Q
+italic =").0;
+        a.set_sel(Pos::new(0, 2), Pos::new(0, 6));
+        assert!(!a.editor_key(VK_I, true, false, false));
+        assert!(a.editor_key(VK_Q, true, false, false));
+        assert_eq!(a.doc.lines[0], "word");
+        // Moving by word stays fixed.
+        assert!(a.editor_key(VK_RIGHT, true, false, false));
     }
 }
