@@ -50,6 +50,6 @@ Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 | `Ctrl+G` | Go to line |
 | `Ctrl+Click` | Open link (`[[Note]]` links open `Note.md` next to this file) |
 | `Ctrl+/` | Toggle source mode |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out (5% steps) / reset; the zoom is remembered |
 | `Ctrl+Shift+T` | Light / dark theme |
 | `F1` | This help |

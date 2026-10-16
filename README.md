@@ -42,8 +42,11 @@ rendered by the editor itself. The highlights:
 | `Ctrl+Enter` | Toggle a task's checkbox |
 | `Ctrl+F`, `F3`, `Ctrl+G` | Find, find next, go to line (in the status bar) |
 | `Alt+Up/Down`, `Ctrl+D`, `Ctrl+Shift+K` | Move, duplicate, delete lines |
-| `Ctrl+/`, `Ctrl+Shift+T`, `Ctrl+=`/`-`/`0` | Source mode, theme, zoom |
+| `Ctrl+/`, `Ctrl+Shift+T`, `Ctrl+=`/`-`/`0` | Source mode, theme, zoom (5% steps) |
 | `Ctrl+Shift+P` | Command palette |
+
+The zoom level and the window's size, position and maximized state are remembered
+between runs. A saved position on a monitor that is no longer connected is ignored.
 
 ### Command palette
 

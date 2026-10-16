@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::InvalidateRect;
+use windows::Win32::Graphics::Gdi::{InvalidateRect, MONITOR_DEFAULTTONULL, MonitorFromRect};
 use windows::Win32::UI::Input::Ime::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -73,6 +73,8 @@ pub struct App {
     last_title: String,
     /// Display name for a document without a path.
     untitled_name: &'static str,
+    /// True while the saved placement is applied, so a DPI change keeps the saved size.
+    pub restoring_placement: bool,
     palette: Option<Palette>,
 }
 
@@ -154,6 +156,7 @@ impl App {
             last_title: String::new(),
             untitled_name: "Untitled",
             palette: None,
+            restoring_placement: false,
         }
     }
 
@@ -293,6 +296,72 @@ impl App {
                 None,
             );
         }
+    }
+
+    /// Shows the window at its saved size and position. Returns false when nothing
+    /// usable is saved (missing, too small, or on a monitor that is gone).
+    pub fn restore_placement(&mut self) -> bool {
+        let settings = Settings::load();
+        let Some(saved) = settings.get("window") else {
+            return false;
+        };
+        let n: Vec<i32> = saved
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        let [left, top, right, bottom, maximized] = n[..] else {
+            return false;
+        };
+        let rc = RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        if right - left < 200
+            || bottom - top < 150
+            || unsafe { MonitorFromRect(&rc, MONITOR_DEFAULTTONULL) }.is_invalid()
+        {
+            return false;
+        }
+        let show = if maximized != 0 {
+            SW_SHOWMAXIMIZED
+        } else {
+            SW_SHOWNORMAL
+        };
+        let wp = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            showCmd: show.0 as u32,
+            rcNormalPosition: rc,
+            ..Default::default()
+        };
+        self.restoring_placement = true;
+        let ok = unsafe { SetWindowPlacement(self.hwnd, &wp) }.is_ok();
+        self.restoring_placement = false;
+        ok
+    }
+
+    /// Saves the window's normal (unmaximized) rectangle and whether it is maximized.
+    pub fn save_placement(&self) {
+        if self.untitled_name == "Help" {
+            return;
+        }
+        let mut wp = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetWindowPlacement(self.hwnd, &mut wp) }.is_err() {
+            return;
+        }
+        let maximized = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32
+            || (wp.showCmd == SW_SHOWMINIMIZED.0 as u32
+                && wp.flags.0 & WPF_RESTORETOMAXIMIZED.0 != 0);
+        let r = wp.rcNormalPosition;
+        let value = format!(
+            "{},{},{},{},{}",
+            r.left, r.top, r.right, r.bottom, maximized as i32
+        );
+        let _ = Settings::update(|s| s.set("window", &value));
     }
 
     pub fn update_title(&mut self) {

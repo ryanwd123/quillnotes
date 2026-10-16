@@ -66,15 +66,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_DPICHANGED => {
                 app.view.dpi = (wparam.0 & 0xFFFF) as f32;
                 let r = &*(lparam.0 as *const RECT);
-                let _ = SetWindowPos(
-                    hwnd,
-                    None,
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                // A restored placement is already in the target monitor's pixels.
+                if !app.restoring_placement {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
                 app.on_size(rc.right as u32, rc.bottom as u32);
@@ -150,6 +153,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_CLOSE => {
                 if app.confirm_discard() {
+                    app.save_placement();
                     let _ = DestroyWindow(hwnd);
                 }
                 LRESULT(0)
@@ -220,7 +224,9 @@ fn main() -> Result<()> {
         }
         a.update_title();
 
-        let _ = ShowWindow(hwnd, SW_SHOWDEFAULT);
+        if !a.restore_placement() {
+            let _ = ShowWindow(hwnd, SW_SHOWDEFAULT);
+        }
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
             let _ = TranslateMessage(&msg);
