@@ -255,15 +255,21 @@ impl App {
         self.relayout();
     }
 
-    /// Ctrl+Shift+E: show the explorer and focus it, or hide it.
+    /// Ctrl+B: show or hide the explorer without moving focus to it.
     pub(super) fn toggle_explorer(&mut self) {
         if self.folder.is_none() {
             return self.say("Open a folder first (Ctrl+R)");
         }
-        if self.explorer_visible() {
-            self.set_explorer(false);
+        self.set_explorer(!self.explorer_visible());
+        self.invalidate();
+    }
+
+    /// Ctrl+Shift+E: move focus between the explorer (showing it if hidden) and the editor.
+    pub(super) fn toggle_explorer_focus(&mut self) {
+        if self.tree_focus {
+            self.tree_focus = false;
+            self.invalidate();
         } else {
-            self.set_explorer(true);
             self.focus_explorer();
         }
     }

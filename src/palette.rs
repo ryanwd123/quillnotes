@@ -44,7 +44,7 @@ const COMMANDS: &[(&str, &str, Command)] = &[
     ("File: New Folder\u{2026}", "", Command::NewFolder),
     (
         "View: Toggle Explorer",
-        "Ctrl+Shift+E",
+        "Ctrl+B",
         Command::ToggleExplorer,
     ),
     (

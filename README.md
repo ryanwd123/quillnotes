@@ -32,17 +32,18 @@ entities.
 ## Keyboard
 
 Shortcuts follow VS Code's defaults where they don't clash with Markdown formatting:
-`Ctrl+B`, `Ctrl+I` and `Ctrl+K` stay bold, italic and link, as in other Markdown
-editors. The full list is [`assets/help.md`](assets/help.md), shown rendered by
-**Help: Keyboard Shortcuts** in the command palette. The highlights:
+`Ctrl+I` and `Ctrl+K` stay italic and link, as in other Markdown editors, and bold is
+`Ctrl+Shift+B` so that `Ctrl+B` can toggle the explorer as in VS Code. The full list
+is [`assets/help.md`](assets/help.md), shown rendered by **Help: Keyboard Shortcuts**
+in the command palette. The highlights:
 
 | | |
 | --- | --- |
 | `F1` / `Ctrl+Shift+P`, `Ctrl+P`, `Ctrl+R` | Command palette, go to file, recent folders |
-| `Ctrl+Shift+E`, `Ctrl+0` | Show / hide the explorer, focus it |
+| `Ctrl+B`, `Ctrl+Shift+E`, `Ctrl+0` | Show / hide the explorer, switch focus to / from it, focus it |
 | `Ctrl+Shift+O` | Show / hide the outline |
 | `Alt+Left/Right`, mouse back/forward | Previous / next file |
-| `Ctrl+B` `Ctrl+I` `Ctrl+E` `Ctrl+K` | Bold, italic, code, link |
+| `Ctrl+Shift+B` `Ctrl+I` `Ctrl+E` `Ctrl+K` | Bold, italic, code, link |
 | `Ctrl+1`…`6`, `Ctrl+Shift+7/8/9`, `Ctrl+Shift+.` | Headings, lists, tasks, quote |
 | `Enter`, `Tab`, `Shift+Tab` | Continue, indent and outdent lists |
 | `Alt+C` | Toggle a task's checkbox |
@@ -65,8 +66,9 @@ folder and the file that was open in it.
   shown on the right. The search matches the name and the folder, so `2024 jan` finds
   `projects/2024/jan.md`.
 * `Ctrl+R` lists recent folders, with **Open Folder…** first.
-* The **explorer** (`Ctrl+Shift+E` to show or hide, `Ctrl+0` to focus) shows the
-  folder tree, skipping hidden folders such as `.git` and `node_modules`. Click or
+* The **explorer** (`Ctrl+B` to show or hide, `Ctrl+Shift+E` to switch focus to or
+  from it, `Ctrl+0` to focus it) shows the folder tree, skipping hidden folders such
+  as `.git` and `node_modules`. Click or
   press `Enter` to open a file; non-text files open in their usual app. `Delete` moves
   to the Recycle Bin after a confirmation. `F2` renames, and a name like
   `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files

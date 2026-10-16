@@ -2,7 +2,7 @@
 
 Penmark edits plain Markdown files. The lines you are editing show their Markdown syntax; everything else is rendered. Nothing is converted: the file on disk is exactly what you typed.
 
-Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+B`, `Ctrl+I` and `Ctrl+K` stay bold, italic and link).
+Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+I` and `Ctrl+K` stay italic and link; bold is `Ctrl+Shift+B` so `Ctrl+B` can toggle the explorer).
 
 ## Files and folders
 
@@ -10,7 +10,8 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | --- | --- |
 | `Ctrl+P` | Go to a file in the open folder (type part of its name or folder) |
 | `Ctrl+R` | Open a recent folder, or **Open Folder…** |
-| `Ctrl+Shift+E` | Show / hide the explorer |
+| `Ctrl+B` | Show / hide the explorer |
+| `Ctrl+Shift+E` | Move focus between the explorer and the editor |
 | `Ctrl+0` | Focus the explorer (`Esc` returns to the editor) |
 | `Alt+Left` / `Alt+Right`, mouse back / forward | Previous / next file, where you left it |
 | `Ctrl+N` | New document |
@@ -44,7 +45,7 @@ With a folder open, drop files on a note to copy them into a `data` folder next 
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+B` / `Ctrl+I` | **Bold** / *italic* |
+| `Ctrl+Shift+B` / `Ctrl+I` | **Bold** / *italic* |
 | `Ctrl+E` | `Inline code` |
 | `Ctrl+Shift+X` | ~~Strikethrough~~ |
 | `Ctrl+Shift+H` | ==Highlight== |
