@@ -2291,13 +2291,31 @@ impl App {
                     &format!("{} ", "#".repeat(n as usize)),
                 );
             }
-            cmd @ (SlashCmd::CodeBlock | SlashCmd::Table) => {
+            SlashCmd::Task => {
+                let info = self.info(l);
+                match info.kind {
+                    Kind::List { task: Some(_), .. } => {}
+                    Kind::List { .. } => {
+                        let at = Pos::new(l, info.content);
+                        self.replace_keep(at, at, "[ ] ");
+                    }
+                    _ => {
+                        let (s, e) = self.prefix_range(l);
+                        self.replace_keep(Pos::new(l, s), Pos::new(l, e), "- [ ] ");
+                    }
+                }
+            }
+            SlashCmd::Date(days) => self.insert(&slash::date_text(platform::today(), days)),
+            cmd @ (SlashCmd::CodeBlock | SlashCmd::Table | SlashCmd::Rule) => {
                 let info = self.info(l);
                 let line = &self.doc.lines[l];
-                let edit = if cmd == SlashCmd::Table {
-                    slash::table(line, &info)
-                } else {
-                    slash::code_block(line, &info)
+                let edit = match cmd {
+                    SlashCmd::Table => slash::table(line, &info),
+                    SlashCmd::Rule => {
+                        let after_para = l > 0 && self.infos[l - 1].kind == Kind::Para;
+                        slash::rule(line, &info, after_para)
+                    }
+                    _ => slash::code_block(line, &info),
                 };
                 self.doc
                     .replace(Pos::new(l, edit.start), Pos::new(l, edit.end), &edit.text);
@@ -2659,6 +2677,15 @@ impl App {
                     .collect(),
             }
         });
+        // Date items show the date they insert.
+        let today = platform::today();
+        let dates: Vec<String> = slash::ITEMS
+            .iter()
+            .map(|it| match it.3 {
+                SlashCmd::Date(days) => slash::date_text(today, days),
+                _ => String::new(),
+            })
+            .collect();
         let popup = self.slash.as_ref().map(|m| PopupView {
             at: Pos::new(m.line, m.col),
             selected: m.selected,
@@ -2668,7 +2695,10 @@ impl App {
                 .map(|(i, hits)| PaletteItem {
                     label: slash::ITEMS[*i].0,
                     matches: hits,
-                    detail: slash::ITEMS[*i].1,
+                    detail: match slash::ITEMS[*i].3 {
+                        SlashCmd::Date(_) => &dates[*i],
+                        _ => slash::ITEMS[*i].1,
+                    },
                     font: None,
                 })
                 .collect(),

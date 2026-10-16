@@ -263,6 +263,12 @@ pub fn shell_open(hwnd: HWND, target: &str) {
     }
 }
 
+/// Today's local date: (year, month, day).
+pub fn today() -> (i32, u32, u32) {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    (t.wYear as i32, t.wMonth as u32, t.wDay as u32)
+}
+
 pub fn system_prefers_dark() -> bool {
     let mut value = 1u32;
     let mut size = 4u32;

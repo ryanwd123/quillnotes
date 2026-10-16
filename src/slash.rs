@@ -9,17 +9,32 @@ pub enum SlashCmd {
     CodeBlock,
     Table,
     Heading(u8),
+    Task,
+    Rule,
+    /// Today's date plus this many days, as YYYY-MM-DD.
+    Date(i64),
 }
 
-/// (label, hint shown on the right, extra search words, command)
-pub const ITEMS: [(&str, &str, &str, SlashCmd); 7] = [
+/// (label, hint shown on the right, extra search words, command). Date items show
+/// the date as their hint instead.
+pub const ITEMS: &[(&str, &str, &str, SlashCmd)] = &[
     ("Code block", "```", "fence", SlashCmd::CodeBlock),
     ("Table", "| |", "grid", SlashCmd::Table),
+    ("Task", "- [ ]", "todo checkbox", SlashCmd::Task),
     ("Heading 1", "#", "h1 title", SlashCmd::Heading(1)),
     ("Heading 2", "##", "h2", SlashCmd::Heading(2)),
     ("Heading 3", "###", "h3", SlashCmd::Heading(3)),
     ("Heading 4", "####", "h4", SlashCmd::Heading(4)),
     ("Heading 5", "#####", "h5", SlashCmd::Heading(5)),
+    (
+        "Horizontal rule",
+        "---",
+        "hr line divider separator",
+        SlashCmd::Rule,
+    ),
+    ("Today", "", "date now", SlashCmd::Date(0)),
+    ("Yesterday", "", "date", SlashCmd::Date(-1)),
+    ("Tomorrow", "", "date", SlashCmd::Date(1)),
 ];
 
 /// Items matching `query` (the text typed after `/`), best first, with the matched
@@ -128,6 +143,46 @@ pub fn table(line: &str, info: &LineInfo) -> LineEdit {
     insert_block(line, info, &block, (0, 2 + first.len()), first.len(), true)
 }
 
+/// A horizontal rule with the caret on a new line below it. Directly under a
+/// paragraph a blank line comes first, or `---` would make the paragraph a heading.
+pub fn rule(line: &str, info: &LineInfo, after_para: bool) -> LineEdit {
+    let mut e = insert_block(line, info, &["---".into(), String::new()], (1, 0), 0, true);
+    if after_para && e.start == info.qend {
+        e.text.insert_str(0, &format!("\n{}", line[..info.qend].trim_end()));
+        e.caret.0 += 1;
+    }
+    e
+}
+
+/// Days since 1970-01-01 of a civil date (proleptic Gregorian).
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = y as i64 - (m <= 2) as i64;
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m as i64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    ((yoe + era * 400 + (m <= 2) as i64) as i32, m, d)
+}
+
+/// `date` moved by `days`, as YYYY-MM-DD.
+pub fn date_text(date: (i32, u32, u32), days: i64) -> String {
+    let (y, m, d) = civil_from_days(days_from_civil(date.0, date.1, date.2) + days);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Whether a `/` typed at byte `col` should open the menu: at the start of the
 /// line's content or after whitespace, and not inside code.
 pub fn can_open(line: &str, info: &LineInfo, col: usize) -> bool {
@@ -154,7 +209,9 @@ mod tests {
                 .map(|(i, _)| ITEMS[*i].0)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(labels("").len(), 7);
+        assert_eq!(labels("").len(), ITEMS.len());
+        assert_eq!(labels("hr"), vec!["Horizontal rule"]);
+        assert_eq!(labels("date"), vec!["Today", "Yesterday", "Tomorrow"]);
         assert_eq!(labels("tab"), vec!["Table"]);
         assert_eq!(labels("code"), vec!["Code block"]);
         assert_eq!(labels("h2"), vec!["Heading 2"]);
@@ -207,6 +264,21 @@ mod tests {
         let e = table("> ", &info("> "));
         assert_eq!(e.text.lines().nth(1), Some("> | -------- | -------- |"));
         assert_eq!(e.caret, (0, 12));
+    }
+
+    #[test]
+    fn rules_and_dates() {
+        let e = rule("", &info(""), false);
+        assert_eq!((e.text.as_str(), e.caret), ("---\n", (1, 0)));
+        let e = rule("", &info(""), true);
+        assert_eq!((e.text.as_str(), e.caret), ("\n---\n", (2, 0)));
+        let e = rule("text", &info("text"), true);
+        assert_eq!((e.start, e.text.as_str(), e.caret), (4, "\n\n---\n", (3, 0)));
+        assert_eq!(date_text((2026, 10, 16), 0), "2026-10-16");
+        assert_eq!(date_text((2026, 3, 1), -1), "2026-02-28");
+        assert_eq!(date_text((2024, 3, 1), -1), "2024-02-29");
+        assert_eq!(date_text((2025, 12, 31), 1), "2026-01-01");
+        assert_eq!(date_text((2000, 1, 1), -1), "1999-12-31");
     }
 
     #[test]
