@@ -19,6 +19,9 @@ pub enum Command {
     ToggleExplorer,
     FolderSettings,
     ChangeFont,
+    ChangeCodeFont,
+    CodeFontSize,
+    UiFontSize,
     RenderingOptions,
     ToggleSource,
     ToggleTheme,
@@ -45,6 +48,9 @@ const COMMANDS: &[(&str, &str, Command)] = &[
     ),
     ("Preferences: Folder Settings", "", Command::FolderSettings),
     ("Font: Change Editor Font", "", Command::ChangeFont),
+    ("Font: Change Code Font", "", Command::ChangeCodeFont),
+    ("Font: Code Font Size", "", Command::CodeFontSize),
+    ("Preferences: UI Font Size", "", Command::UiFontSize),
     ("View: Rendering Options", "", Command::RenderingOptions),
     (
         "View: Toggle Source Mode",
@@ -97,6 +103,7 @@ impl Item {
 pub enum Mode {
     Commands,
     Fonts,
+    CodeFonts,
     Options,
     Files,
     Folders,
@@ -204,14 +211,19 @@ impl Palette {
         Palette::new(Mode::Commands, items)
     }
 
-    /// A picker over `families` (name, can draw its own name), starting on `current`.
-    pub fn fonts(families: Vec<(String, bool)>, current: &str) -> Self {
+    /// A picker over `families` (name, can draw its own name, monospaced), starting
+    /// on `current`. The code font picker lists monospaced fonts first.
+    pub fn fonts(mut families: Vec<(String, bool, bool)>, current: &str, code: bool) -> Self {
+        if code {
+            families.sort_by_key(|f| !f.2);
+        }
         let items = families
             .into_iter()
-            .map(|(name, preview)| {
+            .map(|(name, preview, mono)| {
                 let detail = match (name == current, preview) {
                     (true, _) => "Current",
                     (false, false) => "Symbols",
+                    _ if code && mono => "Monospace",
                     _ => "",
                 };
                 Item {
@@ -220,7 +232,8 @@ impl Palette {
                 }
             })
             .collect();
-        let mut p = Palette::new(Mode::Fonts, items);
+        let mode = if code { Mode::CodeFonts } else { Mode::Fonts };
+        let mut p = Palette::new(mode, items);
         p.restore_font = Some(current.to_string());
         if let Some(i) = p
             .filtered
@@ -232,8 +245,8 @@ impl Palette {
         p
     }
 
-    /// The rendering options list, with values from `o`.
-    pub fn options(o: &RenderOptions) -> Self {
+    /// The rendering options list, with values from `o`, filtered by `query`.
+    pub fn options(o: &RenderOptions, query: &str) -> Self {
         let mut items: Vec<Item> = Opt::all()
             .into_iter()
             .map(|opt| Item::new(opt.label(), opt.value_text(o), Target::Option(opt)))
@@ -243,7 +256,9 @@ impl Palette {
             "",
             Target::ResetOptions,
         ));
-        Palette::new(Mode::Options, items)
+        let mut p = Palette::new(Mode::Options, items);
+        p.insert(query);
+        p
     }
 
     /// Quick open: the Penmark-readable files under `root`, by name, with their
@@ -350,6 +365,7 @@ impl Palette {
         match self.mode {
             Mode::Commands => "Type a command",
             Mode::Fonts => "Choose the editor font",
+            Mode::CodeFonts => "Choose the font for code",
             Mode::Options => "Filter options  ·  ←/→ adjust (Shift for more)  ·  Enter toggles",
             Mode::Files => "Go to file by name (add a folder name to narrow it down)",
             Mode::Folders => "Open a recent folder",
@@ -360,7 +376,7 @@ impl Palette {
     pub fn empty_text(&self) -> &'static str {
         match self.mode {
             Mode::Commands => "No matching commands",
-            Mode::Fonts => "No matching fonts",
+            Mode::Fonts | Mode::CodeFonts => "No matching fonts",
             Mode::Options => "No matching options",
             Mode::Files => "No matching files",
             Mode::Folders => "No matching folders",
@@ -541,9 +557,9 @@ mod tests {
     fn font_picker_filters_and_selects() {
         let names = ["Arial", "Cascadia Mono", "Consolas", "Georgia", "Segoe UI"]
             .iter()
-            .map(|s| (s.to_string(), true))
+            .map(|s| (s.to_string(), true, s.ends_with("Mono") || *s == "Consolas"))
             .collect();
-        let mut p = Palette::fonts(names, "Georgia");
+        let mut p = Palette::fonts(names, "Georgia", false);
         assert_eq!(p.selected().unwrap().label, "Georgia");
         assert_eq!(p.selected().unwrap().detail, "Current");
         p.insert("on"); // in "Consolas" and "Cascadia Mono"
@@ -562,9 +578,27 @@ mod tests {
     }
 
     #[test]
+    fn code_font_picker() {
+        let names = [("Arial", false), ("Consolas", true), ("Georgia", false)]
+            .iter()
+            .map(|&(n, mono)| (n.to_string(), true, mono))
+            .collect();
+        let p = Palette::fonts(names, "Consolas", true);
+        assert_eq!(p.mode, Mode::CodeFonts);
+        let (rows, sel) = p.visible();
+        assert_eq!(rows[0].0.label, "Consolas");
+        assert_eq!(sel, Some(0));
+        let o = RenderOptions::default();
+        let p = Palette::options(&o, "UI: Font size");
+        assert_eq!(p.visible().0.len(), 1);
+    }
+
+    #[test]
     fn selection_scrolls() {
-        let names = (0..30).map(|i| (format!("Font {i:02}"), true)).collect();
-        let mut p = Palette::fonts(names, "Font 00");
+        let names = (0..30)
+            .map(|i| (format!("Font {i:02}"), true, false))
+            .collect();
+        let mut p = Palette::fonts(names, "Font 00", false);
         p.move_by(15);
         let (rows, sel) = p.visible();
         assert_eq!(rows[sel.unwrap()].0.label, "Font 15");

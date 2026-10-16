@@ -98,12 +98,12 @@ fn range(a: u32, b: u32) -> DWRITE_TEXT_RANGE {
     }
 }
 
-pub const STATUS_H: f32 = 26.0;
-
-/// Explorer side panel geometry (DIPs, not zoomed).
-pub const SIDEBAR_W: f32 = 250.0;
-pub const SIDEBAR_HEADER_H: f32 = 34.0;
-pub const SIDEBAR_ROW_H: f32 = 24.0;
+// Window chrome sizes in DIPs at 100% UI font size (see `View::ui`); the document
+// zoom does not apply to them.
+const STATUS_H: f32 = 26.0;
+const SIDEBAR_W: f32 = 250.0;
+const SIDEBAR_HEADER_H: f32 = 34.0;
+const SIDEBAR_ROW_H: f32 = 24.0;
 const SIDEBAR_INDENT: f32 = 14.0;
 
 pub struct SidebarRow {
@@ -132,20 +132,20 @@ impl SidebarButton {
         SidebarButton::NewFile,
     ];
 
-    /// Left edge of the button.
-    fn x(self) -> f32 {
-        SIDEBAR_W - 8.0 - (self as usize + 1) as f32 * SIDEBAR_BUTTON
+    /// Left edge of the button at UI scale `k`.
+    fn x(self, k: f32) -> f32 {
+        (SIDEBAR_W - 8.0 - (self as usize + 1) as f32 * SIDEBAR_BUTTON) * k
     }
 
-    /// The header button at (x, y), panel coordinates.
-    pub fn at(x: f32, y: f32) -> Option<SidebarButton> {
-        let top = (SIDEBAR_HEADER_H - SIDEBAR_BUTTON) / 2.0;
-        if y < top || y > top + SIDEBAR_BUTTON {
+    /// The header button at (x, y), panel coordinates, at UI scale `k`.
+    pub fn at(x: f32, y: f32, k: f32) -> Option<SidebarButton> {
+        let top = (SIDEBAR_HEADER_H - SIDEBAR_BUTTON) / 2.0 * k;
+        if y < top || y > top + SIDEBAR_BUTTON * k {
             return None;
         }
         Self::ALL
             .into_iter()
-            .find(|b| x >= b.x() && x < b.x() + SIDEBAR_BUTTON)
+            .find(|b| x >= b.x(k) && x < b.x(k) + SIDEBAR_BUTTON * k)
     }
 }
 
@@ -467,8 +467,8 @@ pub struct View {
     pub grid_geom: Option<TableGeom>,
     /// Selected cells of the table being edited: first and last line, column.
     pub cell_sel: Option<(usize, usize, usize)>,
-    /// Left edge of the editor area (the explorer's width when it is shown).
-    pub inset: f32,
+    /// Whether the explorer panel is shown on the left.
+    pub explorer: bool,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -525,7 +525,7 @@ impl View {
                 popup_geom: None,
                 grid_geom: None,
                 cell_sel: None,
-                inset: 0.0,
+                explorer: false,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -544,6 +544,37 @@ impl View {
                 cw: 0.0,
             })
         }
+    }
+
+    /// Scale of the window chrome: the UI font size option.
+    pub fn ui(&self) -> f32 {
+        self.opts.num(num::UI_SIZE) / 100.0
+    }
+
+    pub fn status_h(&self) -> f32 {
+        (STATUS_H * self.ui()).round()
+    }
+
+    pub fn sidebar_w(&self) -> f32 {
+        (SIDEBAR_W * self.ui()).round()
+    }
+
+    pub fn sidebar_header_h(&self) -> f32 {
+        (SIDEBAR_HEADER_H * self.ui()).round()
+    }
+
+    pub fn sidebar_row_h(&self) -> f32 {
+        (SIDEBAR_ROW_H * self.ui()).round()
+    }
+
+    /// Left edge of the editor area.
+    pub fn inset(&self) -> f32 {
+        if self.explorer { self.sidebar_w() } else { 0.0 }
+    }
+
+    /// Code font size relative to the text it is in.
+    fn code_scale(&self) -> f32 {
+        self.opts.num(num::CODE_SIZE) / 100.0
     }
 
     fn palette(&self) -> &'static [u32; INK_COUNT] {
@@ -622,6 +653,9 @@ impl View {
         if self.opts.num(num::LINE_HEIGHT) != o.num(num::LINE_HEIGHT) {
             self.formats.retain(|k, _| k.0 == Family::Ui);
         }
+        if self.opts.num(num::UI_SIZE) != o.num(num::UI_SIZE) {
+            self.preview_formats.clear();
+        }
         self.opts = o;
         self.boxes.clear();
         self.tables.clear();
@@ -629,6 +663,21 @@ impl View {
 
     pub fn body_font(&self) -> String {
         self.body_font.to_string()
+    }
+
+    pub fn code_font(&self) -> String {
+        self.mono_font.to_string()
+    }
+
+    /// Switches the font of code blocks and inline code.
+    pub fn set_code_font(&mut self, name: &str) {
+        if self.mono_font == name {
+            return;
+        }
+        self.mono_font = HSTRING::from(name);
+        self.formats.retain(|k, _| k.0 != Family::Mono);
+        self.boxes.clear();
+        self.tables.clear();
     }
 
     pub fn has_font(&self, name: &str) -> bool {
@@ -647,8 +696,9 @@ impl View {
     }
 
     /// Installed font family names (English names where available), sorted, each with
-    /// whether the font can draw its own name (false for icon and symbol fonts).
-    pub fn font_families(&self) -> Vec<(String, bool)> {
+    /// whether the font can draw its own name (false for icon and symbol fonts) and
+    /// whether it is monospaced.
+    pub fn font_families(&self) -> Vec<(String, bool, bool)> {
         let mut out = Vec::new();
         unsafe {
             let mut coll = None;
@@ -681,13 +731,16 @@ impl View {
                 let mut buf = vec![0u16; len as usize + 1];
                 if names.GetString(idx, &mut buf).is_ok() {
                     let name = String::from_utf16_lossy(&buf[..len as usize]);
-                    let previewable = font.is_some_and(|f| {
+                    let previewable = font.as_ref().is_some_and(|f| {
                         !f.IsSymbolFont().as_bool()
                             && name
                                 .chars()
                                 .all(|c| f.HasCharacter(c as u32).is_ok_and(|b| b.as_bool()))
                     });
-                    out.push((name, previewable));
+                    let mono = font
+                        .and_then(|f| f.cast::<IDWriteFont1>().ok())
+                        .is_some_and(|f| f.IsMonospacedFont().as_bool());
+                    out.push((name, previewable, mono));
                 }
             }
         }
@@ -696,7 +749,13 @@ impl View {
         out
     }
 
+    /// A text format; `Ui` sizes are at 100% UI font size and scaled here.
     fn format(&mut self, family: Family, size: f32, weight: i32) -> IDWriteTextFormat {
+        let size = if family == Family::Ui {
+            size * self.ui()
+        } else {
+            size
+        };
         let key = (family, (size * 100.0) as u32, weight);
         if let Some(f) = self.formats.get(&key) {
             return f.clone();
@@ -843,7 +902,7 @@ impl View {
                     }
                     Style::Code => {
                         let _ = layout.SetFontFamilyName(&self.mono_font, rr);
-                        let _ = layout.SetFontSize(st.size * 0.88, rr);
+                        let _ = layout.SetFontSize(st.size * self.code_scale(), rr);
                         bgs.push((
                             rr.startPosition,
                             rr.startPosition + rr.length,
@@ -1090,9 +1149,10 @@ impl View {
         let opt = |i: usize| o.num(i) * z;
         let max_w = opt(num::CONTENT_WIDTH);
         let margin = 48.0 * z;
-        let area = self.w - self.inset;
+        let inset = self.inset();
+        let area = self.w - inset;
         self.cw = (area - 2.0 * margin).min(max_w).max(120.0);
-        self.x0 = (self.inset + ((area - self.cw) / 2.0).max(16.0)).floor();
+        self.x0 = (inset + ((area - self.cw) / 2.0).max(16.0)).floor();
         let (x0, cw) = (self.x0, self.cw);
         let (qw, lw, code_pad) = (opt(num::QUOTE_INDENT), opt(num::LIST_INDENT), 16.0 * z);
         let right = x0 + cw;
@@ -1143,7 +1203,7 @@ impl View {
             };
             let mono = BoxStyle {
                 mono: true,
-                size: base * 0.875,
+                size: base * self.code_scale(),
                 weight: 400,
                 ink: Ink::Text,
                 callout: false,
@@ -1616,7 +1676,8 @@ impl View {
     }
 
     pub fn max_scroll(&self) -> f32 {
-        (self.total_h + (self.h - STATUS_H) * 0.5 - (self.h - STATUS_H)).max(0.0)
+        let view_h = self.h - self.status_h();
+        (self.total_h + view_h * 0.5 - view_h).max(0.0)
     }
 
     /// Caret (x, top, height) in document coordinates.
@@ -1744,13 +1805,13 @@ impl View {
         }
         let rt = self.rt.clone().unwrap();
         let z = self.zoom;
-        let view_h = self.h - STATUS_H;
+        let view_h = self.h - self.status_h();
         unsafe {
             rt.BeginDraw();
             rt.Clear(Some(&color(self.palette()[Ink::Bg as usize])));
             rt.SetTransform(&Matrix3x2::translation(0.0, -scroll));
             rt.PushAxisAlignedClip(
-                &rect(self.inset, scroll, self.w, scroll + view_h),
+                &rect(self.inset(), scroll, self.w, scroll + view_h),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
 
@@ -2099,6 +2160,7 @@ impl View {
         if let Some(f) = self.preview_formats.get(family) {
             return f.clone();
         }
+        let size = size * self.ui();
         let f = unsafe {
             self.dw.CreateTextFormat(
                 &HSTRING::from(family),
@@ -2110,7 +2172,7 @@ impl View {
                 w!("en-us"),
             )
         };
-        let f = f.unwrap_or_else(|_| self.format(Family::Ui, size, 400));
+        let f = f.unwrap_or_else(|_| self.format(Family::Ui, size / self.ui(), 400));
         self.preview_formats.insert(family.to_string(), f.clone());
         f
     }
@@ -2120,9 +2182,10 @@ impl View {
         let Some((cx, cy, ch)) = self.caret_rect(p.at) else {
             return;
         };
-        let (pw, item_h, pad) = (240.0, 30.0, 4.0);
+        let k = self.ui();
+        let (pw, item_h, pad, hint_w) = (240.0 * k, 30.0 * k, 4.0 * k, 80.0 * k);
         let ph = p.items.len() as f32 * item_h + 2.0 * pad;
-        let view_h = self.h - STATUS_H;
+        let view_h = self.h - self.status_h();
         let (cy, ch) = (cy - scroll, ch.max(self.base()));
         let top = if cy + ch + 4.0 + ph <= view_h || cy - 4.0 - ph < 0.0 {
             cy + ch + 4.0
@@ -2140,7 +2203,7 @@ impl View {
             item_h,
         });
         let label_f = self.format(Family::Ui, 14.0, 400);
-        let hint_f = self.format(Family::Mono, 12.5, 400);
+        let hint_f = self.format(Family::Mono, 12.5 * k, 400);
         unsafe {
             for k in 1..=3 {
                 let o = k as f32 * 1.5;
@@ -2169,7 +2232,10 @@ impl View {
                     rt.FillRoundedRectangle(&rr, self.brush(Ink::PaletteSel));
                 }
                 let wide: Vec<u16> = item.label.encode_utf16().collect();
-                if let Ok(l) = self.dw.CreateTextLayout(&wide, &label_f, pw - 90.0, item_h) {
+                if let Ok(l) = self
+                    .dw
+                    .CreateTextLayout(&wide, &label_f, pw - hint_w - 10.0 * k, item_h)
+                {
                     let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                     let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                     for &b in item.matches {
@@ -2182,19 +2248,19 @@ impl View {
                         let _ = l.SetDrawingEffect(self.brush(Ink::Accent), r);
                     }
                     rt.DrawTextLayout(
-                        v2(left + 14.0, y),
+                        v2(left + 14.0 * k, y),
                         &l,
                         self.brush(Ink::Text),
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
                 }
                 let wide: Vec<u16> = item.detail.encode_utf16().collect();
-                if let Ok(l) = self.dw.CreateTextLayout(&wide, &hint_f, 80.0, item_h) {
+                if let Ok(l) = self.dw.CreateTextLayout(&wide, &hint_f, hint_w, item_h) {
                     let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
                     let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                     let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                     rt.DrawTextLayout(
-                        v2(right - 14.0 - 80.0, y),
+                        v2(right - 14.0 * k - hint_w, y),
                         &l,
                         self.brush(Ink::Dim),
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -2207,11 +2273,12 @@ impl View {
 
     /// Draws the command palette near the top of the window.
     unsafe fn paint_palette(&mut self, rt: &ID2D1HwndRenderTarget, p: &PaletteView) {
-        let pw = (self.w - 48.0).clamp(240.0, 600.0);
+        let k = self.ui();
+        let pw = (self.w - 48.0).clamp(240.0, 600.0 * k);
         let left = ((self.w - pw) / 2.0).floor();
         let right = left + pw;
         let top = 40.0f32.min(self.h * 0.08).floor();
-        let (input_h, item_h, pad) = (44.0, 34.0, 6.0);
+        let (input_h, item_h, pad) = (44.0 * k, 34.0 * k, 6.0 * k);
         let rows = p.items.len().max(1);
         let bottom = top + input_h + pad + rows as f32 * item_h + pad;
         self.palette_geom = Some(PaletteGeom {
@@ -2224,8 +2291,8 @@ impl View {
         });
         let ui = self.format(Family::Ui, 15.0, 400);
         let small = self.format(Family::Ui, 12.5, 400);
-        let tx = left + 16.0;
-        let tw = pw - 32.0;
+        let tx = left + 16.0 * k;
+        let tw = pw - 32.0 * k;
         unsafe {
             // Soft shadow, panel, border.
             for k in 1..=4 {
@@ -2300,7 +2367,7 @@ impl View {
                 let detail_w = if item.detail.is_empty() {
                     0.0
                 } else {
-                    170.0f32.min(tw * 0.4)
+                    (170.0 * k).min(tw * 0.4)
                 };
                 if !item.detail.is_empty() {
                     let wide: Vec<u16> = item.detail.encode_utf16().collect();
@@ -2316,7 +2383,7 @@ impl View {
                         };
                         let _ = l.SetTrimming(&trim, None);
                         rt.DrawTextLayout(
-                            v2(right - 16.0 - detail_w, y),
+                            v2(right - 16.0 * k - detail_w, y),
                             &l,
                             self.brush(Ink::Dim),
                             D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -2330,7 +2397,7 @@ impl View {
                 let wide: Vec<u16> = item.label.encode_utf16().collect();
                 if let Ok(l) = self
                     .dw
-                    .CreateTextLayout(&wide, &f, tw - detail_w - 8.0, item_h)
+                    .CreateTextLayout(&wide, &f, tw - detail_w - 8.0 * k, item_h)
                 {
                     let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                     let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -2363,7 +2430,9 @@ impl View {
 
     /// Draws the explorer: a header with the folder name, then the visible tree rows.
     unsafe fn paint_sidebar(&mut self, rt: &ID2D1HwndRenderTarget, sb: &SidebarView) {
-        let (w, bottom) = (SIDEBAR_W, self.h - STATUS_H);
+        let k = self.ui();
+        let (w, bottom) = (self.sidebar_w(), self.h - self.status_h());
+        let (header_h, row_h) = (self.sidebar_header_h(), self.sidebar_row_h());
         let title_f = self.format(Family::Ui, 11.5, 600);
         let row_f = self.format(Family::Ui, 13.0, 400);
         let current_f = self.format(Family::Ui, 13.0, 600);
@@ -2372,10 +2441,10 @@ impl View {
             rt.FillRectangle(&rect(w - 1.0, 0.0, w, bottom), self.brush(Ink::Rule));
             self.paint_sidebar_buttons(rt, sb);
             let title: Vec<u16> = sb.title.to_uppercase().encode_utf16().collect();
-            let title_w = SidebarButton::NewFile.x() - 18.0;
+            let title_w = SidebarButton::NewFile.x(k) - 18.0 * k;
             if let Ok(l) = self
                 .dw
-                .CreateTextLayout(&title, &title_f, title_w, SIDEBAR_HEADER_H)
+                .CreateTextLayout(&title, &title_f, title_w, header_h)
             {
                 let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -2386,7 +2455,7 @@ impl View {
                 };
                 let _ = l.SetTrimming(&trim, None);
                 rt.DrawTextLayout(
-                    v2(14.0, 0.0),
+                    v2(14.0 * k, 0.0),
                     &l,
                     self.brush(Ink::StatusText),
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -2401,15 +2470,15 @@ impl View {
                 );
             }
             rt.PushAxisAlignedClip(
-                &rect(0.0, SIDEBAR_HEADER_H, w - 1.0, bottom),
+                &rect(0.0, header_h, w - 1.0, bottom),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
             for (i, row) in sb.rows.iter().enumerate() {
-                let y = SIDEBAR_HEADER_H + i as f32 * SIDEBAR_ROW_H - sb.scroll;
-                if y + SIDEBAR_ROW_H < SIDEBAR_HEADER_H || y > bottom {
+                let y = header_h + i as f32 * row_h - sb.scroll;
+                if y + row_h < header_h || y > bottom {
                     continue;
                 }
-                let r = rect(0.0, y, w - 1.0, y + SIDEBAR_ROW_H);
+                let r = rect(0.0, y, w - 1.0, y + row_h);
                 if sb.selected == Some(i) {
                     let ink = if sb.focused {
                         Ink::PaletteSel
@@ -2422,16 +2491,16 @@ impl View {
                 }
                 if sb.drop == Some(i) {
                     rt.DrawRectangle(
-                        &rect(1.0, y + 0.5, w - 2.0, y + SIDEBAR_ROW_H - 0.5),
+                        &rect(1.0, y + 0.5, w - 2.0, y + row_h - 0.5),
                         self.brush(Ink::Accent),
                         1.5,
                         None,
                     );
                 }
-                let x = 10.0 + row.depth as f32 * SIDEBAR_INDENT;
+                let x = (10.0 + row.depth as f32 * SIDEBAR_INDENT) * k;
                 if row.is_dir {
                     // Chevron: pointing right when collapsed, down when expanded.
-                    let (cx, cy, s) = (x + 4.0, y + SIDEBAR_ROW_H / 2.0, 3.5);
+                    let (cx, cy, s) = (x + 4.0 * k, y + row_h / 2.0, 3.5 * k);
                     let b = self.brush(Ink::StatusText);
                     if row.expanded {
                         rt.DrawLine(v2(cx - s, cy - s / 2.0), v2(cx, cy + s / 2.0), b, 1.4, None);
@@ -2443,10 +2512,10 @@ impl View {
                 }
                 let name: Vec<u16> = row.name.encode_utf16().collect();
                 let f = if row.current { &current_f } else { &row_f };
-                let tx = x + 14.0;
-                if let Ok(l) =
-                    self.dw
-                        .CreateTextLayout(&name, f, (w - tx - 8.0).max(10.0), SIDEBAR_ROW_H)
+                let tx = x + 14.0 * k;
+                if let Ok(l) = self
+                    .dw
+                    .CreateTextLayout(&name, f, (w - tx - 8.0).max(10.0), row_h)
                 {
                     let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                     let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -2477,16 +2546,20 @@ impl View {
 
     /// New file, new folder and the notes-only filter, drawn as line icons.
     unsafe fn paint_sidebar_buttons(&self, rt: &ID2D1HwndRenderTarget, sb: &SidebarView) {
-        let top = (SIDEBAR_HEADER_H - SIDEBAR_BUTTON) / 2.0;
-        let line = |a: (f32, f32), b: (f32, f32), ink: Ink| unsafe {
-            rt.DrawLine(v2(a.0, a.1), v2(b.0, b.1), self.brush(ink), 1.2, None);
+        let k = self.ui();
+        let top = (SIDEBAR_HEADER_H - SIDEBAR_BUTTON) / 2.0 * k;
+        let bw = SIDEBAR_BUTTON * k;
+        // Icons are drawn at 100% around the button's center, then scaled.
+        let line = |c: (f32, f32), a: (f32, f32), b: (f32, f32), ink: Ink| unsafe {
+            let p = |q: (f32, f32)| v2(c.0 + (q.0 - c.0) * k, c.1 + (q.1 - c.1) * k);
+            rt.DrawLine(p(a), p(b), self.brush(ink), 1.2 * k, None);
         };
         for b in SidebarButton::ALL {
-            let (x, y) = (b.x(), top);
+            let (x, y) = (b.x(k), top);
             let on = b == SidebarButton::NotesOnly && sb.notes_only;
             if sb.hover_button == Some(b) || on {
                 let rr = D2D1_ROUNDED_RECT {
-                    rect: rect(x, y, x + SIDEBAR_BUTTON, y + SIDEBAR_BUTTON),
+                    rect: rect(x, y, x + bw, y + bw),
                     radiusX: 4.0,
                     radiusY: 4.0,
                 };
@@ -2494,7 +2567,9 @@ impl View {
                 unsafe { rt.FillRoundedRectangle(&rr, self.brush(ink)) };
             }
             let ink = if on { Ink::Accent } else { Ink::StatusText };
-            let (cx, cy) = (x + SIDEBAR_BUTTON / 2.0, y + SIDEBAR_BUTTON / 2.0);
+            let (cx, cy) = (x + bw / 2.0, y + bw / 2.0);
+            let center = (cx, cy);
+            let line = |a, b, ink| line(center, a, b, ink);
             match b {
                 SidebarButton::NewFile => {
                     // A page with a folded corner, and a plus.
@@ -2534,12 +2609,13 @@ impl View {
 
     unsafe fn paint_status(&mut self, rt: &ID2D1HwndRenderTarget, status: &Status) {
         let (w, h) = (self.w, self.h);
-        let y0 = h - STATUS_H;
+        let status_h = self.status_h();
+        let y0 = h - status_h;
         unsafe {
             rt.FillRectangle(&rect(0.0, y0, w, h), self.brush(Ink::StatusBg));
             rt.FillRectangle(&rect(0.0, y0, w, y0 + 1.0), self.brush(Ink::Rule));
             let f = self.format(Family::Ui, 12.5, 400);
-            let pad = 12.0;
+            let pad = 12.0 * self.ui();
             let left: Vec<u16> = status
                 .prompt
                 .map(|p| p.0)
@@ -2547,7 +2623,7 @@ impl View {
                 .encode_utf16()
                 .collect();
             let right: Vec<u16> = status.right.encode_utf16().collect();
-            if let Ok(rl) = self.dw.CreateTextLayout(&right, &f, w / 2.0, STATUS_H) {
+            if let Ok(rl) = self.dw.CreateTextLayout(&right, &f, w / 2.0, status_h) {
                 let _ = rl.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
                 let _ = rl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 let _ = rl.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -2558,7 +2634,7 @@ impl View {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                 );
             }
-            if let Ok(ll) = self.dw.CreateTextLayout(&left, &f, w / 2.0, STATUS_H) {
+            if let Ok(ll) = self.dw.CreateTextLayout(&left, &f, w / 2.0, status_h) {
                 let _ = ll.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 let _ = ll.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 let ink = if status.prompt.is_some() {

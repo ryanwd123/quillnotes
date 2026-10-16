@@ -19,8 +19,7 @@ use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
-    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SIDEBAR_W, STATUS_H, SidebarButton, Status,
-    TableUi, View,
+    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SidebarButton, Status, TableUi, View,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
@@ -237,6 +236,9 @@ impl App {
         if let Some(font) = settings.get("font").filter(|f| view.has_font(f)) {
             view.set_body_font(font);
         }
+        if let Some(font) = settings.get("code_font").filter(|f| view.has_font(f)) {
+            view.set_code_font(font);
+        }
         view.set_options(RenderOptions::load(&settings));
         let explorer = settings.get("explorer") != Some("off");
         if let Some(pct) = settings.get("zoom").and_then(|z| z.parse::<f32>().ok()) {
@@ -367,7 +369,7 @@ impl App {
     }
 
     fn view_h(&self) -> f32 {
-        self.view.h - STATUS_H
+        self.view.h - self.view.status_h()
     }
 
     fn clamp_scroll(&mut self) {
@@ -2479,14 +2481,24 @@ impl App {
             && cancel
             && let Some(font) = p.restore_font
         {
-            self.preview_font(&font);
+            self.preview_font(&font, p.mode == Mode::CodeFonts);
         }
         self.invalidate();
     }
 
-    fn preview_font(&mut self, name: &str) {
-        if self.view.body_font() != name {
-            self.view.set_body_font(name);
+    /// Shows the document in font `name`, as the text font or the code font.
+    fn preview_font(&mut self, name: &str, code: bool) {
+        let current = if code {
+            self.view.code_font()
+        } else {
+            self.view.body_font()
+        };
+        if current != name {
+            if code {
+                self.view.set_code_font(name);
+            } else {
+                self.view.set_body_font(name);
+            }
             self.relayout();
         }
     }
@@ -2494,14 +2506,15 @@ impl App {
     /// Called after the palette query or selection changed.
     fn palette_changed(&mut self) {
         let Some(p) = &self.palette else { return };
-        if p.mode == Mode::Fonts {
+        if matches!(p.mode, Mode::Fonts | Mode::CodeFonts) {
             // Live preview: the document shows the highlighted font.
             let font = match p.selected().map(|item| &item.target) {
                 Some(Target::Font(f)) => Some(f.clone()),
                 _ => p.restore_font.clone(),
             };
+            let code = p.mode == Mode::CodeFonts;
             if let Some(f) = font {
-                self.preview_font(&f);
+                self.preview_font(&f, code);
             }
         }
         self.invalidate();
@@ -2567,15 +2580,25 @@ impl App {
             Target::FolderOpt(opt) => return self.change_folder_settings(|f| opt.activate(f)),
             _ => {}
         }
-        self.palette = None;
+        let mode = self.palette.take().map(|p| p.mode);
         match target {
             Target::Command(Command::ChangeFont) => {
                 let current = self.view.body_font();
-                self.open_palette(Palette::fonts(self.view.font_families(), &current));
+                self.open_palette(Palette::fonts(self.view.font_families(), &current, false));
+            }
+            Target::Command(Command::ChangeCodeFont) => {
+                let current = self.view.code_font();
+                self.open_palette(Palette::fonts(self.view.font_families(), &current, true));
+            }
+            Target::Command(Command::CodeFontSize) => {
+                self.open_palette(Palette::options(&self.view.options(), "Code: Font size"));
+            }
+            Target::Command(Command::UiFontSize) => {
+                self.open_palette(Palette::options(&self.view.options(), "UI: Font size"));
             }
             Target::Command(Command::Table(cmd)) => self.table_command(cmd),
             Target::Command(Command::RenderingOptions) => {
-                self.open_palette(Palette::options(&self.view.options()));
+                self.open_palette(Palette::options(&self.view.options(), ""));
             }
             Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
             Target::Command(Command::QuickOpen) => self.quick_open(),
@@ -2598,10 +2621,16 @@ impl App {
             Target::OpenFile(path) => self.open_file_in_folder(&path),
             Target::SwitchFolder(path) => self.switch_folder(&path),
             Target::Font(name) => {
-                self.preview_font(&name);
-                match Settings::update(|s| s.set("font", &name)) {
-                    Ok(()) => self.say(format!("Font: {name}")),
-                    Err(e) => self.say(format!("Font: {name} (setting not saved: {e})")),
+                let code = mode == Some(Mode::CodeFonts);
+                self.preview_font(&name, code);
+                let (key, what) = if code {
+                    ("code_font", "Code font")
+                } else {
+                    ("font", "Font")
+                };
+                match Settings::update(|s| s.set(key, &name)) {
+                    Ok(()) => self.say(format!("{what}: {name}")),
+                    Err(e) => self.say(format!("{what}: {name} (setting not saved: {e})")),
                 }
             }
         }
@@ -3126,7 +3155,7 @@ impl App {
 
     /// Whether a client point (DIPs) is over the explorer panel.
     fn over_explorer(&self, x: f32, y: f32) -> bool {
-        self.explorer_visible() && x < SIDEBAR_W && y < self.view_h()
+        self.explorer_visible() && x < self.view.sidebar_w() && y < self.view_h()
     }
 
     // -----------------------------------------------------------------------

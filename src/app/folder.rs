@@ -11,9 +11,7 @@ use super::{APP_NAME, App, PromptKind};
 use crate::doc::{Document, Pos};
 use crate::palette::Palette;
 use crate::platform::{self, MenuItem};
-use crate::render::{
-    SIDEBAR_HEADER_H, SIDEBAR_ROW_H, SIDEBAR_W, STATUS_H, SidebarButton, SidebarRow, SidebarView,
-};
+use crate::render::{SidebarButton, SidebarRow, SidebarView};
 use crate::settings::Settings;
 use crate::workspace::{self, Entry, FolderSettings};
 
@@ -253,11 +251,7 @@ impl App {
         if !self.explorer_visible() {
             self.tree_focus = false;
         }
-        self.view.inset = if self.explorer_visible() {
-            SIDEBAR_W
-        } else {
-            0.0
-        };
+        self.view.explorer = self.explorer_visible();
         self.relayout();
     }
 
@@ -303,22 +297,23 @@ impl App {
     }
 
     fn tree_height(&self) -> f32 {
-        self.view.h - STATUS_H - SIDEBAR_HEADER_H
+        self.view.h - self.view.status_h() - self.view.sidebar_header_h()
     }
 
     fn clamp_tree_scroll(&mut self, rows: usize) {
-        let max = (rows as f32 * SIDEBAR_ROW_H - self.tree_height()).max(0.0);
+        let max = (rows as f32 * self.view.sidebar_row_h() - self.tree_height()).max(0.0);
         self.tree_scroll = self.tree_scroll.clamp(0.0, max);
     }
 
     fn select_row(&mut self, rows: &[usize], i: usize) {
         let Some(&e) = rows.get(i) else { return };
         self.tree_sel = Some(self.entries[e].path.clone());
-        let top = i as f32 * SIDEBAR_ROW_H;
+        let row_h = self.view.sidebar_row_h();
+        let top = i as f32 * row_h;
         if top < self.tree_scroll {
             self.tree_scroll = top;
-        } else if top + SIDEBAR_ROW_H > self.tree_scroll + self.tree_height() {
-            self.tree_scroll = top + SIDEBAR_ROW_H - self.tree_height();
+        } else if top + row_h > self.tree_scroll + self.tree_height() {
+            self.tree_scroll = top + row_h - self.tree_height();
         }
         self.clamp_tree_scroll(rows.len());
     }
@@ -375,7 +370,7 @@ impl App {
         let rows = self.tree_rows();
         let cur = self.tree_sel_row(&rows);
         let entry = cur.map(|i| self.entries[rows[i]].clone());
-        let page = (self.tree_height() / SIDEBAR_ROW_H).max(1.0) as usize;
+        let page = (self.tree_height() / self.view.sidebar_row_h()).max(1.0) as usize;
         let last = rows.len().saturating_sub(1);
         match key {
             VK_X if ctrl => self.tree_cut = entry.map(|e| e.path),
@@ -635,10 +630,11 @@ impl App {
     // Mouse in the explorer
 
     fn tree_row_at(&self, y: f32, rows: usize) -> Option<usize> {
-        if y < SIDEBAR_HEADER_H {
+        let header_h = self.view.sidebar_header_h();
+        if y < header_h {
             return None;
         }
-        let i = ((y - SIDEBAR_HEADER_H + self.tree_scroll) / SIDEBAR_ROW_H) as usize;
+        let i = ((y - header_h + self.tree_scroll) / self.view.sidebar_row_h()) as usize;
         (i < rows).then_some(i)
     }
 
@@ -666,7 +662,7 @@ impl App {
     pub(super) fn tree_mouse_down(&mut self, x: f32, y: f32) {
         self.tree_focus = true;
         self.slash = None;
-        if let Some(b) = SidebarButton::at(x, y) {
+        if let Some(b) = SidebarButton::at(x, y, self.view.ui()) {
             return self.tree_button_click(b);
         }
         let rows = self.tree_rows();
@@ -690,10 +686,11 @@ impl App {
     pub(super) fn tree_mouse_move(&mut self, x: f32, y: f32) {
         let rows = self.tree_rows();
         let Some(d) = &self.tree_drag else {
-            let hover = (x < SIDEBAR_W)
-                .then(|| self.tree_row_at(y, rows.len()))
+            let inside = x < self.view.sidebar_w();
+            let hover = inside.then(|| self.tree_row_at(y, rows.len())).flatten();
+            let button = inside
+                .then(|| SidebarButton::at(x, y, self.view.ui()))
                 .flatten();
-            let button = (x < SIDEBAR_W).then(|| SidebarButton::at(x, y)).flatten();
             if hover != self.tree_hover || button != self.tree_button {
                 self.tree_hover = hover;
                 self.tree_button = button;
@@ -706,10 +703,10 @@ impl App {
         }
         let src = d.path.clone();
         // Drop onto a folder row, the folder of a file row, or below the rows: the root.
-        let target = if x >= SIDEBAR_W {
+        let target = if x >= self.view.sidebar_w() {
             None
         } else {
-            match self.tree_row_at(y.max(SIDEBAR_HEADER_H), rows.len()) {
+            match self.tree_row_at(y.max(self.view.sidebar_header_h()), rows.len()) {
                 Some(i) => {
                     let e = &self.entries[rows[i]];
                     Some(if e.is_dir {
@@ -744,7 +741,7 @@ impl App {
     }
 
     pub(super) fn tree_wheel(&mut self, delta: i16) {
-        self.tree_scroll -= delta as f32 / 120.0 * 3.0 * SIDEBAR_ROW_H;
+        self.tree_scroll -= delta as f32 / 120.0 * 3.0 * self.view.sidebar_row_h();
         let rows = self.tree_rows();
         self.clamp_tree_scroll(rows.len());
         self.invalidate();

@@ -85,6 +85,15 @@ const NUMS: [(&str, &str, f32, f32, f32, f32); NUM_COUNT] = [
     ),
     ("line_height", "Text: Line height", 125.0, 100.0, 250.0, 5.0),
     (
+        "code_size",
+        "Code: Font size (% of the text size)",
+        88.0,
+        60.0,
+        150.0,
+        2.0,
+    ),
+    ("ui_size", "UI: Font size", 100.0, 70.0, 200.0, 5.0),
+    (
         "content_width",
         "Layout: Content width",
         760.0,
@@ -93,7 +102,7 @@ const NUMS: [(&str, &str, f32, f32, f32, f32); NUM_COUNT] = [
         20.0,
     ),
 ];
-pub const NUM_COUNT: usize = 14;
+pub const NUM_COUNT: usize = 16;
 
 /// Indices into [`RenderOptions::nums`].
 pub mod num {
@@ -110,7 +119,9 @@ pub mod num {
     pub const TABLE_PADDING: usize = 10;
     pub const RULE_SPACING: usize = 11;
     pub const LINE_HEIGHT: usize = 12;
-    pub const CONTENT_WIDTH: usize = 13;
+    pub const CODE_SIZE: usize = 13;
+    pub const UI_SIZE: usize = 14;
+    pub const CONTENT_WIDTH: usize = 15;
 }
 
 /// One adjustable option, as listed in the palette.
@@ -218,7 +229,11 @@ impl Opt {
             Opt::HeadingHashes => on_off(o.heading_hashes),
             Opt::HeadingRule(l) => on_off(o.heading_rule[l]),
             Opt::Num(i) => {
-                let unit = if i == num::LINE_HEIGHT { "%" } else { " px" };
+                let unit = if matches!(i, num::LINE_HEIGHT | num::CODE_SIZE | num::UI_SIZE) {
+                    "%"
+                } else {
+                    " px"
+                };
                 format!("‹ {}{unit} ›", o.nums[i])
             }
         }
