@@ -173,6 +173,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 LRESULT(0)
             }
+            // Shutdown or sign-out skips WM_CLOSE: save (autosave) or ask, like WM_CLOSE.
+            WM_QUERYENDSESSION => LRESULT(app.confirm_discard() as isize),
+            WM_ENDSESSION => {
+                if wparam.0 != 0 {
+                    app.save_placement();
+                }
+                LRESULT(0)
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 LRESULT(0)

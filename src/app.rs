@@ -467,30 +467,38 @@ impl App {
         let _ = Settings::update(|s| s.set("window", &value));
     }
 
+    /// "folder — Penmark" while a folder is open, else "• file — Penmark".
     pub fn update_title(&mut self) {
-        let name = self
-            .doc
-            .path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.untitled_name.into());
-        let folder = self
-            .folder
-            .as_ref()
-            .and_then(|f| f.file_name())
-            .map(|n| format!(" — {}", n.to_string_lossy()))
-            .unwrap_or_default();
-        let title = format!(
-            "{}{name}{folder} — {APP_NAME}",
-            if self.doc.is_dirty() { "• " } else { "" },
-        );
+        let folder = self.folder.as_ref().map(|f| {
+            f.file_name()
+                .unwrap_or(f.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        });
+        let title = match folder {
+            Some(folder) => format!("{folder} — {APP_NAME}"),
+            None => format!(
+                "{}{} — {APP_NAME}",
+                if self.doc.is_dirty() { "• " } else { "" },
+                self.doc_name(),
+            ),
+        };
         if title != self.last_title {
             unsafe {
                 let _ = SetWindowTextW(self.hwnd, &HSTRING::from(&title));
             }
             self.last_title = title;
         }
+    }
+
+    /// The open file's name, or "Untitled".
+    fn doc_name(&self) -> String {
+        self.doc
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.untitled_name.into())
     }
 
     fn say(&mut self, msg: impl Into<String>) {
@@ -2490,13 +2498,7 @@ impl App {
         let status_right;
         let prompt_text;
         {
-            let name = self
-                .doc
-                .path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.untitled_name.into());
+            let name = self.doc_name();
             let dirty = if self.doc.is_dirty() {
                 "  •  modified"
             } else {
@@ -2989,13 +2991,7 @@ impl App {
         if self.autosave_applies() {
             return self.save();
         }
-        let name = self
-            .doc
-            .path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.untitled_name.into());
+        let name = self.doc_name();
         let r = platform::message_box(
             self.hwnd,
             &format!("Save changes to {name}?"),
