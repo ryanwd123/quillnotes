@@ -55,7 +55,7 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 | `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |
 | `Ctrl+/` | Toggle comment |
 | `Ctrl+Shift+V`, `Ctrl+Shift+T`, `Ctrl+=`/`-`/`Numpad0` | Source mode, theme, zoom (5% steps) |
-| `Ctrl+W`, `Ctrl+Shift+W` | Close file, close window |
+| `Ctrl+W`, `Ctrl+Shift+W`, `Ctrl+Q` | Close file, close window, quit (close every window) |
 
 ### Folders
 

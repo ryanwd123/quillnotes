@@ -2845,6 +2845,7 @@ impl App {
             Command::ToggleTheme => self.toggle_theme(),
             Command::OpenSettingsFolder => self.open_settings_folder(),
             Command::WriteKeymap => self.write_keymap(),
+            Command::Quit => platform::close_all_windows(),
             Command::Help => {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).arg("--help").spawn();

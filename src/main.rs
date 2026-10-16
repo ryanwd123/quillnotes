@@ -211,7 +211,7 @@ fn main() -> Result<()> {
         }
 
         let instance: HINSTANCE = GetModuleHandleW(None)?.into();
-        let class = w!("PenmarkEditor");
+        let class = platform::WINDOW_CLASS;
         let wc = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hIcon: LoadIconW(Some(instance), PCWSTR(1 as _))

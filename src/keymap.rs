@@ -176,6 +176,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
         Action::CloseWindow,
         "Ctrl+Shift+W",
     ),
+    (
+        "Files and folders",
+        "quit",
+        Action::Run(Command::Quit),
+        "Ctrl+Q",
+    ),
     ("Files and folders", "back", Action::Back, "Alt+Left"),
     ("Files and folders", "forward", Action::Forward, "Alt+Right"),
     ("Editing", "undo", Action::Undo, "Ctrl+Z"),
@@ -751,6 +757,7 @@ mod tests {
         assert_eq!(d.action(chord("Ctrl+B")), Some(Action::ToggleExplorer));
         assert_eq!(d.action(chord("Ctrl+Shift+Z")), Some(Action::Redo));
         assert_eq!(d.action(chord("Ctrl+Shift+I")), None);
+        assert_eq!(d.action(chord("Ctrl+Q")), Some(Action::Run(Command::Quit)));
         assert_eq!(d.hint(Action::Palette), "F1");
 
         let (m, errors) = Keymap::parse(

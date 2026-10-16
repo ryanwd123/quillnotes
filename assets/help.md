@@ -20,6 +20,7 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+W` | Close the file |
 | `Ctrl+Shift+N` / `Ctrl+Shift+W` | New window / close window |
+| `Ctrl+Q` | Quit: close every Penmark window |
 
 ## Explorer
 

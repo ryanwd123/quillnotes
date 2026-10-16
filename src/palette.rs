@@ -32,6 +32,7 @@ pub enum Command {
     Help,
     OpenSettingsFolder,
     WriteKeymap,
+    Quit,
     Table(TableCmd),
 }
 
@@ -57,6 +58,7 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
     ("File: Close Folder", None, Command::CloseFolder),
     ("File: New File in Folder\u{2026}", None, Command::NewFile),
     ("File: New Folder\u{2026}", None, Command::NewFolder),
+    ("File: Quit (Close All Windows)", None, Command::Quit),
     (
         "View: Toggle Explorer",
         Some(Action::ToggleExplorer),

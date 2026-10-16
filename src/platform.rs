@@ -17,6 +17,9 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
+/// The class of every Penmark window.
+pub const WINDOW_CLASS: PCWSTR = w!("PenmarkEditor");
+
 thread_local! {
     /// Set while a modal dialog runs its own message loop.
     pub static IN_MODAL: Cell<bool> = const { Cell::new(false) };
@@ -239,6 +242,22 @@ pub fn spawn(line: &str, cwd: &Path, hidden: bool) -> std::result::Result<HANDLE
 pub fn close_handle(h: HANDLE) {
     unsafe {
         let _ = CloseHandle(h);
+    }
+}
+
+/// Asks every Penmark window, in every process, to close; each one saves or asks
+/// about unsaved changes as it would for its own close.
+pub fn close_all_windows() {
+    unsafe extern "system" fn close(hwnd: HWND, _: LPARAM) -> BOOL {
+        let mut name = [0u16; 32];
+        let n = unsafe { GetClassNameW(hwnd, &mut name) } as usize;
+        if name[..n] == *unsafe { WINDOW_CLASS.as_wide() } {
+            let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+        }
+        true.into()
+    }
+    unsafe {
+        let _ = EnumWindows(Some(close), LPARAM(0));
     }
 }
 
