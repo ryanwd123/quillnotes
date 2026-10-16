@@ -81,6 +81,22 @@ struct Cell {
     range: std::ops::Range<usize>,
 }
 
+/// Cells selected down one table column (Shift+Up/Down), as grid rows.
+#[derive(Clone, Copy)]
+struct CellSel {
+    /// First line of the table.
+    start: usize,
+    col: usize,
+    anchor: usize,
+    row: usize,
+}
+
+impl CellSel {
+    fn rows(&self) -> std::ops::RangeInclusive<usize> {
+        self.anchor.min(self.row)..=self.anchor.max(self.row)
+    }
+}
+
 /// The open `/` menu, for the `/` at `line`, `col`.
 struct SlashMenu {
     line: usize,
@@ -137,6 +153,7 @@ pub struct App {
     pub restoring_placement: bool,
     palette: Option<Palette>,
     slash: Option<SlashMenu>,
+    cells: Option<CellSel>,
     /// Mouse position (client DIPs) while over the window, for table controls.
     mouse: Option<(f32, f32)>,
     /// Table-control hover state last painted: near the table, control, column.
@@ -244,6 +261,7 @@ impl App {
             untitled_name: "Untitled",
             palette: None,
             slash: None,
+            cells: None,
             mouse: None,
             table_hover: (false, None, None),
             tracking_leave: false,
@@ -606,6 +624,7 @@ impl App {
         if ctrl_down() && !alt_down() {
             return;
         }
+        self.cells = None;
         if let Some(p) = &mut self.palette {
             p.insert(&s);
             self.palette_changed();
@@ -635,6 +654,15 @@ impl App {
     /// Returns true when the key was handled.
     pub fn on_key(&mut self, vk: u16) -> bool {
         let (ctrl, shift, alt) = (ctrl_down(), shift_down(), alt_down());
+        let key = VIRTUAL_KEY(vk);
+        let keeps_cells = matches!(key, VK_SHIFT | VK_CONTROL | VK_MENU)
+            || (shift && !ctrl && matches!(key, VK_UP | VK_DOWN))
+            || (!shift && !ctrl && matches!(key, VK_DELETE | VK_BACK))
+            || (ctrl && matches!(key, VK_C | VK_X));
+        if self.cells.is_some() && !keeps_cells {
+            self.cells = None;
+            self.invalidate();
+        }
         if ctrl && alt {
             return false; // AltGr
         }
@@ -648,7 +676,6 @@ impl App {
         if self.prompt.is_some() && self.prompt_key(vk, ctrl, shift) {
             return true;
         }
-        let key = VIRTUAL_KEY(vk);
         if self.tree_focus && !alt && self.tree_key(key, ctrl) {
             return true;
         }
@@ -1943,7 +1970,7 @@ impl App {
             VK_UP | VK_DOWN if !ctrl => {
                 let down = key == VK_DOWN;
                 if shift {
-                    // Selections stay within one cell.
+                    self.extend_cells(&cell, down);
                 } else if down && r + 1 < rows {
                     self.goto_cell(cell.start, r + 1, c, Place::End);
                 } else if !down && r > 0 {
@@ -2004,12 +2031,87 @@ impl App {
                     self.changed(false);
                 }
             }
+            VK_DELETE | VK_BACK if self.cells.is_some() => self.clear_cells(),
+            VK_C | VK_X if ctrl && self.cells.is_some() => {
+                let text = self.selected_cells().join("\n");
+                platform::set_clipboard(self.hwnd, &text);
+                if key == VK_X {
+                    self.clear_cells();
+                }
+            }
             // Deleting stops at the cell's edges instead of joining cells.
             VK_BACK if a == b && self.cursor.col <= cell.range.start => {}
             VK_DELETE if a == b && self.cursor.col >= cell.range.end => {}
             _ => return false,
         }
         true
+    }
+
+    /// Shift+Up/Down: select cells down the caret's column, the caret following.
+    fn extend_cells(&mut self, cell: &Cell, down: bool) {
+        let last = cell.end - cell.start - 2;
+        let (anchor, row) = match self.cells {
+            Some(cs) if cs.start == cell.start && cs.col == cell.col => (cs.anchor, cs.row),
+            _ => (cell.row, cell.row),
+        };
+        let next = if down {
+            (row + 1).min(last)
+        } else {
+            row.saturating_sub(1)
+        };
+        self.goto_cell(cell.start, next, cell.col, Place::End);
+        self.cells = (next != anchor).then_some(CellSel {
+            start: cell.start,
+            col: cell.col,
+            anchor,
+            row: next,
+        });
+        self.invalidate();
+    }
+
+    /// The table of the cell selection, parsed.
+    fn cells_grid(&mut self, cs: CellSel) -> Option<(Grid, Cell)> {
+        let cell = self.cell_at(Pos::new(cs.start, 0))?;
+        let lines: Vec<&str> = self.doc.lines[cell.start..cell.end]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        Some((Grid::parse(&lines, cell.qend), cell))
+    }
+
+    /// Texts of the selected cells, top to bottom.
+    fn selected_cells(&mut self) -> Vec<String> {
+        let Some(cs) = self.cells else {
+            return Vec::new();
+        };
+        let Some((g, _)) = self.cells_grid(cs) else {
+            return Vec::new();
+        };
+        cs.rows()
+            .filter_map(|r| g.rows.get(r)?.get(cs.col).cloned())
+            .collect()
+    }
+
+    /// Delete with cells selected: empties them, as one undo step.
+    fn clear_cells(&mut self) {
+        let Some(cs) = self.cells.take() else { return };
+        let Some((mut g, cell)) = self.cells_grid(cs) else {
+            return;
+        };
+        for r in cs.rows() {
+            if let Some(text) = g.rows.get_mut(r).and_then(|row| row.get_mut(cs.col)) {
+                text.clear();
+            }
+        }
+        self.begin(EditKind::Other);
+        let last = cell.end - 1;
+        let end = Pos::new(last, self.doc.line_len(last));
+        self.doc
+            .replace(Pos::new(cell.start, 0), end, &g.to_lines().join("\n"));
+        let l = cell.start + table::line_of_row(cs.row);
+        let range = self.cell_range(l, cs.col);
+        self.set_sel(Pos::new(l, range.start), Pos::new(l, range.start));
+        self.commit();
     }
 
     fn table_command(&mut self, cmd: TableCmd) {
@@ -2703,6 +2805,14 @@ impl App {
                 })
                 .collect(),
         });
+        self.view.cell_sel = self.cells.map(|cs| {
+            let rows = cs.rows();
+            (
+                cs.start + table::line_of_row(*rows.start()),
+                cs.start + table::line_of_row(*rows.end()),
+                cs.col,
+            )
+        });
         let infos = std::mem::take(&mut self.infos);
         self.view.paint(
             self.hwnd,
@@ -2731,6 +2841,7 @@ impl App {
 
     pub fn on_mouse_down(&mut self, x: i32, y: i32) {
         let (dx, dy) = self.to_dip(x, y);
+        self.cells = None;
         if self.palette.is_some() {
             self.palette_click(dx, dy);
             return;
@@ -3301,6 +3412,31 @@ mod tests {
         assert_eq!(a.code_at(Pos::new(2, 0)), block);
         assert_eq!(a.code_at(Pos::new(4, 1)), block);
         assert_eq!(a.code_at(Pos::new(8, 3)), Some(("in list".into(), true)));
+    }
+
+    #[test]
+    fn column_cells_select_and_clear() {
+        let mut a = app("x\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |");
+        a.set_sel(Pos::new(3, 6), Pos::new(3, 6)); // cell "2"
+        let cell = |a: &mut App| a.cell_at(a.cursor).unwrap();
+        let c = cell(&mut a);
+        a.extend_cells(&c, true);
+        let c = cell(&mut a);
+        a.extend_cells(&c, true);
+        let c = cell(&mut a);
+        a.extend_cells(&c, true); // stops at the last row
+        assert_eq!(a.selected_cells(), vec!["2", "4", "6"]);
+        let c = cell(&mut a);
+        a.extend_cells(&c, false);
+        assert_eq!(a.selected_cells(), vec!["2", "4"]);
+        a.clear_cells();
+        assert_eq!(
+            a.doc.lines[1..].join("\n"),
+            "| A   | B   |\n| --- | --- |\n| 1   |     |\n| 3   |     |\n| 5   | 6   |"
+        );
+        assert!(a.cells.is_none());
+        a.undo(true);
+        assert_eq!(a.doc.lines[3], "| 1 | 2 |");
     }
 
     #[test]

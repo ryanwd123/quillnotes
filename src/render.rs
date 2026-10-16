@@ -428,6 +428,8 @@ pub struct View {
     pub palette_geom: Option<PaletteGeom>,
     pub popup_geom: Option<PaletteGeom>,
     pub grid_geom: Option<TableGeom>,
+    /// Selected cells of the table being edited: first and last line, column.
+    pub cell_sel: Option<(usize, usize, usize)>,
     /// Left edge of the editor area (the explorer's width when it is shown).
     pub inset: f32,
     opts: RenderOptions,
@@ -485,6 +487,7 @@ impl View {
                 palette_geom: None,
                 popup_geom: None,
                 grid_geom: None,
+                cell_sel: None,
                 inset: 0.0,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
@@ -1966,8 +1969,18 @@ impl View {
                             self.brush(Ink::TableHeader),
                         );
                     }
+                    let picked = self
+                        .cell_sel
+                        .filter(|s| row.grid && (s.0..=s.1).contains(&i))
+                        .map(|s| s.2);
                     for (c, cell) in cells.iter().enumerate() {
                         let cx = row.x + t.col_x[c];
+                        if picked == Some(c) {
+                            rt.FillRectangle(
+                                &rect(cx, row.y, cx + t.col_w[c], row.y + h),
+                                self.brush(Ink::Selection),
+                            );
+                        }
                         rt.DrawRectangle(
                             &rect(
                                 cx + 0.5,
