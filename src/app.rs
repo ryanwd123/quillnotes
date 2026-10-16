@@ -13,6 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR};
 
+use crate::attach;
 use crate::doc::{self, Document, EditKind, Pos};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
@@ -28,6 +29,9 @@ use crate::table::{self, Grid, TableCmd};
 use crate::workspace::{self, Entry, FolderSettings, NoteLink};
 
 pub const APP_NAME: &str = "Penmark";
+
+/// Posted after files are dropped, to handle them once the drag has ended.
+pub const WM_APP_DROP: u32 = WM_APP + 1;
 
 const ZOOM_STEP: f32 = 0.05;
 
@@ -195,6 +199,8 @@ pub struct App {
     outline_hover: Option<usize>,
     /// The heading last shown as current, to scroll it into view when it changes.
     outline_current: Option<usize>,
+    /// Files dropped and waiting for WM_APP_DROP, and where they go.
+    pending_drop: (Vec<PathBuf>, Option<Pos>),
     /// Files to go back / forward to (most recent last).
     back: Vec<NavEntry>,
     forward: Vec<NavEntry>,
@@ -310,6 +316,7 @@ impl App {
             outline_scroll: 0.0,
             outline_hover: None,
             outline_current: None,
+            pending_drop: (Vec::new(), None),
             back: Vec::new(),
             forward: Vec::new(),
             restoring_placement: false,
@@ -1617,6 +1624,16 @@ impl App {
     }
 
     fn paste(&mut self) {
+        // Files copied in Explorer, or an image, when there is no text to paste.
+        if !platform::clipboard_has_text() {
+            let files = platform::clipboard_files(self.hwnd);
+            if !files.is_empty() {
+                return self.attach_files(&files, None);
+            }
+            if let Some(image) = platform::clipboard_image(self.hwnd) {
+                return self.paste_image(&image);
+            }
+        }
         let Some(text) = platform::get_clipboard(self.hwnd) else {
             return;
         };
@@ -3677,7 +3694,7 @@ impl App {
             platform::shell_open(self.hwnd, target);
             return;
         }
-        let path = dir.join(target.replace("%20", " ").split('#').next().unwrap_or(""));
+        let path = dir.join(attach::decode(target.split('#').next().unwrap_or("")));
         let is_md = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
@@ -3690,10 +3707,139 @@ impl App {
         }
     }
 
-    pub fn on_drop(&mut self, path: PathBuf) {
-        if self.confirm_discard() {
-            self.open_path(&path);
+    // -----------------------------------------------------------------------
+    // Attachments: dropped and pasted files
+
+    /// Files dragged over the window, at client pixel (x, y): shows where they would
+    /// be inserted. Returns whether they can be dropped there. Without a folder a
+    /// drop opens the file instead.
+    pub fn drag_over(&mut self, x: i32, y: i32) -> bool {
+        if self.folder.is_none() {
+            return true;
         }
+        let (dx, dy) = self.to_dip(x, y);
+        let (head, vh) = (self.view.header_h(), self.view_h());
+        if self.over_explorer(dx, dy) || self.over_outline(dx, dy) || dy < head || dy >= head + vh {
+            self.set_drop_caret(None);
+            return false;
+        }
+        // Scroll when near the top or bottom edge.
+        let ey = dy - head;
+        let edge = 30.0;
+        if ey < edge || ey > vh - edge {
+            let step = if ey < edge { -16.0 } else { 16.0 } * self.view.zoom;
+            self.scroll = (self.scroll + step).clamp(0.0, self.view.max_scroll());
+            self.invalidate();
+        }
+        self.ensure_layout();
+        let infos = std::mem::take(&mut self.infos);
+        let hit = self.view.hit(&self.doc.lines, &infos, dx, ey + self.scroll);
+        self.infos = infos;
+        let p = self.doc.clamp(hit.pos);
+        self.set_drop_caret(Some(p));
+        true
+    }
+
+    pub fn drag_leave(&mut self) {
+        self.set_drop_caret(None);
+    }
+
+    fn set_drop_caret(&mut self, p: Option<Pos>) {
+        if self.view.drop_caret != p {
+            self.view.drop_caret = p;
+            self.invalidate();
+        }
+    }
+
+    /// Files were dropped. They are handled after the drag ends (WM_APP_DROP), so a
+    /// message box cannot hold up the app they were dragged from.
+    pub fn drop_files(&mut self, files: Vec<PathBuf>) {
+        let at = self.view.drop_caret.take();
+        self.invalidate();
+        if files.is_empty() {
+            return;
+        }
+        self.pending_drop = (files, at);
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), WM_APP_DROP, WPARAM(0), LPARAM(0));
+        }
+    }
+
+    pub fn finish_drop(&mut self) {
+        let (files, at) = std::mem::take(&mut self.pending_drop);
+        let Some(first) = files.first() else { return };
+        if self.folder.is_none() {
+            if self.confirm_discard() {
+                self.open_path(first);
+            }
+            return;
+        }
+        self.attach_files(&files, at);
+    }
+
+    /// Links `files` into the note at `at` (else the selection), copying those from
+    /// outside the folder into the note's `data` folder.
+    fn attach_files(&mut self, files: &[PathBuf], at: Option<Pos>) {
+        let (Some(root), Some(note)) = (self.folder.clone(), self.doc.path.clone()) else {
+            return self.say("Open a folder and save this note to attach files");
+        };
+        let (links, err) = attach::attach(files, &note, &root);
+        self.insert_links(&links, at);
+        if let Some(e) = err {
+            self.say(e);
+        } else if links.len() > 1 {
+            self.say(format!("Attached {} files", links.len()));
+        }
+        self.rescan();
+    }
+
+    /// Ctrl+V with an image on the clipboard: saved as a PNG in the `data` folder.
+    fn paste_image(&mut self, image: &platform::ClipImage) {
+        let (Some(_), Some(note)) = (&self.folder, self.doc.path.clone()) else {
+            return self.say("Open a folder and save this note to paste images");
+        };
+        let saved = attach::new_file(&attach::pasted_name(platform::now()), &note)
+            .map_err(|e| e.to_string())
+            .and_then(|path| {
+                platform::save_png(image, &path).map_err(|e| e.message())?;
+                Ok(path)
+            });
+        match saved {
+            Ok(path) => {
+                let dir = note.parent().unwrap_or(Path::new("")).to_path_buf();
+                self.insert_links(&[attach::link(&dir, &path)], None);
+                self.rescan();
+            }
+            Err(e) => self.say(format!("Could not save the image: {e}")),
+        }
+    }
+
+    /// Inserts links at `at` (else over the selection) as one undo step. Images go on
+    /// lines of their own, so they render.
+    fn insert_links(&mut self, links: &[String], at: Option<Pos>) {
+        if links.is_empty() {
+            return;
+        }
+        let image = links.iter().any(|l| l.starts_with('!'));
+        let mut text = links.join(if image { "\n" } else { " " });
+        self.begin(EditKind::Other);
+        if let Some(p) = at {
+            self.set_sel(p, p);
+        }
+        let a = self.sel().0;
+        if image {
+            let info = self.info(a.line);
+            if !self.doc.lines[a.line][info.content.min(a.col)..a.col]
+                .trim()
+                .is_empty()
+            {
+                text.insert(0, '\n');
+            }
+            // The caret goes below, so the image shows rendered.
+            text.push('\n');
+        }
+        self.insert(&text);
+        self.commit();
     }
 }
 

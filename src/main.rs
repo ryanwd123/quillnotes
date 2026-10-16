@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod attach;
 mod doc;
+mod dragdrop;
 mod markdown;
 mod options;
 mod palette;
@@ -18,6 +20,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::{IDropTarget, OleInitialize, RegisterDragDrop, RevokeDragDrop};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -28,7 +31,7 @@ use app::App;
 /// From WinUser.h; windows-rs only exposes it with the Win32_UI_Controls feature.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
-fn app_of(hwnd: HWND) -> Option<&'static mut App> {
+pub(crate) fn app_of(hwnd: HWND) -> Option<&'static mut App> {
     let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut App;
     unsafe { p.as_mut() }
 }
@@ -152,14 +155,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 app.on_focus(false);
                 LRESULT(0)
             }
+            // Only when the OLE drop target could not be registered.
             WM_DROPFILES => {
                 let hdrop = HDROP(wparam.0 as _);
-                let mut buf = [0u16; 1024];
-                let n = DragQueryFileW(hdrop, 0, Some(&mut buf)) as usize;
+                let files = platform::hdrop_paths(hdrop);
                 DragFinish(hdrop);
-                if n > 0 {
-                    app.on_drop(PathBuf::from(String::from_utf16_lossy(&buf[..n])));
-                }
+                app.drop_files(files);
+                LRESULT(0)
+            }
+            app::WM_APP_DROP => {
+                app.finish_drop();
                 LRESULT(0)
             }
             WM_SETTINGCHANGE => {
@@ -182,6 +187,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_DESTROY => {
+                let _ = RevokeDragDrop(hwnd);
                 PostQuitMessage(0);
                 LRESULT(0)
             }
@@ -193,7 +199,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 fn main() -> Result<()> {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        // OLE (for drag and drop) also initializes COM, single-threaded.
+        if OleInitialize(None).is_err() {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        }
 
         let instance: HINSTANCE = GetModuleHandleW(None)?.into();
         let class = w!("PenmarkEditor");
@@ -231,7 +240,10 @@ fn main() -> Result<()> {
         let a = &mut *app;
         a.view.dpi = GetDpiForWindow(hwnd) as f32;
         platform::set_dark_titlebar(hwnd, dark);
-        DragAcceptFiles(hwnd, true);
+        let target: IDropTarget = dragdrop::DropTarget::new(hwnd).into();
+        if RegisterDragDrop(hwnd, &target).is_err() {
+            DragAcceptFiles(hwnd, true);
+        }
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
         a.on_size(rc.right as u32, rc.bottom as u32);

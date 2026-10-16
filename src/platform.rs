@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
+use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::Memory::*;
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::System::Registry::*;
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::*;
@@ -72,6 +73,131 @@ pub fn set_clipboard(hwnd: HWND, text: &str) {
         }
         let _ = CloseClipboard();
     }
+}
+
+pub fn clipboard_has_text() -> bool {
+    unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() }
+}
+
+/// The paths in a list of dropped or copied files.
+pub fn hdrop_paths(hdrop: HDROP) -> Vec<PathBuf> {
+    unsafe {
+        let n = DragQueryFileW(hdrop, u32::MAX, None);
+        (0..n)
+            .filter_map(|i| {
+                let len = DragQueryFileW(hdrop, i, None) as usize;
+                let mut buf = vec![0u16; len + 1];
+                let got = DragQueryFileW(hdrop, i, Some(&mut buf)) as usize;
+                (got > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..got])))
+            })
+            .collect()
+    }
+}
+
+/// Files copied in File Explorer.
+pub fn clipboard_files(hwnd: HWND) -> Vec<PathBuf> {
+    unsafe {
+        if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_err()
+            || OpenClipboard(Some(hwnd)).is_err()
+        {
+            return Vec::new();
+        }
+        let files = GetClipboardData(CF_HDROP.0 as u32)
+            .map(|h| hdrop_paths(HDROP(h.0)))
+            .unwrap_or_default();
+        let _ = CloseClipboard();
+        files
+    }
+}
+
+/// An image on the clipboard: PNG bytes (from apps that offer them), or a DIB.
+pub enum ClipImage {
+    Png(Vec<u8>),
+    Dib(Vec<u8>),
+}
+
+/// The data of clipboard `format`; the clipboard must be open.
+unsafe fn clipboard_bytes(format: u32) -> Option<Vec<u8>> {
+    unsafe {
+        let h = GetClipboardData(format).ok()?;
+        let hg = HGLOBAL(h.0);
+        let p = GlobalLock(hg) as *const u8;
+        if p.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(p, GlobalSize(hg)).to_vec();
+        let _ = GlobalUnlock(hg);
+        Some(bytes)
+    }
+}
+
+pub fn clipboard_image(hwnd: HWND) -> Option<ClipImage> {
+    unsafe {
+        let png = RegisterClipboardFormatW(w!("PNG"));
+        let has = |f: u32| f != 0 && IsClipboardFormatAvailable(f).is_ok();
+        let format = [png, CF_DIB.0 as u32].into_iter().find(|&f| has(f))?;
+        OpenClipboard(Some(hwnd)).ok()?;
+        let bytes = clipboard_bytes(format);
+        let _ = CloseClipboard();
+        let bytes = bytes?;
+        Some(if format == png {
+            ClipImage::Png(bytes)
+        } else {
+            ClipImage::Dib(bytes)
+        })
+    }
+}
+
+/// Saves a clipboard image as a PNG file.
+pub fn save_png(image: &ClipImage, path: &Path) -> Result<()> {
+    let dib = match image {
+        ClipImage::Png(bytes) => return std::fs::write(path, bytes).map_err(|_| E_FAIL.into()),
+        ClipImage::Dib(dib) => dib,
+    };
+    let bmp = crate::attach::bmp_from_dib(dib).ok_or(Error::from(E_FAIL))?;
+    unsafe {
+        let wic: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+        let input = wic.CreateStream()?;
+        input.InitializeFromMemory(&bmp)?;
+        let dec =
+            wic.CreateDecoderFromStream(&input, std::ptr::null(), WICDecodeMetadataCacheOnDemand)?;
+        // Opaque pixels: alpha in clipboard DIBs is usually unset.
+        let conv = wic.CreateFormatConverter()?;
+        conv.Initialize(
+            &dec.GetFrame(0)?,
+            &GUID_WICPixelFormat24bppBGR,
+            WICBitmapDitherTypeNone,
+            None,
+            0.0,
+            WICBitmapPaletteTypeCustom,
+        )?;
+        let out = wic.CreateStream()?;
+        out.InitializeFromFilename(&HSTRING::from(path.as_os_str()), GENERIC_WRITE.0)?;
+        let enc = wic.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())?;
+        enc.Initialize(&out, WICBitmapEncoderNoCache)?;
+        let (mut frame, mut props) = (None, None);
+        enc.CreateNewFrame(&mut frame, &mut props)?;
+        let frame = frame.ok_or(Error::from(E_FAIL))?;
+        frame.Initialize(props.as_ref())?;
+        frame.WriteSource(&conv, std::ptr::null())?;
+        frame.Commit()?;
+        enc.Commit()?;
+    }
+    Ok(())
+}
+
+/// The local date and time: (year, month, day, hour, minute, second).
+pub fn now() -> (i32, u32, u32, u32, u32, u32) {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    (
+        t.wYear as i32,
+        t.wMonth as u32,
+        t.wDay as u32,
+        t.wHour as u32,
+        t.wMinute as u32,
+        t.wSecond as u32,
+    )
 }
 
 const FILTERS: [COMDLG_FILTERSPEC; 3] = [

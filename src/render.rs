@@ -487,6 +487,8 @@ pub struct View {
     pub palette_geom: Option<PaletteGeom>,
     pub popup_geom: Option<PaletteGeom>,
     pub grid_geom: Option<TableGeom>,
+    /// Where dragged files would be inserted.
+    pub drop_caret: Option<Pos>,
     /// Selected cells of the table being edited: first and last line, column.
     pub cell_sel: Option<(usize, usize, usize)>,
     /// Whether the explorer panel is shown on the left.
@@ -549,6 +551,7 @@ impl View {
                 popup_geom: None,
                 grid_geom: None,
                 cell_sel: None,
+                drop_caret: None,
                 explorer: false,
                 outline: false,
                 opts: RenderOptions::default(),
@@ -1032,10 +1035,7 @@ impl View {
         if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:") {
             return None;
         }
-        let src = src
-            .strip_prefix("file:///")
-            .unwrap_or(src)
-            .replace("%20", " ");
+        let src = crate::attach::decode(src.strip_prefix("file:///").unwrap_or(src));
         let mut path = PathBuf::from(&src);
         if path.is_relative() {
             path = doc_dir.map(|d| d.join(&src)).unwrap_or(path);
@@ -1904,6 +1904,13 @@ impl View {
                 rt.FillRectangle(
                     &rect(x, y, x + 1.6 * z.max(1.0), y + h),
                     self.brush(Ink::Caret),
+                );
+            }
+            if let Some((x, y, h)) = self.drop_caret.and_then(|p| self.caret_rect(p)) {
+                let h = h.max(self.base());
+                rt.FillRectangle(
+                    &rect(x - 0.5 * z, y, x + 2.0 * z.max(1.0), y + h),
+                    self.brush(Ink::Accent),
                 );
             }
             if let Some(m) = mouse {
