@@ -578,6 +578,7 @@ impl App {
 
     fn say(&mut self, msg: impl Into<String>) {
         self.message = Some((msg.into(), Instant::now()));
+        self.restart_blink();
         self.invalidate();
     }
 
@@ -2900,7 +2901,10 @@ impl App {
     }
 
     pub fn on_timer(&mut self) {
-        self.caret_on = !self.caret_on;
+        let mut repaint = self.focused;
+        if self.focused {
+            self.caret_on = !self.caret_on;
+        }
         self.autosave_tick();
         if self
             .message
@@ -2908,8 +2912,18 @@ impl App {
             .is_some_and(|m| m.1.elapsed().as_secs() >= 4)
         {
             self.message = None;
+            repaint = true;
         }
-        self.invalidate();
+        if repaint {
+            self.invalidate();
+        }
+        // Without focus there is no caret to blink, so the timer stops once no
+        // message or autosave is waiting on it; focus, edits and messages restart it.
+        if !self.focused && self.message.is_none() && !self.autosave_pending() {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), 1);
+            }
+        }
     }
 
     pub fn on_focus(&mut self, focused: bool) {

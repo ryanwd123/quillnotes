@@ -281,13 +281,17 @@ impl App {
             && matches!((&self.folder, &self.doc.path), (Some(dir), Some(p)) if workspace::contains(dir, p))
     }
 
+    /// Whether autosave still has unsaved changes to write.
+    pub(super) fn autosave_pending(&self) -> bool {
+        self.autosave_applies()
+            && self.doc.is_dirty()
+            && self.autosave_failed != Some(self.doc.version)
+    }
+
     /// Called from the timer: saves once the configured delay has passed since the
     /// last edit.
     pub(super) fn autosave_tick(&mut self) {
-        if !self.autosave_applies()
-            || !self.doc.is_dirty()
-            || self.autosave_failed == Some(self.doc.version)
-        {
+        if !self.autosave_pending() {
             return;
         }
         let delay = Duration::from_secs(self.folder_settings.autosave_secs as u64);
