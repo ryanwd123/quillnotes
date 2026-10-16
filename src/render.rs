@@ -177,15 +177,7 @@ impl TextBox {
 
     /// Visual line containing UTF-16 index `i`, plus (top, height) of every visual line.
     fn visual_lines(&self, i: u32) -> (usize, Vec<(f32, f32)>) {
-        let mut buf = vec![DWRITE_LINE_METRICS::default(); 16];
-        let mut n = 0u32;
-        unsafe {
-            if self.layout.GetLineMetrics(Some(&mut buf), &mut n).is_err() {
-                buf.resize(n as usize, Default::default());
-                let _ = self.layout.GetLineMetrics(Some(&mut buf), &mut n);
-            }
-        }
-        buf.truncate(n as usize);
+        let buf = line_metrics(&self.layout);
         let (mut top, mut start, mut idx) = (0.0, 0u32, None);
         let mut out = Vec::with_capacity(buf.len());
         for (k, m) in buf.iter().enumerate() {
@@ -221,6 +213,20 @@ impl TextBox {
         };
         (col, link)
     }
+}
+
+/// Metrics of every visual line (GetLineMetrics fails if the buffer is too small).
+fn line_metrics(l: &IDWriteTextLayout) -> Vec<DWRITE_LINE_METRICS> {
+    let mut buf = vec![DWRITE_LINE_METRICS::default(); 8];
+    let mut n = 0u32;
+    unsafe {
+        if l.GetLineMetrics(Some(&mut buf), &mut n).is_err() {
+            buf.resize(n as usize, Default::default());
+            let _ = l.GetLineMetrics(Some(&mut buf), &mut n);
+        }
+    }
+    buf.truncate(n as usize);
+    buf
 }
 
 fn layout_height(l: &IDWriteTextLayout) -> f32 {
@@ -742,12 +748,7 @@ impl View {
         if active && content > from {
             tb.prefix_x = tb.caret(tb.s2d(content)).0;
         }
-        unsafe {
-            let mut lm = [DWRITE_LINE_METRICS::default(); 1];
-            let mut n = 0;
-            let _ = tb.layout.GetLineMetrics(Some(&mut lm), &mut n);
-            tb.baseline = lm[0].baseline;
-        }
+        tb.baseline = line_metrics(&tb.layout).first().map_or(0.0, |m| m.baseline);
         tb
     }
 
