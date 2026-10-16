@@ -50,7 +50,9 @@ between runs. A saved position on a monitor that is no longer connected is ignor
 
 ### Command palette
 
-`Ctrl+Shift+P` opens a fuzzy-searchable list of commands. Use `Up`/`Down` (or the
+`Ctrl+Shift+P` opens a searchable list of commands. The search is split into
+space-separated terms, and an item matches when it contains every term in any
+order. For example, `mono cas` finds *Cascadia Mono*. Use `Up`/`Down` (or the
 mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
 `%APPDATA%\Penmark\settings.ini`.
 
@@ -95,7 +97,7 @@ The executable is `target/release/penmark.exe`. To open a file, pass it as an ar
 | `src/doc.rs` | Text model as a list of lines, grouped undo/redo, grapheme and word boundaries. Unit-tested. |
 | `src/render.rs` | DirectWrite layout per line with a source↔display offset map, layout caching, painting, hit-testing. |
 | `src/app.rs` | Editor state, key and mouse handling, Markdown-aware editing commands, find, files. |
-| `src/palette.rs` | Command palette: commands, fuzzy matching, filtering and selection. Unit-tested. |
+| `src/palette.rs` | Command palette: commands, term matching, filtering and selection. Unit-tested. |
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
 | `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard, file dialogs, message boxes, shell, theme detection. |

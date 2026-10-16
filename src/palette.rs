@@ -1,4 +1,4 @@
-//! Command palette state: the query, fuzzy filtering, and selection.
+//! Command palette state: the query, term filtering, and selection.
 
 use crate::doc;
 use crate::options::{Opt, RenderOptions};
@@ -55,62 +55,40 @@ pub struct Palette {
     pub restore_font: Option<String>,
 }
 
-/// Case-insensitive subsequence match. Returns a score (higher is better) and the
-/// byte offsets of the matched characters in `label`.
-pub fn fuzzy(query: &str, label: &str) -> Option<(i32, Vec<usize>)> {
-    let q: Vec<char> = query
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
-    if q.is_empty() {
-        return Some((0, Vec::new()));
-    }
+fn fold(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
+/// Splits `query` into whitespace-separated terms; `label` matches when it contains
+/// every term (case-insensitive, in any order). Returns a score (higher is better)
+/// and the byte offsets of the matched characters in `label`.
+pub fn term_match(query: &str, label: &str) -> Option<(i32, Vec<usize>)> {
     let chars: Vec<(usize, char)> = label.char_indices().collect();
-    let folded: Vec<char> = chars
-        .iter()
-        .map(|&(_, c)| c.to_lowercase().next().unwrap_or(c))
-        .collect();
+    let folded: Vec<char> = chars.iter().map(|&(_, c)| fold(c)).collect();
     let word_start = |k: usize| {
         k == 0 || {
             let (p, c) = (chars[k - 1].1, chars[k].1);
             !p.is_alphanumeric() || (p.is_lowercase() && c.is_uppercase())
         }
     };
-    let can_finish = |from: usize, qi: usize| {
-        let mut it = folded[from.min(folded.len())..].iter();
-        q[qi..].iter().all(|c| it.any(|f| f == c))
-    };
-    // Prefer word starts and runs, as long as the rest of the query still matches.
-    let mut picks: Vec<usize> = Vec::with_capacity(q.len());
-    let mut from = 0;
-    for (qi, &qc) in q.iter().enumerate() {
-        let mut cands = (from..folded.len()).filter(|&k| folded[k] == qc);
-        let first = cands.next()?;
-        let preferred = std::iter::once(first).chain(cands).find(|&k| {
-            (picks.last() == Some(&(k.wrapping_sub(1))) || word_start(k))
-                && can_finish(k + 1, qi + 1)
-        });
-        let k = preferred.unwrap_or(first);
-        picks.push(k);
-        from = k + 1;
-    }
     let mut score = 0i32;
-    for (n, &k) in picks.iter().enumerate() {
-        score += 1 + if word_start(k) { 8 } else { 0 };
-        if n > 0 {
-            let gap = k - picks[n - 1];
-            score += if gap == 1 { 5 } else { -(gap as i32).min(5) };
+    let mut hits = Vec::new();
+    for term in query.split_whitespace() {
+        let t: Vec<char> = term.chars().map(fold).collect();
+        if t.len() > folded.len() {
+            return None;
         }
+        let found: Vec<usize> = (0..=folded.len() - t.len())
+            .filter(|&k| folded[k..k + t.len()] == t[..])
+            .collect();
+        // Highlight and score the word-start occurrence when there is one.
+        let &k = found.iter().find(|&&k| word_start(k)).or(found.first())?;
+        score += if word_start(k) { 10 } else { 0 } + if k == 0 { 10 } else { 0 };
+        score -= (k as i32).min(20) / 4;
+        hits.extend(chars[k..k + t.len()].iter().map(|&(b, _)| b));
     }
-    let hits = picks.iter().map(|&k| chars[k].0).collect();
-    let lower = label.to_lowercase();
-    let qs: String = q.iter().collect();
-    if lower.starts_with(&qs) {
-        score += 20;
-    } else if lower.contains(&qs) {
-        score += 10;
-    }
+    hits.sort_unstable();
+    hits.dedup();
     Some((score, hits))
 }
 
@@ -220,7 +198,7 @@ impl Palette {
             .items
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| fuzzy(&self.query, &it.label).map(|(s, m)| (s, i, m)))
+            .filter_map(|(i, it)| term_match(&self.query, &it.label).map(|(s, m)| (s, i, m)))
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         self.filtered = scored.into_iter().map(|(_, i, m)| (i, m)).collect();
@@ -338,17 +316,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fuzzy_matching() {
-        assert!(fuzzy("xyz", "Font: Change Editor Font").is_none());
-        let (_, hits) = fuzzy("cef", "Font: Change Editor Font").unwrap();
-        assert_eq!(hits, vec![6, 13, 20]);
-        // Word starts and prefixes beat scattered matches.
-        assert!(fuzzy("con", "Consolas").unwrap().0 > fuzzy("con", "Cambria Condensed").unwrap().0);
+    fn term_matching() {
+        let label = "Font: Change Editor Font";
+        // Every term must appear, in any order.
+        assert!(term_match("change font", label).is_some());
+        assert!(term_match("FONT  change", label).is_some());
+        assert!(term_match("ed ang", label).is_some());
+        assert!(term_match("change xyz", label).is_none());
+        // Letters scattered across words no longer match.
+        assert!(term_match("cef", label).is_none());
+        // Matched characters, preferring word-start occurrences.
+        let (_, hits) = term_match("ditor ch", label).unwrap();
+        assert_eq!(hits, vec![6, 7, 14, 15, 16, 17, 18]);
+        // Terms at the start of the label or a word rank higher.
         assert!(
-            fuzzy("seg", "Segoe UI").unwrap().0
-                > fuzzy("seg", "Lucida Sans Unicode Edge").map_or(-99, |m| m.0)
+            term_match("con", "Consolas").unwrap().0
+                > term_match("con", "Cambria Condensed").unwrap().0
         );
-        assert_eq!(fuzzy("", "anything").unwrap().1, Vec::<usize>::new());
+        assert!(
+            term_match("con", "Cambria Condensed").unwrap().0
+                > term_match("ond", "Cambria Condensed").unwrap().0
+        );
+        assert_eq!(term_match("", "anything"), Some((0, Vec::new())));
+        assert!(term_match("toolongterm", "short").is_none());
     }
 
     #[test]
@@ -360,7 +350,7 @@ mod tests {
         let mut p = Palette::fonts(names, "Georgia");
         assert_eq!(p.selected().unwrap().label, "Georgia");
         assert_eq!(p.selected().unwrap().detail, "Current");
-        p.insert("co");
+        p.insert("on"); // in "Consolas" and "Cascadia Mono"
         assert_eq!(p.selected().unwrap().label, "Consolas");
         p.move_by(1);
         assert_eq!(
