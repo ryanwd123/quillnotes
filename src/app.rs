@@ -14,6 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR};
 
 use crate::attach;
+use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
 use crate::doc::{self, Document, EditKind, Pos};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
@@ -32,6 +33,11 @@ pub const APP_NAME: &str = "Penmark";
 
 /// Posted after files are dropped, to handle them once the drag has ended.
 pub const WM_APP_DROP: u32 = WM_APP + 1;
+/// Posted when a command run with `wait` ends: exit code, command id.
+pub const WM_APP_COMMAND_DONE: u32 = WM_APP + 2;
+
+/// Command links trusted to run without asking (their trust keys), at most this many.
+const TRUSTED_MAX: usize = 500;
 
 const ZOOM_STEP: f32 = 0.05;
 
@@ -199,6 +205,9 @@ pub struct App {
     outline_hover: Option<usize>,
     /// The heading last shown as current, to scroll it into view when it changes.
     outline_current: Option<usize>,
+    /// Commands run with `wait` that have not ended: (id, label).
+    running: Vec<(isize, String)>,
+    next_command: isize,
     /// Files dropped and waiting for WM_APP_DROP, and where they go.
     pending_drop: (Vec<PathBuf>, Option<Pos>),
     /// Files to go back / forward to (most recent last).
@@ -317,6 +326,8 @@ impl App {
             outline_hover: None,
             outline_current: None,
             pending_drop: (Vec::new(), None),
+            running: Vec::new(),
+            next_command: 0,
             back: Vec::new(),
             forward: Vec::new(),
             restoring_placement: false,
@@ -2517,6 +2528,11 @@ impl App {
                 }
             }
             SlashCmd::Date(days) => self.insert(&slash::date_text(platform::today(), days)),
+            SlashCmd::Insert(text, back) => {
+                self.insert(text);
+                let c = Pos::new(self.cursor.line, self.cursor.col - back);
+                self.set_sel(c, c);
+            }
             cmd @ (SlashCmd::CodeBlock | SlashCmd::Table | SlashCmd::Rule) => {
                 let info = self.info(l);
                 let line = &self.doc.lines[l];
@@ -3089,6 +3105,10 @@ impl App {
             && let Some(link) = hit.link
         {
             self.drag = Drag::None;
+            if cmd::glyph(&link).is_some() {
+                self.run_command(&link, &hit.link_title);
+                return;
+            }
             self.open_link(&link);
             return;
         }
@@ -3188,6 +3208,36 @@ impl App {
         }
     }
 
+    /// Shows the expanded command of a command link under the mouse, and highlights
+    /// the link.
+    fn command_hover(&mut self, x: f32, y: f32) {
+        let px = (x * self.view.dpi / 96.0) as i32;
+        let py = (y * self.view.dpi / 96.0) as i32;
+        let mut found = None;
+        if self.palette.is_none() && self.is_text_area(px, py) {
+            self.ensure_layout();
+            let infos = std::mem::take(&mut self.infos);
+            let doc_y = y - self.view.header_h() + self.scroll;
+            let hit = self.view.hit(&self.doc.lines, &infos, x, doc_y);
+            self.infos = infos;
+            if let Some(link) = hit.link.filter(|l| cmd::glyph(l).is_some())
+                && let Some(prep) = self.prepare_command(&link, &hit.link_title)
+            {
+                let tip = format!("{}\nin {}", prep.line, prep.cwd.display());
+                found = Some(((hit.pos.line, hit.link_start), tip));
+            }
+        }
+        let hover = found.as_ref().map(|f| f.0);
+        let tip = found.map(|f| (x, y, f.1));
+        if hover != self.view.hover_link
+            || tip.as_ref().map(|t| &t.2) != self.view.tooltip.as_ref().map(|t| &t.2)
+        {
+            self.view.hover_link = hover;
+            self.view.tooltip = tip;
+            self.invalidate();
+        }
+    }
+
     /// Tracks the mouse for the table controls, repainting only when they change.
     fn hover(&mut self, x: f32, y: f32) {
         if !self.tracking_leave {
@@ -3200,6 +3250,7 @@ impl App {
             self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
         }
         self.mouse = Some((x, y));
+        self.command_hover(x, y);
         let doc_y = y - self.view.header_h() + self.scroll;
         let state = (
             self.view.near_grid(x, doc_y),
@@ -3216,6 +3267,9 @@ impl App {
         self.tracking_leave = false;
         self.mouse = None;
         if self.tree_button.take().is_some() || self.outline_hover.take().is_some() {
+            self.invalidate();
+        }
+        if self.view.tooltip.take().is_some() | self.view.hover_link.take().is_some() {
             self.invalidate();
         }
         if self.table_hover.0 {
@@ -3708,6 +3762,105 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // Command links
+
+    /// A command link ready to run: the full command line and its folder.
+    fn prepare_command(&self, target: &str, title: &str) -> Option<Prepared> {
+        let c = cmd::parse(target, title)?;
+        let note_dir = self
+            .doc_dir()
+            .or_else(|| self.folder.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let cwd = match &c.cwd {
+            Some(d) => note_dir.join(platform::expand_env(d)),
+            None => note_dir,
+        };
+        let text = match c.mode {
+            CmdMode::Run => platform::expand_env(&c.text),
+            CmdMode::Shell => c.text.clone(),
+        };
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
+        let line = cmd::command_line(&c, &text, &cwd, &comspec);
+        Some(Prepared { line, cwd, c })
+    }
+
+    /// Clicking a `run:` / `shell:` link: asks first unless this exact command was
+    /// allowed before, then starts it.
+    fn run_command(&mut self, target: &str, title: &str) {
+        let Some(Prepared { line, cwd, c }) = self.prepare_command(target, title) else {
+            return;
+        };
+        if c.text.is_empty() {
+            return self.say("The command is empty");
+        }
+        if !cwd.is_dir() {
+            return self.say(format!("Not run: no folder {}", cwd.display()));
+        }
+        let key = cmd::trust_key(&line, &cwd);
+        let trusted = Settings::load()
+            .get("trusted_commands")
+            .is_some_and(|v| v.split(' ').any(|k| k == key));
+        if c.confirm || !trusted {
+            let later = if c.confirm {
+                ""
+            } else {
+                "\n\nPenmark won't ask again for this command unless it changes."
+            };
+            let r = platform::message_box(
+                self.hwnd,
+                &format!("Run this command?\n\n{line}\n\nin {}{later}", cwd.display()),
+                APP_NAME,
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+            );
+            if r != IDYES {
+                return;
+            }
+            if !c.confirm {
+                let _ = Settings::update(|s| {
+                    let mut keys: Vec<String> = s
+                        .get("trusted_commands")
+                        .unwrap_or("")
+                        .split(' ')
+                        .filter(|k| !k.is_empty() && *k != key)
+                        .map(String::from)
+                        .collect();
+                    keys.push(key.clone());
+                    let skip = keys.len().saturating_sub(TRUSTED_MAX);
+                    s.set("trusted_commands", &keys[skip..].join(" "));
+                });
+            }
+        }
+        let label = c.text.chars().take(60).collect::<String>();
+        match platform::spawn(&line, &cwd, c.window == CmdWindow::Hidden) {
+            Err(e) => self.say(format!("Could not run {label}: {}", e.trim())),
+            Ok(process) if c.wait => {
+                self.next_command += 1;
+                let id = self.next_command;
+                self.running.push((id, label.clone()));
+                platform::watch_process(process, self.hwnd, WM_APP_COMMAND_DONE, id);
+                self.say(format!("Running {label}"));
+            }
+            Ok(process) => {
+                platform::close_handle(process);
+                self.say(format!("Started {label}"));
+            }
+        }
+    }
+
+    /// A command run with `wait` ended.
+    pub fn command_done(&mut self, code: u32, id: isize) {
+        let Some(i) = self.running.iter().position(|r| r.0 == id) else {
+            return;
+        };
+        let (_, label) = self.running.remove(i);
+        self.say(if code == 0 {
+            format!("Finished {label}")
+        } else {
+            format!("{label} failed with exit code {}", code as i32)
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Attachments: dropped and pasted files
 
     /// Files dragged over the window, at client pixel (x, y): shows where they would
@@ -3841,6 +3994,13 @@ impl App {
         self.insert(&text);
         self.commit();
     }
+}
+
+/// A command link resolved for running.
+struct Prepared {
+    line: String,
+    cwd: PathBuf,
+    c: cmd::Command,
 }
 
 #[derive(Clone, Copy)]

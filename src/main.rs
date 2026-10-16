@@ -2,6 +2,7 @@
 
 mod app;
 mod attach;
+mod command;
 mod doc;
 mod dragdrop;
 mod markdown;
@@ -165,6 +166,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             app::WM_APP_DROP => {
                 app.finish_drop();
+                LRESULT(0)
+            }
+            app::WM_APP_COMMAND_DONE => {
+                app.command_done(wparam.0 as u32, lparam.0);
                 LRESULT(0)
             }
             WM_SETTINGCHANGE => {

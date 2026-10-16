@@ -53,20 +53,23 @@ pub enum Ink {
     PaletteSel,
     Shadow,
     LinkBg,
+    CommandText,
+    CommandBg,
+    CommandHover,
 }
-const INK_COUNT: usize = 26;
+const INK_COUNT: usize = 29;
 
 const DARK: [u32; INK_COUNT] = [
     0xFF1B1B1B, 0xFFD4D4D4, 0xFFEDEDED, 0xFF6E6E6E, 0xFF5AA9FF, 0xFF24272D, 0xFF2D3036, 0xFF4E5664,
     0x80264F78, 0xFFE6E6E6, 0xFF161616, 0xFF8E8E8E, 0xFF3C3C3C, 0xFF232528, 0x70857000, 0xFF5AA9FF,
     0x40FFFFFF, 0xFF4F8EF7, 0xFF3FB950, 0xFFD29922, 0xFFF85149, 0xFFA371F7, 0xFF252629, 0xFF2F4058,
-    0x24000000, 0xFF1E3550,
+    0x24000000, 0xFF1E3550, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8,
 ];
 const LIGHT: [u32; INK_COUNT] = [
     0xFFFFFFFF, 0xFF24292F, 0xFF101418, 0xFF9AA0A6, 0xFF0969DA, 0xFFF4F5F7, 0xFFEEF0F2, 0xFFD0D7DE,
     0x6699C8FF, 0xFF111111, 0xFFF3F3F3, 0xFF6A6A6A, 0xFFE1E4E8, 0xFFF6F8FA, 0x80FFE066, 0xFF0969DA,
     0x40000000, 0xFF0969DA, 0xFF1A7F37, 0xFF9A6700, 0xFFCF222E, 0xFF8250DF, 0xFFFFFFFF, 0xFFE3ECF8,
-    0x0C000000, 0xFFDDEEFF,
+    0x0C000000, 0xFFDDEEFF, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8,
 ];
 
 fn color(argb: u32) -> D2D1_COLOR_F {
@@ -204,7 +207,8 @@ pub struct TextBox {
     width: Cell<f32>,
     height: Cell<f32>,
     bgs: Vec<(u32, u32, Ink)>,
-    links: Vec<(u32, u32, String)>,
+    /// (start, end, target, title) of each link, in layout positions.
+    links: Vec<(u32, u32, String, String)>,
     /// x of the content start, for active lines whose syntax prefix hangs left.
     prefix_x: f32,
     /// Ordered-list number, drawn left of the content when inactive.
@@ -281,7 +285,7 @@ impl TextBox {
         (idx, out)
     }
 
-    fn hit(&self, x: f32, y: f32) -> (usize, Option<String>) {
+    fn hit(&self, x: f32, y: f32) -> (usize, Option<&(u32, u32, String, String)>) {
         let mut trailing = BOOL(0);
         let mut inside = BOOL(0);
         let mut m = DWRITE_HIT_TEST_METRICS::default();
@@ -296,7 +300,6 @@ impl TextBox {
             self.links
                 .iter()
                 .find(|l| m.textPosition >= l.0 && m.textPosition < l.1)
-                .map(|l| l.2.clone())
         } else {
             None
         };
@@ -407,6 +410,9 @@ enum Decor {
 pub struct HitResult {
     pub pos: Pos,
     pub link: Option<String>,
+    pub link_title: String,
+    /// Where the link starts in its row's layout, to tell links apart.
+    pub link_start: u32,
     pub checkbox: bool,
     /// The row shows its Markdown source (links there are edited, not followed).
     pub active: bool,
@@ -489,6 +495,10 @@ pub struct View {
     pub grid_geom: Option<TableGeom>,
     /// Where dragged files would be inserted.
     pub drop_caret: Option<Pos>,
+    /// The command link under the mouse: its line and layout start.
+    pub hover_link: Option<(usize, u32)>,
+    /// A tooltip at a client point (DIPs).
+    pub tooltip: Option<(f32, f32, String)>,
     /// Selected cells of the table being edited: first and last line, column.
     pub cell_sel: Option<(usize, usize, usize)>,
     /// Whether the explorer panel is shown on the left.
@@ -552,6 +562,8 @@ impl View {
                 grid_geom: None,
                 cell_sel: None,
                 drop_caret: None,
+                hover_link: None,
+                tooltip: None,
                 explorer: false,
                 outline: false,
                 opts: RenderOptions::default(),
@@ -886,7 +898,7 @@ impl View {
             }
         }
         let hidden: &[std::ops::Range<usize>] = if active { &[] } else { &inl.hidden };
-        let subs: &[(std::ops::Range<usize>, char)] = if active { &[] } else { &inl.subs };
+        let subs: &[(std::ops::Range<usize>, String)] = if active { &[] } else { &inl.subs };
         let mut text = Vec::with_capacity(to - from);
         let mut d2s = Vec::with_capacity(to - from + 1);
         let (mut h, mut sb, mut skip_to) = (0, 0, 0);
@@ -904,15 +916,15 @@ impl View {
             while sb < subs.len() && subs[sb].0.start < i {
                 sb += 1;
             }
-            let ch = if sb < subs.len() && subs[sb].0.start == i {
+            let mut buf = [0u8; 4];
+            let shown: &str = if sb < subs.len() && subs[sb].0.start == i {
                 skip_to = subs[sb].0.end;
-                subs[sb].1
+                &subs[sb].1
             } else {
-                ch
+                ch.encode_utf8(&mut buf)
             };
-            let mut buf = [0u16; 2];
-            for u in ch.encode_utf16(&mut buf) {
-                text.push(*u);
+            for u in shown.encode_utf16() {
+                text.push(u);
                 d2s.push(i as u32);
             }
         }
@@ -974,6 +986,11 @@ impl View {
                     Style::Comment => {
                         let _ = layout.SetDrawingEffect(self.brush(Ink::Dim), rr);
                     }
+                    Style::Command => {
+                        let _ = layout.SetDrawingEffect(self.brush(Ink::CommandText), rr);
+                        let end = rr.startPosition + rr.length;
+                        bgs.push((rr.startPosition, end, Ink::CommandBg));
+                    }
                 }
             }
             if let Some((r, ink)) = &callout {
@@ -981,8 +998,8 @@ impl View {
                 let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rr);
                 let _ = layout.SetDrawingEffect(self.brush(*ink), rr);
             }
-            for (r, target) in &inl.links {
-                links.push((s2d(r.start), s2d(r.end), target.clone()));
+            for (r, target, title) in &inl.links {
+                links.push((s2d(r.start), s2d(r.end), target.clone(), title.clone()));
             }
             let dim = self.brush(Ink::Dim);
             if active {
@@ -1793,6 +1810,8 @@ impl View {
         let mut res = HitResult {
             pos: Pos::new(i, 0),
             link: None,
+            link_title: String::new(),
+            link_start: 0,
             checkbox: false,
             active: row.active,
         };
@@ -1800,7 +1819,10 @@ impl View {
             Vis::Text(tb) => {
                 let (col, link) = tb.hit(x - row.x, y - row.y - row.top);
                 res.pos.col = col;
-                res.link = link;
+                if let Some(l) = link {
+                    (res.link, res.link_title, res.link_start) =
+                        (Some(l.2.clone()), l.3.clone(), l.0);
+                }
                 if !row.active
                     && let Kind::List { task: Some(_), .. } = infos[i].kind
                 {
@@ -1819,7 +1841,11 @@ impl View {
                     let top = row.y + (h - cell.tb.height.get()) / 2.0;
                     let (col, link) = cell.tb.hit(x - row.x - t.col_x[c] - pad_x, y - top);
                     res.pos.col = col;
-                    res.link = link;
+                    if let Some(l) = link {
+                        (res.link, res.link_title) = (Some(l.2.clone()), l.3.clone());
+                        // Hover colors are for document rows only.
+                        res.link_start = u32::MAX;
+                    }
                 }
             }
             _ => {
@@ -1945,6 +1971,9 @@ impl View {
             if let Some(p) = popup {
                 self.paint_popup(&rt, p, scroll);
             }
+            if let Some((x, y, text)) = self.tooltip.clone() {
+                self.paint_tooltip(&rt, x, y, &text);
+            }
             self.palette_geom = None;
             if let Some(p) = palette {
                 self.paint_palette(&rt, p);
@@ -2005,16 +2034,23 @@ impl View {
                         }
                     }
                     for &(a, b, ink) in &tb.bgs {
+                        let (ink, pad, radius) = match ink {
+                            Ink::CommandBg if self.hover_link == Some((i, a)) => {
+                                (Ink::CommandHover, 0.25 * base, 4.0 * z)
+                            }
+                            Ink::CommandBg => (ink, 0.25 * base, 4.0 * z),
+                            _ => (ink, 2.0 * z, 3.0 * z),
+                        };
                         for m in tb.rects(a, b) {
                             let rr = D2D1_ROUNDED_RECT {
                                 rect: rect(
-                                    ox + m.left - 2.0 * z,
+                                    ox + m.left - pad,
                                     oy + m.top + 1.0,
-                                    ox + m.left + m.width + 2.0 * z,
+                                    ox + m.left + m.width + pad,
                                     oy + m.top + m.height - 1.0,
                                 ),
-                                radiusX: 3.0 * z,
-                                radiusY: 3.0 * z,
+                                radiusX: radius,
+                                radiusY: radius,
                             };
                             rt.FillRoundedRectangle(&rr, self.brush(ink));
                         }
@@ -2639,6 +2675,45 @@ impl View {
             let _ = l.SetTrimming(&trim, None);
         }
         Some(l)
+    }
+
+    /// A small box with `text` below and right of (x, y), kept inside the window.
+    unsafe fn paint_tooltip(&mut self, rt: &ID2D1HwndRenderTarget, x: f32, y: f32, text: &str) {
+        let k = self.ui();
+        let f = self.format(Family::Ui, 12.0, 400);
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let max_w = (self.w - 16.0).min(560.0 * k);
+        let Ok(l) = (unsafe { self.dw.CreateTextLayout(&wide, &f, max_w, 1000.0) }) else {
+            return;
+        };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            let _ = l.GetMetrics(&mut m);
+        }
+        let pad = 6.0 * k;
+        let (w, h) = (m.width + 2.0 * pad, m.height + 2.0 * pad);
+        let left = (x + 12.0).min(self.w - w - 4.0).max(4.0);
+        let top = if y + 22.0 + h < self.h {
+            y + 22.0
+        } else {
+            y - 8.0 - h
+        };
+        let r = rect(left, top, left + w, top + h);
+        unsafe {
+            let rr = D2D1_ROUNDED_RECT {
+                rect: r,
+                radiusX: 4.0,
+                radiusY: 4.0,
+            };
+            rt.FillRoundedRectangle(&rr, self.brush(Ink::PaletteBg));
+            rt.DrawRoundedRectangle(&rr, self.brush(Ink::Rule), 1.0, None);
+            rt.DrawTextLayout(
+                v2(left + pad, top + pad),
+                &l,
+                self.brush(Ink::Text),
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
     }
 
     /// The file name bar across the top of the editor area.

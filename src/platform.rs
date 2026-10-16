@@ -187,6 +187,77 @@ pub fn save_png(image: &ClipImage, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `s` with `%VARS%` expanded as Windows does.
+pub fn expand_env(s: &str) -> String {
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    let src = HSTRING::from(s);
+    unsafe {
+        let n = ExpandEnvironmentStringsW(&src, None);
+        let mut buf = vec![0u16; n as usize];
+        let m = ExpandEnvironmentStringsW(&src, Some(&mut buf)) as usize;
+        if m == 0 || m > buf.len() {
+            return s.to_string();
+        }
+        String::from_utf16_lossy(&buf[..m - 1])
+    }
+}
+
+/// Starts the command line `line` in `cwd`: console programs get a new console, or
+/// none when `hidden`. Returns the process handle.
+pub fn spawn(line: &str, cwd: &Path, hidden: bool) -> std::result::Result<HANDLE, String> {
+    use windows::Win32::System::Threading::*;
+    let mut cmd: Vec<u16> = line.encode_utf16().chain([0]).collect();
+    let si = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut pi = PROCESS_INFORMATION::default();
+    let flags = if hidden {
+        CREATE_NO_WINDOW
+    } else {
+        CREATE_NEW_CONSOLE
+    };
+    unsafe {
+        CreateProcessW(
+            None,
+            Some(PWSTR(cmd.as_mut_ptr())),
+            None,
+            None,
+            false,
+            flags,
+            None,
+            &HSTRING::from(cwd.as_os_str()),
+            &si,
+            &mut pi,
+        )
+        .map_err(|e| e.message())?;
+        let _ = CloseHandle(pi.hThread);
+    }
+    Ok(pi.hProcess)
+}
+
+pub fn close_handle(h: HANDLE) {
+    unsafe {
+        let _ = CloseHandle(h);
+    }
+}
+
+/// Waits on another thread for `process` to end, then posts `msg` to `hwnd` with
+/// the exit code as wparam and `id` as lparam.
+pub fn watch_process(process: HANDLE, hwnd: HWND, msg: u32, id: isize) {
+    use windows::Win32::System::Threading::*;
+    // Handles are not Send; pass them as integers.
+    let (p, h) = (process.0 as isize, hwnd.0 as isize);
+    std::thread::spawn(move || unsafe {
+        let process = HANDLE(p as _);
+        WaitForSingleObject(process, INFINITE);
+        let mut code = 0u32;
+        let _ = GetExitCodeProcess(process, &mut code);
+        let _ = CloseHandle(process);
+        let _ = PostMessageW(Some(HWND(h as _)), msg, WPARAM(code as usize), LPARAM(id));
+    });
+}
+
 /// The local date and time: (year, month, day, hour, minute, second).
 pub fn now() -> (i32, u32, u32, u32, u32, u32) {
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };

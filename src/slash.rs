@@ -13,6 +13,8 @@ pub enum SlashCmd {
     Rule,
     /// Today's date plus this many days, as YYYY-MM-DD.
     Date(i64),
+    /// Insert text, leaving the caret this many bytes before its end.
+    Insert(&'static str, usize),
 }
 
 /// (label, hint shown on the right, extra search words, command). Date items show
@@ -35,6 +37,24 @@ pub const ITEMS: &[(&str, &str, &str, SlashCmd)] = &[
     ("Today", "", "date now", SlashCmd::Date(0)),
     ("Yesterday", "", "date", SlashCmd::Date(-1)),
     ("Tomorrow", "", "date", SlashCmd::Date(1)),
+    (
+        "Run command",
+        "run:",
+        "program launch",
+        SlashCmd::Insert("[Run](<run:>)", 2),
+    ),
+    (
+        "Shell command",
+        "shell:",
+        "cmd script",
+        SlashCmd::Insert("[Shell](<shell:>)", 2),
+    ),
+    (
+        "Start command",
+        "start",
+        "open program file",
+        SlashCmd::Insert("[Open](<shell:start \"\" \"\">)", 3),
+    ),
 ];
 
 /// Items matching `query` (the text typed after `/`), best first, with the matched

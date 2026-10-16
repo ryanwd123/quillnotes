@@ -543,6 +543,8 @@ pub enum Style {
     Mark,
     Image,
     Comment,
+    /// A `run:` / `shell:` command link, including its leading glyph.
+    Command,
 }
 
 #[derive(Default, Debug)]
@@ -550,12 +552,13 @@ pub struct Inline {
     /// Delimiters hidden when the line is rendered (shown dimmed while editing).
     pub hidden: Vec<Range<usize>>,
     pub spans: Vec<(Range<usize>, Style)>,
-    /// Visible label range and link target.
-    pub links: Vec<(Range<usize>, String)>,
+    /// Visible label range, link target, and title (empty if none).
+    pub links: Vec<(Range<usize>, String, String)>,
     /// Whole source range and target of each image.
     pub images: Vec<(Range<usize>, String)>,
-    /// HTML entities shown as a single character when rendered.
-    pub subs: Vec<(Range<usize>, char)>,
+    /// Source shown as other text when rendered: HTML entities as their character,
+    /// a command link's `[` as its glyph.
+    pub subs: Vec<(Range<usize>, String)>,
 }
 
 fn is_punct(c: char) -> bool {
@@ -653,8 +656,29 @@ fn char_at(s: &str, i: usize, end: usize) -> char {
     }
 }
 
-/// Parses `[label](target)` starting at `i` (which must be `[`).
-fn parse_link(s: &str, i: usize, end: usize) -> Option<(Range<usize>, String, usize)> {
+/// After a link destination at `from`: optional whitespace, an optional `"title"`
+/// or `'title'`, optional whitespace, then `)`. Returns the title and the `)`.
+fn title_and_close(s: &str, from: usize, end: usize) -> Option<(String, usize)> {
+    let t = &s[from..end];
+    let lead = t.len() - t.trim_start().len();
+    let rest = &t[lead..];
+    let (title, after) = match rest.chars().next() {
+        Some(q @ ('"' | '\'')) => {
+            let close = rest[1..].find(q)?;
+            (rest[1..1 + close].to_string(), lead + close + 2)
+        }
+        _ => (String::new(), lead),
+    };
+    let t2 = &t[after..];
+    let lead2 = t2.len() - t2.trim_start().len();
+    t2[lead2..]
+        .starts_with(')')
+        .then_some((title, from + after + lead2))
+}
+
+/// Parses `[label](target "title")` starting at `i` (which must be `[`): the label,
+/// target, title (empty if none), and the end of the link.
+fn parse_link(s: &str, i: usize, end: usize) -> Option<(Range<usize>, String, String, usize)> {
     let b = s.as_bytes();
     let mut j = i + 1;
     let mut depth = 1;
@@ -682,7 +706,22 @@ fn parse_link(s: &str, i: usize, end: usize) -> Option<(Range<usize>, String, us
         return None;
     }
     let label = i + 1..j;
-    let mut k = j + 2;
+    let open = j + 2;
+    let dest = open + (s[open..end].len() - s[open..end].trim_start().len());
+    // Commands may contain `>` (redirects) inside `<...>`, which CommonMark does not
+    // allow: the target ends at the first `>` followed by an optional title and `)`.
+    if s[dest..end].starts_with("<run:") || s[dest..end].starts_with("<shell:") {
+        let mut p = dest + 1;
+        while let Some(off) = s[p..end].find('>') {
+            let gt = p + off;
+            if let Some((title, close)) = title_and_close(s, gt + 1, end) {
+                return Some((label, s[dest + 1..gt].to_string(), title, close + 1));
+            }
+            p = gt + 1;
+        }
+        return None;
+    }
+    let mut k = open;
     let mut paren = 1;
     let mut angle = false;
     while k < end {
@@ -704,13 +743,18 @@ fn parse_link(s: &str, i: usize, end: usize) -> Option<(Range<usize>, String, us
     if k >= end {
         return None;
     }
-    let inner = s[j + 2..k].trim();
-    let target = if let Some(rest) = inner.strip_prefix('<') {
-        rest.split('>').next().unwrap_or("").to_string()
+    let inner = s[open..k].trim();
+    let (target, rest) = if let Some(r) = inner.strip_prefix('<') {
+        r.split_once('>').unwrap_or((r, ""))
     } else {
-        inner.split_whitespace().next().unwrap_or("").to_string()
+        inner.split_once(char::is_whitespace).unwrap_or((inner, ""))
     };
-    Some((label, target, k + 1))
+    let rest = rest.trim();
+    let title = [('"', '"'), ('\'', '\''), ('(', ')')]
+        .iter()
+        .find_map(|&(a, b)| rest.strip_prefix(a)?.strip_suffix(b))
+        .unwrap_or("");
+    Some((label, target.to_string(), title.to_string(), k + 1))
 }
 
 fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
@@ -752,7 +796,7 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                 continue;
             }
             b'!' if i + 1 < end && b[i + 1] == b'[' => {
-                if let Some((label, target, after)) = parse_link(s, i + 1, end) {
+                if let Some((label, target, _, after)) = parse_link(s, i + 1, end) {
                     out.hidden.push(i..label.start);
                     out.hidden.push(label.end..after);
                     out.spans.push((label.clone(), Style::Image));
@@ -777,16 +821,31 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                         out.hidden.push(i..label.start);
                         out.hidden.push(inner.end..inner.end + 2);
                         out.spans.push((label.clone(), Style::Link));
-                        out.links.push((label, format!("[[{target}]]")));
+                        out.links
+                            .push((label, format!("[[{target}]]"), String::new()));
                         i = inner.end + 2;
                         continue;
                     }
                 }
-                if let Some((label, target, after)) = parse_link(s, i, end) {
-                    out.hidden.push(i..i + 1);
+                if let Some((label, target, title, after)) = parse_link(s, i, end) {
+                    // A command link shows a glyph in place of its `[`.
+                    match crate::command::glyph(&target) {
+                        Some(g) => {
+                            out.subs.push((i..i + 1, g.to_string()));
+                            out.spans.push((i..label.end, Style::Command));
+                        }
+                        None => {
+                            out.hidden.push(i..i + 1);
+                            out.spans.push((label.clone(), Style::Link));
+                        }
+                    }
                     out.hidden.push(label.end..after);
-                    out.spans.push((label.clone(), Style::Link));
-                    out.links.push((label.clone(), target));
+                    let shown = if crate::command::glyph(&target).is_some() {
+                        i..label.end
+                    } else {
+                        label.clone()
+                    };
+                    out.links.push((shown, target, title));
                     parse_range(s, label.start, label.end, out);
                     i = after;
                     continue;
@@ -794,7 +853,7 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
             }
             b'&' => {
                 if let Some((len, c)) = entity(s, i, end) {
-                    out.subs.push((i..i + len, c));
+                    out.subs.push((i..i + len, c.to_string()));
                     i += len;
                     continue;
                 }
@@ -826,7 +885,7 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                         } else {
                             inner.to_string()
                         };
-                        out.links.push((r.clone(), target));
+                        out.links.push((r.clone(), target, String::new()));
                         i = r.end + 1;
                         continue;
                     }
@@ -872,7 +931,7 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                             url.to_string()
                         };
                         out.spans.push((r.clone(), Style::Link));
-                        out.links.push((r, target));
+                        out.links.push((r, target, String::new()));
                         i += len;
                         continue;
                     }
@@ -985,7 +1044,7 @@ pub fn plain_text(s: &str, start: usize) -> String {
             k += 1;
         }
         if k < inl.subs.len() && inl.subs[k].0.start == i {
-            out.push(inl.subs[k].1);
+            out.push_str(&inl.subs[k].1);
             i = inl.subs[k].0.end;
             continue;
         }
@@ -1080,7 +1139,7 @@ mod tests {
         assert_eq!(hidden("[[Page|alias]] and [[Other]]"), "alias and Other");
         assert_eq!(hidden("<https://a.b>"), "https://a.b");
         let e = parse_inline("a &amp; b &#x41; &bogus;", 0, 24);
-        assert_eq!(e.subs, vec![(2..7, '&'), (10..16, 'A')]);
+        assert_eq!(e.subs, vec![(2..7, "&".into()), (10..16, "A".into())]);
         let c = parse_inline("x <!-- *no* --> y", 0, 17);
         assert_eq!(c.spans, vec![(2..15, Style::Comment)]);
         let doc = lines("<!--\nhidden\n-->\ntext");
@@ -1089,6 +1148,34 @@ mod tests {
             k,
             vec![Kind::Comment, Kind::Comment, Kind::Comment, Kind::Para]
         );
+    }
+
+    #[test]
+    fn link_titles_and_commands() {
+        let l = |s: &str| {
+            let inl = parse_inline(s, 0, s.len());
+            let (r, t, title) = inl.links[0].clone();
+            (s[r].to_string(), t, title)
+        };
+        assert_eq!(
+            l(r#"[a](b.md "Title")"#),
+            ("a".into(), "b.md".into(), "Title".into())
+        );
+        assert_eq!(
+            l("[a](<b c.md> 'T')"),
+            ("a".into(), "b c.md".into(), "T".into())
+        );
+        // Command targets may hold `>` and `<`.
+        let s = r#"[build](<shell:cd /d %USERPROFILE%\p && make > b.log 2>&1> "cwd=x; wait") end"#;
+        let (label, target, title) = l(s);
+        assert_eq!(label, "[build");
+        assert_eq!(target, r"shell:cd /d %USERPROFILE%\p && make > b.log 2>&1");
+        assert_eq!(title, "cwd=x; wait");
+        assert_eq!(plain_text(s, 0), "$ build end");
+        assert_eq!(styled(s)[0], ("[build".into(), Style::Command));
+        let s = "[go](<run:a.exe x>) [b](c)";
+        assert_eq!(parse_inline(s, 0, s.len()).links.len(), 2);
+        assert_eq!(plain_text(s, 0), "\u{25b6} go b");
     }
 
     #[test]
