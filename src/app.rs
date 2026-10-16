@@ -15,7 +15,7 @@ use windows::core::{HSTRING, PCWSTR};
 
 use crate::attach;
 use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
-use crate::doc::{self, Document, EditKind, Pos};
+use crate::doc::{self, Document, EditKind, Pos, find_ci};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
@@ -223,16 +223,6 @@ fn shift_down() -> bool {
 }
 fn alt_down() -> bool {
     unsafe { GetKeyState(VK_MENU.0 as i32) < 0 }
-}
-
-/// Case-insensitive (ASCII) search for `needle` in `hay` starting at `from`.
-fn find_ci(hay: &str, needle: &str, from: usize) -> Option<usize> {
-    let (h, n) = (hay.as_bytes(), needle.as_bytes());
-    if n.is_empty() || h.len() < n.len() {
-        return None;
-    }
-    (from..=h.len() - n.len())
-        .find(|&i| hay.is_char_boundary(i) && h[i..i + n.len()].eq_ignore_ascii_case(n))
 }
 
 fn rfind_ci(hay: &str, needle: &str, before: usize) -> Option<usize> {
@@ -762,6 +752,7 @@ impl App {
             match key {
                 VK_P if shift => self.open_palette(Palette::commands()),
                 VK_P => self.quick_open(),
+                VK_F if shift => self.search_files(),
                 VK_R => self.recent_folders(),
                 VK_E if shift => self.toggle_explorer_focus(),
                 VK_0 if !shift => self.focus_explorer(),
@@ -1786,6 +1777,7 @@ impl App {
                     self.prompt_changed();
                 }
             }
+            VK_F if ctrl && shift => return false,
             VK_F | VK_G if ctrl => {}
             _ => return ctrl && !matches!(key, VK_F3),
         }
@@ -2629,6 +2621,7 @@ impl App {
                 self.preview_font(&f, code);
             }
         }
+        self.search_status();
         self.invalidate();
     }
 
@@ -2653,6 +2646,7 @@ impl App {
         match key {
             VK_ESCAPE => return self.close_palette(true),
             VK_P if ctrl && shift => return self.close_palette(true),
+            VK_F if ctrl && shift && p.mode == Mode::Search => return self.close_palette(true),
             VK_RETURN => return self.palette_accept(),
             VK_UP => p.move_by(-1),
             VK_DOWN => p.move_by(1),
@@ -2714,6 +2708,7 @@ impl App {
             }
             Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
             Target::Command(Command::QuickOpen) => self.quick_open(),
+            Target::Command(Command::SearchFiles) => self.search_files(),
             Target::Command(Command::OpenFolder) | Target::OpenFolderDialog => {
                 self.open_folder_dialog()
             }
@@ -2732,6 +2727,12 @@ impl App {
                 }
             }
             Target::OpenFile(path) => self.open_file_in_folder(&path),
+            Target::OpenMatch {
+                path,
+                line,
+                col,
+                len,
+            } => self.open_match(&path, line, col, len),
             Target::SwitchFolder(path) => self.switch_folder(&path),
             Target::Font(name) => {
                 let code = mode == Some(Mode::CodeFonts);

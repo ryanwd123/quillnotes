@@ -1,4 +1,5 @@
-//! Command palette state: the query, term filtering, and selection.
+//! Command palette state: the query, term filtering, and selection. Also hosts
+//! "Search in Files", which matches the query against the lines of Markdown files.
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,7 @@ use crate::workspace::{self, Entry, FolderOpt, FolderSettings};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     QuickOpen,
+    SearchFiles,
     OpenFolder,
     OpenRecent,
     CloseFolder,
@@ -33,6 +35,11 @@ pub enum Command {
 /// Every command, in the order shown for an empty query: (label, shortcut hint, command).
 const COMMANDS: &[(&str, &str, Command)] = &[
     ("Go to File\u{2026}", "Ctrl+P", Command::QuickOpen),
+    (
+        "Search: Find in Files",
+        "Ctrl+Shift+F",
+        Command::SearchFiles,
+    ),
     ("File: Open Folder\u{2026}", "", Command::OpenFolder),
     (
         "File: Open Recent Folder\u{2026}",
@@ -78,6 +85,13 @@ pub enum Target {
     Option(Opt),
     ResetOptions,
     OpenFile(PathBuf),
+    /// A search result: the file and the byte range of the match on `line`.
+    OpenMatch {
+        path: PathBuf,
+        line: usize,
+        col: usize,
+        len: usize,
+    },
     SwitchFolder(PathBuf),
     OpenFolderDialog,
     FolderOpt(FolderOpt),
@@ -114,7 +128,23 @@ pub enum Mode {
     Files,
     Folders,
     FolderSettings,
+    Search,
 }
+
+/// A Markdown file searched by "Search in Files".
+pub struct SearchFile {
+    pub path: PathBuf,
+    /// Path shown with each result, relative to the folder.
+    pub shown: String,
+    pub lines: Vec<String>,
+}
+
+/// Stop listing search results after this many matching lines.
+pub const MAX_RESULTS: usize = 2000;
+/// Characters of context kept before a match that is far into its line.
+const CONTEXT: usize = 24;
+/// Longest result label, in characters.
+const LABEL_MAX: usize = 160;
 
 pub struct Palette {
     pub mode: Mode,
@@ -130,6 +160,34 @@ pub struct Palette {
     first: usize,
     /// Font to restore when the font picker is cancelled.
     pub restore_font: Option<String>,
+    /// Files searched in `Mode::Search`.
+    search: Vec<SearchFile>,
+    /// Search mode: matching lines and files, and whether results were cut off.
+    pub found: (usize, usize, bool),
+}
+
+/// The label for a line matching `q` first at byte `col`: trimmed, starting shortly
+/// before the match when it is far in, with the bytes of every match in the label.
+fn result_label(line: &str, q: &str, col: usize) -> (String, Vec<usize>) {
+    let indent = line.len() - line.trim_start().len();
+    let mut start = indent.min(col);
+    if line[start..col].chars().count() > CONTEXT {
+        start = line[..col]
+            .char_indices()
+            .rev()
+            .nth(CONTEXT - 1)
+            .map_or(start, |(i, _)| i);
+    }
+    let body: String = line[start..].trim_end().chars().take(LABEL_MAX).collect();
+    let prefix = if start > indent { "\u{2026}" } else { "" };
+    let label = format!("{prefix}{body}");
+    let mut hits = Vec::new();
+    let mut from = prefix.len();
+    while let Some(i) = doc::find_ci(&label, q, from) {
+        hits.extend(label[i..i + q.len()].char_indices().map(|(b, _)| i + b));
+        from = i + q.len();
+    }
+    (label, hits)
 }
 
 /// `path` shortened from the left to about `max` characters, e.g. `…\work\notes`.
@@ -192,6 +250,8 @@ impl Palette {
             selected: 0,
             first: 0,
             restore_font: None,
+            search: Vec::new(),
+            found: (0, 0, false),
         };
         p.refilter();
         p
@@ -303,6 +363,14 @@ impl Palette {
         Palette::new(Mode::Files, items)
     }
 
+    /// Search in Files over `files`, starting with `query`.
+    pub fn search(files: Vec<SearchFile>, query: &str) -> Self {
+        let mut p = Palette::new(Mode::Search, Vec::new());
+        p.search = files;
+        p.insert(query);
+        p
+    }
+
     /// Recent folders, with "Open Folder..." first.
     pub fn folders(recent: &[PathBuf], current: Option<&Path>) -> Self {
         let same = |a: &Path, b: &Path| workspace::contains(a, b) && workspace::contains(b, a);
@@ -376,6 +444,7 @@ impl Palette {
             Mode::Files => "Go to file by name (add a folder name to narrow it down)",
             Mode::Folders => "Open a recent folder",
             Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles",
+            Mode::Search => "Search in Markdown files",
         }
     }
 
@@ -387,10 +456,15 @@ impl Palette {
             Mode::Files => "No matching files",
             Mode::Folders => "No matching folders",
             Mode::FolderSettings => "No matching settings",
+            Mode::Search if self.query.trim().is_empty() => "Type to search the folder's notes",
+            Mode::Search => "No results",
         }
     }
 
     fn refilter(&mut self) {
+        if self.mode == Mode::Search {
+            return self.find_in_files();
+        }
         let mut scored: Vec<(i32, usize, Vec<usize>)> = self
             .items
             .iter()
@@ -413,6 +487,46 @@ impl Palette {
         self.filtered = scored.into_iter().map(|(_, i, m)| (i, m)).collect();
         self.selected = 0;
         self.first = 0;
+    }
+
+    /// Lists every line containing the query (case-insensitive), file by file.
+    fn find_in_files(&mut self) {
+        self.items.clear();
+        self.filtered.clear();
+        self.selected = 0;
+        self.first = 0;
+        self.found = (0, 0, false);
+        let q = self.query.trim();
+        if q.is_empty() {
+            return;
+        }
+        for f in &self.search {
+            let mut in_file = false;
+            for (l, line) in f.lines.iter().enumerate() {
+                let Some(col) = doc::find_ci(line, q, 0) else {
+                    continue;
+                };
+                if self.items.len() == MAX_RESULTS {
+                    self.found.2 = true;
+                    return;
+                }
+                let (label, hits) = result_label(line, q, col);
+                self.filtered.push((self.items.len(), hits));
+                self.items.push(Item::new(
+                    label,
+                    format!("{}:{}", f.shown, l + 1),
+                    Target::OpenMatch {
+                        path: f.path.clone(),
+                        line: l,
+                        col,
+                        len: q.len(),
+                    },
+                ));
+                self.found.0 += 1;
+                in_file = true;
+            }
+            self.found.1 += in_file as usize;
+        }
     }
 
     fn select(&mut self, i: usize) {
@@ -597,6 +711,59 @@ mod tests {
         let o = RenderOptions::default();
         let p = Palette::options(&o, "UI: Font size");
         assert_eq!(p.visible().0.len(), 1);
+    }
+
+    #[test]
+    fn search_in_files() {
+        let file = |name: &str, text: &str| SearchFile {
+            path: PathBuf::from(name),
+            shown: name.to_string(),
+            lines: text.split('\n').map(String::from).collect(),
+        };
+        let files = vec![
+            file("a.md", "# Notes\n  - buy Milk and milk\nnothing"),
+            file("b.md", "no match"),
+            file("c.md", "MILK"),
+        ];
+        let mut p = Palette::search(files, "");
+        assert!(p.selected().is_none());
+        assert_eq!(p.empty_text(), "Type to search the folder's notes");
+        p.insert("milk");
+        assert_eq!(p.found, (2, 2, false));
+        let (rows, _) = p.visible();
+        // Indentation is trimmed and every match on the line is highlighted.
+        assert_eq!(rows[0].0.label, "- buy Milk and milk");
+        assert_eq!(rows[0].1, &[6, 7, 8, 9, 15, 16, 17, 18]);
+        assert_eq!(rows[0].0.detail, "a.md:2");
+        assert_eq!(
+            rows[0].0.target,
+            Target::OpenMatch {
+                path: PathBuf::from("a.md"),
+                line: 1,
+                col: 8,
+                len: 4
+            }
+        );
+        assert_eq!(rows[1].0.detail, "c.md:1");
+        p.insert("x");
+        assert!(p.selected().is_none());
+        assert_eq!(p.empty_text(), "No results");
+    }
+
+    #[test]
+    fn result_labels_show_the_match() {
+        let line = format!("{}needle end", "word ".repeat(20));
+        let col = line.find("needle").unwrap();
+        let (label, hits) = result_label(&line, "needle", col);
+        assert!(label.starts_with('\u{2026}'));
+        assert!(label.ends_with("needle end"));
+        assert_eq!(label.chars().count(), 1 + CONTEXT + "needle end".len());
+        let at = label.find("needle").unwrap();
+        assert_eq!(hits, (at..at + 6).collect::<Vec<_>>());
+        // Non-ASCII text before the match is cut on a character boundary.
+        let line = format!("{}\u{e9}", "\u{e9}".repeat(40));
+        let (label, _) = result_label(&line, "\u{e9}", line.len() - 2);
+        assert!(label.starts_with('\u{2026}'));
     }
 
     #[test]

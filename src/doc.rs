@@ -310,6 +310,16 @@ pub fn next_boundary(s: &str, i: usize) -> usize {
     j
 }
 
+/// Case-insensitive (ASCII) search for `needle` in `hay` starting at `from`.
+pub fn find_ci(hay: &str, needle: &str, from: usize) -> Option<usize> {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    (from..=h.len() - n.len())
+        .find(|&i| hay.is_char_boundary(i) && h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
 pub fn prev_boundary(s: &str, i: usize) -> usize {
     let mut j = i;
     while let Some(c) = s[..j].chars().next_back() {

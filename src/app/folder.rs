@@ -9,11 +9,14 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{APP_NAME, App, PromptKind};
 use crate::doc::{Document, Pos};
-use crate::palette::Palette;
+use crate::palette::{Mode, Palette, SearchFile};
 use crate::platform::{self, MenuItem};
 use crate::render::{SidebarButton, SidebarRow, SidebarView};
 use crate::settings::Settings;
 use crate::workspace::{self, Entry, FolderSettings};
+
+/// Markdown files larger than this are left out of Search in Files.
+const SEARCH_MAX_BYTES: u64 = 4 << 20;
 
 /// An explorer entry being dragged; it becomes a move once the mouse travels.
 pub(super) struct TreeDrag {
@@ -154,6 +157,76 @@ impl App {
         self.rescan();
         let p = Palette::files(&dir, &self.entries, self.doc.path.as_deref());
         self.open_palette(p);
+    }
+
+    /// Ctrl+Shift+F: search the folder's Markdown files, starting with the selected
+    /// text. The open file is searched as edited, saved or not.
+    pub(super) fn search_files(&mut self) {
+        let Some(dir) = self.folder.clone() else {
+            return self.say("Open a folder first (Ctrl+R)");
+        };
+        self.rescan();
+        let files = self
+            .entries
+            .iter()
+            .filter(|e| !e.is_dir && workspace::is_markdown(&e.path))
+            .filter_map(|e| {
+                let lines = if self.doc.path.as_deref() == Some(e.path.as_path()) {
+                    self.doc.lines.clone()
+                } else {
+                    if std::fs::metadata(&e.path).ok()?.len() > SEARCH_MAX_BYTES {
+                        return None;
+                    }
+                    let bytes = std::fs::read(&e.path).ok()?;
+                    Document::from_bytes(&bytes, None).0.lines
+                };
+                Some(SearchFile {
+                    path: e.path.clone(),
+                    shown: workspace::relative(&dir, &e.path),
+                    lines,
+                })
+            })
+            .collect();
+        let (a, b) = self.sel();
+        let query = if a.line == b.line {
+            self.doc.text_range(a, b)
+        } else {
+            String::new()
+        };
+        self.open_palette(Palette::search(files, &query));
+        self.search_status();
+    }
+
+    /// Shows the number of Search in Files results in the status bar.
+    pub(super) fn search_status(&mut self) {
+        let Some(p) = &self.palette else { return };
+        if p.mode != Mode::Search || p.query.trim().is_empty() {
+            return;
+        }
+        let (lines, files, more) = p.found;
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        let msg = if more {
+            format!("First {lines} results in {files} file{}", s(files))
+        } else {
+            format!("{lines} result{} in {files} file{}", s(lines), s(files))
+        };
+        self.say(msg);
+    }
+
+    /// Opens a Search in Files result with the match selected.
+    pub(super) fn open_match(&mut self, path: &Path, line: usize, col: usize, len: usize) {
+        self.open_file_in_folder(path);
+        if self.doc.path.as_deref() != Some(path) {
+            return;
+        }
+        self.set_sel(Pos::new(line, col), Pos::new(line, col + len));
+        let (a, b) = self.sel();
+        if a.line == b.line {
+            // F3 goes on to the next match in the file.
+            self.find_query = self.doc.text_range(a, b);
+        }
+        self.tree_focus = false;
+        self.changed(false);
     }
 
     /// Ctrl+R: pick a recent folder.
@@ -880,5 +953,61 @@ impl App {
                 })
                 .collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::app;
+    use super::*;
+    use crate::palette::Target;
+
+    #[test]
+    fn search_in_files() {
+        let root = std::env::temp_dir().join(format!("penmark-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let open = root.join("open.md");
+        std::fs::write(&open, "saved text").unwrap();
+        std::fs::write(root.join("sub").join("b.md"), "x\r\nA Needle here").unwrap();
+        std::fs::write(root.join("skip.txt"), "needle").unwrap();
+
+        // The open file is searched as edited; other files as saved; .txt is skipped.
+        let mut a = app("one\ntwo needle");
+        a.doc.path = Some(open.clone());
+        a.folder = Some(root.clone());
+        a.set_sel(Pos::new(1, 4), Pos::new(1, 10));
+        a.search_files();
+        let p = a.palette.as_ref().unwrap();
+        assert_eq!(p.query, "needle");
+        assert_eq!(p.found, (2, 2, false));
+        let (rows, _) = p.visible();
+        assert_eq!(rows[0].0.detail, "sub/b.md:2");
+        assert_eq!(rows[1].0.detail, "open.md:2");
+
+        // Accepting a result in the open file selects the match.
+        a.set_sel(Pos::default(), Pos::default());
+        a.palette.as_mut().unwrap().move_by(1);
+        let target = a
+            .palette
+            .as_ref()
+            .unwrap()
+            .selected()
+            .unwrap()
+            .target
+            .clone();
+        assert!(matches!(
+            target,
+            Target::OpenMatch {
+                line: 1,
+                col: 4,
+                ..
+            }
+        ));
+        a.palette_accept();
+        assert!(a.palette.is_none());
+        assert_eq!(a.sel(), (Pos::new(1, 4), Pos::new(1, 10)));
+        assert_eq!(a.find_query, "needle");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
