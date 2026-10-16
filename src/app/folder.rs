@@ -12,7 +12,7 @@ use crate::doc::{Document, Pos};
 use crate::palette::Palette;
 use crate::platform::{self, MenuItem};
 use crate::render::{
-    SIDEBAR_HEADER_H, SIDEBAR_ROW_H, SIDEBAR_W, STATUS_H, SidebarRow, SidebarView,
+    SIDEBAR_HEADER_H, SIDEBAR_ROW_H, SIDEBAR_W, STATUS_H, SidebarButton, SidebarRow, SidebarView,
 };
 use crate::settings::Settings;
 use crate::workspace::{self, Entry, FolderSettings};
@@ -294,7 +294,7 @@ impl App {
     }
 
     fn tree_rows(&self) -> Vec<usize> {
-        workspace::visible(&self.entries, &self.expanded)
+        workspace::visible(&self.entries, &self.expanded, self.notes_only)
     }
 
     fn tree_sel_row(&self, rows: &[usize]) -> Option<usize> {
@@ -432,6 +432,10 @@ impl App {
                 if self.tree_cut.take().is_none() {
                     self.tree_focus = false;
                 }
+            }
+            VK_A => {
+                self.new_item_prompt(super::shift_down());
+                self.skip_char = true;
             }
             VK_F1 | VK_F3 => return false,
             _ => {}
@@ -638,9 +642,33 @@ impl App {
         (i < rows).then_some(i)
     }
 
-    pub(super) fn tree_mouse_down(&mut self, y: f32) {
+    /// The explorer header's buttons.
+    fn tree_button_click(&mut self, b: SidebarButton) {
+        match b {
+            SidebarButton::NewFile => self.new_item_prompt(false),
+            SidebarButton::NewFolder => self.new_item_prompt(true),
+            SidebarButton::NotesOnly => {
+                self.notes_only = !self.notes_only;
+                let on = self.notes_only;
+                let _ = Settings::update(|s| s.set("explorer.notes_only", if on { "on" } else { "off" }));
+                let rows = self.tree_rows();
+                self.clamp_tree_scroll(rows.len());
+                self.say(if on {
+                    "Explorer: showing Markdown files only"
+                } else {
+                    "Explorer: showing all files"
+                });
+            }
+        }
+        self.invalidate();
+    }
+
+    pub(super) fn tree_mouse_down(&mut self, x: f32, y: f32) {
         self.tree_focus = true;
         self.slash = None;
+        if let Some(b) = SidebarButton::at(x, y) {
+            return self.tree_button_click(b);
+        }
         let rows = self.tree_rows();
         self.tree_drag = self.tree_row_at(y, rows.len()).map(|i| {
             let path = self.entries[rows[i]].path.clone();
@@ -665,8 +693,10 @@ impl App {
             let hover = (x < SIDEBAR_W)
                 .then(|| self.tree_row_at(y, rows.len()))
                 .flatten();
-            if hover != self.tree_hover {
+            let button = (x < SIDEBAR_W).then(|| SidebarButton::at(x, y)).flatten();
+            if hover != self.tree_hover || button != self.tree_button {
                 self.tree_hover = hover;
+                self.tree_button = button;
                 self.invalidate();
             }
             return;
@@ -820,6 +850,8 @@ impl App {
         let drop_root = drag_target.is_some() && drag_target == self.folder;
         Some(SidebarView {
             title,
+            notes_only: self.notes_only,
+            hover_button: self.tree_button,
             selected: self.tree_sel_row(&rows),
             hover: self.tree_hover,
             drop: drag_target

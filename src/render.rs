@@ -117,8 +117,45 @@ pub struct SidebarRow {
     pub cut: bool,
 }
 
+/// Buttons in the explorer header, right to left.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SidebarButton {
+    NotesOnly,
+    NewFolder,
+    NewFile,
+}
+
+impl SidebarButton {
+    const ALL: [SidebarButton; 3] = [
+        SidebarButton::NotesOnly,
+        SidebarButton::NewFolder,
+        SidebarButton::NewFile,
+    ];
+
+    /// Left edge of the button.
+    fn x(self) -> f32 {
+        SIDEBAR_W - 8.0 - (self as usize + 1) as f32 * SIDEBAR_BUTTON
+    }
+
+    /// The header button at (x, y), panel coordinates.
+    pub fn at(x: f32, y: f32) -> Option<SidebarButton> {
+        let top = (SIDEBAR_HEADER_H - SIDEBAR_BUTTON) / 2.0;
+        if y < top || y > top + SIDEBAR_BUTTON {
+            return None;
+        }
+        Self::ALL
+            .into_iter()
+            .find(|b| x >= b.x() && x < b.x() + SIDEBAR_BUTTON)
+    }
+}
+
+const SIDEBAR_BUTTON: f32 = 24.0;
+
 pub struct SidebarView {
     pub title: String,
+    /// Hiding `data` folders and files other than Markdown.
+    pub notes_only: bool,
+    pub hover_button: Option<SidebarButton>,
     pub rows: Vec<SidebarRow>,
     pub selected: Option<usize>,
     pub hover: Option<usize>,
@@ -2333,10 +2370,12 @@ impl View {
         unsafe {
             rt.FillRectangle(&rect(0.0, 0.0, w, bottom), self.brush(Ink::StatusBg));
             rt.FillRectangle(&rect(w - 1.0, 0.0, w, bottom), self.brush(Ink::Rule));
+            self.paint_sidebar_buttons(rt, sb);
             let title: Vec<u16> = sb.title.to_uppercase().encode_utf16().collect();
+            let title_w = SidebarButton::NewFile.x() - 18.0;
             if let Ok(l) = self
                 .dw
-                .CreateTextLayout(&title, &title_f, w - 28.0, SIDEBAR_HEADER_H)
+                .CreateTextLayout(&title, &title_f, title_w, SIDEBAR_HEADER_H)
             {
                 let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -2433,6 +2472,63 @@ impl View {
                 }
             }
             rt.PopAxisAlignedClip();
+        }
+    }
+
+    /// New file, new folder and the notes-only filter, drawn as line icons.
+    unsafe fn paint_sidebar_buttons(&self, rt: &ID2D1HwndRenderTarget, sb: &SidebarView) {
+        let top = (SIDEBAR_HEADER_H - SIDEBAR_BUTTON) / 2.0;
+        let line = |a: (f32, f32), b: (f32, f32), ink: Ink| unsafe {
+            rt.DrawLine(v2(a.0, a.1), v2(b.0, b.1), self.brush(ink), 1.2, None);
+        };
+        for b in SidebarButton::ALL {
+            let (x, y) = (b.x(), top);
+            let on = b == SidebarButton::NotesOnly && sb.notes_only;
+            if sb.hover_button == Some(b) || on {
+                let rr = D2D1_ROUNDED_RECT {
+                    rect: rect(x, y, x + SIDEBAR_BUTTON, y + SIDEBAR_BUTTON),
+                    radiusX: 4.0,
+                    radiusY: 4.0,
+                };
+                let ink = if on { Ink::PaletteSel } else { Ink::TableHeader };
+                unsafe { rt.FillRoundedRectangle(&rr, self.brush(ink)) };
+            }
+            let ink = if on { Ink::Accent } else { Ink::StatusText };
+            let (cx, cy) = (x + SIDEBAR_BUTTON / 2.0, y + SIDEBAR_BUTTON / 2.0);
+            match b {
+                SidebarButton::NewFile => {
+                    // A page with a folded corner, and a plus.
+                    let (l, t, r, bt) = (cx - 5.0, cy - 7.0, cx + 4.0, cy + 6.0);
+                    line((l, t), (r - 3.5, t), ink);
+                    line((r - 3.5, t), (r, t + 3.5), ink);
+                    line((r, t + 3.5), (r, cy - 1.0), ink);
+                    line((l, t), (l, bt), ink);
+                    line((l, bt), (cx - 1.0, bt), ink);
+                    line((cx + 3.5, cy + 1.5), (cx + 3.5, cy + 8.5), ink);
+                    line((cx, cy + 5.0), (cx + 7.0, cy + 5.0), ink);
+                }
+                SidebarButton::NewFolder => {
+                    // A folder with a tab, and a plus.
+                    let (l, t, r, bt) = (cx - 7.0, cy - 5.0, cx + 6.0, cy + 5.0);
+                    line((l, t), (cx - 3.0, t), ink);
+                    line((cx - 3.0, t), (cx - 1.5, t + 2.0), ink);
+                    line((cx - 1.5, t + 2.0), (r, t + 2.0), ink);
+                    line((r, t + 2.0), (r, cy - 1.0), ink);
+                    line((l, t), (l, bt), ink);
+                    line((l, bt), (cx - 1.0, bt), ink);
+                    line((cx + 3.5, cy + 1.5), (cx + 3.5, cy + 8.5), ink);
+                    line((cx, cy + 5.0), (cx + 7.0, cy + 5.0), ink);
+                }
+                SidebarButton::NotesOnly => {
+                    // A funnel.
+                    line((cx - 6.5, cy - 5.0), (cx + 6.5, cy - 5.0), ink);
+                    line((cx - 6.5, cy - 5.0), (cx - 1.5, cy + 1.0), ink);
+                    line((cx + 6.5, cy - 5.0), (cx + 1.5, cy + 1.0), ink);
+                    line((cx - 1.5, cy + 1.0), (cx - 1.5, cy + 6.0), ink);
+                    line((cx + 1.5, cy + 1.0), (cx + 1.5, cy + 4.5), ink);
+                    line((cx - 1.5, cy + 6.0), (cx + 1.5, cy + 4.5), ink);
+                }
+            }
         }
     }
 

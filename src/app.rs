@@ -19,7 +19,8 @@ use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
-    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SIDEBAR_W, STATUS_H, Status, TableUi, View,
+    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SIDEBAR_W, STATUS_H, SidebarButton, Status,
+    TableUi, View,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
@@ -145,6 +146,8 @@ pub struct App {
     drag: Drag,
     last_click: (u32, i32, i32, u32),
     high_surrogate: Option<u16>,
+    /// Drop the next WM_CHAR: its key already acted (e.g. `A` in the explorer).
+    skip_char: bool,
     words: (u64, usize),
     last_title: String,
     /// Display name for a document without a path.
@@ -172,6 +175,9 @@ pub struct App {
     tree_cut: Option<PathBuf>,
     tree_drag: Option<folder::TreeDrag>,
     tree_hover: Option<usize>,
+    tree_button: Option<SidebarButton>,
+    /// Explorer hides `data` folders and files other than Markdown.
+    notes_only: bool,
     /// For autosave: when the document last changed, and a version that failed to save.
     last_edit: Instant,
     seen_version: u64,
@@ -256,6 +262,7 @@ impl App {
             drag: Drag::None,
             last_click: (0, 0, 0, 0),
             high_surrogate: None,
+            skip_char: false,
             words: (u64::MAX, 0),
             last_title: String::new(),
             untitled_name: "Untitled",
@@ -276,6 +283,8 @@ impl App {
             tree_cut: None,
             tree_drag: None,
             tree_hover: None,
+            tree_button: None,
+            notes_only: settings.get("explorer.notes_only") == Some("on"),
             last_edit: Instant::now(),
             seen_version: 0,
             autosave_failed: None,
@@ -606,6 +615,9 @@ impl App {
     // Keyboard
 
     pub fn on_char(&mut self, unit: u16) {
+        if std::mem::take(&mut self.skip_char) {
+            return;
+        }
         if (0xD800..0xDC00).contains(&unit) {
             self.high_surrogate = Some(unit);
             return;
@@ -2850,7 +2862,7 @@ impl App {
             return;
         }
         if self.over_explorer(dx, dy) {
-            return self.tree_mouse_down(dy);
+            return self.tree_mouse_down(dx, dy);
         }
         if self.tree_focus {
             self.tree_focus = false;
@@ -3029,6 +3041,9 @@ impl App {
     pub fn on_mouse_leave(&mut self) {
         self.tracking_leave = false;
         self.mouse = None;
+        if self.tree_button.take().is_some() {
+            self.invalidate();
+        }
         if self.table_hover.0 {
             self.table_hover = (false, None, None);
             self.invalidate();

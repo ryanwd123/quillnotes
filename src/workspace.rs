@@ -63,6 +63,19 @@ fn scan_dir(dir: &Path, depth: usize, out: &mut Vec<Entry>) {
     }
 }
 
+/// The folder pasted and dropped files are copied into, next to the note.
+pub const DATA_DIR: &str = "data";
+
+/// Markdown files, by extension.
+pub fn is_markdown(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "md" | "markdown" | "mdown" | "mkd"
+        )
+    })
+}
+
 /// Files Penmark opens itself (others open in their default app).
 pub fn is_text(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
@@ -74,8 +87,9 @@ pub fn is_text(path: &Path) -> bool {
 }
 
 /// Indices of the entries visible in the tree: those whose parent folders are all
-/// expanded.
-pub fn visible(entries: &[Entry], expanded: &HashSet<PathBuf>) -> Vec<usize> {
+/// expanded. With `notes_only`, `data` folders and files other than Markdown are
+/// left out.
+pub fn visible(entries: &[Entry], expanded: &HashSet<PathBuf>, notes_only: bool) -> Vec<usize> {
     let mut out = Vec::new();
     let mut hide_below: Option<usize> = None;
     for (i, e) in entries.iter().enumerate() {
@@ -84,6 +98,15 @@ pub fn visible(entries: &[Entry], expanded: &HashSet<PathBuf>) -> Vec<usize> {
                 continue;
             }
             hide_below = None;
+        }
+        if notes_only {
+            if e.is_dir && e.name.eq_ignore_ascii_case(DATA_DIR) {
+                hide_below = Some(e.depth);
+                continue;
+            }
+            if !e.is_dir && !is_markdown(&e.path) {
+                continue;
+            }
         }
         out.push(i);
         if e.is_dir && !expanded.contains(&e.path) {
@@ -307,7 +330,7 @@ mod tests {
         // Collapsed folders hide their contents.
         let mut expanded = HashSet::new();
         let shown = |exp: &HashSet<PathBuf>| {
-            visible(&entries, exp)
+            visible(&entries, exp, false)
                 .iter()
                 .map(|&i| entries[i].name.clone())
                 .collect::<Vec<_>>()
@@ -318,6 +341,15 @@ mod tests {
             shown(&expanded),
             vec!["B", "notes", "2024", "todo.md", "a.txt", "readme.md"]
         );
+        // Notes only: no data folders or non-Markdown files.
+        std::fs::create_dir_all(root.join("notes/data")).unwrap();
+        std::fs::write(root.join("notes/data/x.md"), "x").unwrap();
+        let entries = scan(&root);
+        let notes: Vec<&str> = visible(&entries, &expanded, true)
+            .iter()
+            .map(|&i| entries[i].name.as_str())
+            .collect();
+        assert_eq!(notes, vec!["B", "notes", "2024", "todo.md", "readme.md"]);
         assert_eq!(
             relative(&root, &root.join("notes").join("2024").join("jan.md")),
             "notes/2024/jan.md"
