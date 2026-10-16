@@ -109,7 +109,7 @@ The palette also sets the **UI font size**, the **code font** and the **code fon
 
 ## Changing shortcuts
 
-Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\Penmark\keymap.ini` with every command and its keys and opens it. Edit a line such as `bold = Ctrl+Shift+B` (several keys are separated by commas; an empty value removes the shortcut), save, and switch back to Penmark. Problems in the file show in the status bar. **Preferences: Open Settings Folder** opens the folder; delete `keymap.ini` to go back to the defaults.
+Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\Penmark\keymap.ini` with every command and its keys and opens it. Edit a line such as `bold = Ctrl+Shift+B` (several keys are separated by commas; an empty value removes the shortcut), or give keys to one of the palette commands listed without any, save, and switch back to Penmark. Problems in the file show in the status bar. **Preferences: Open Settings Folder** opens the folder; delete `keymap.ini` to go back to the defaults.
 
 ## Command links
 
