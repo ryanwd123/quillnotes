@@ -879,6 +879,7 @@ impl App {
             Action::ZoomIn => self.set_zoom(self.view.zoom + ZOOM_STEP),
             Action::ZoomOut => self.set_zoom(self.view.zoom - ZOOM_STEP),
             Action::ZoomReset => self.set_zoom(1.0),
+            Action::Run(cmd) => self.palette_command(cmd),
         }
     }
 
@@ -2780,46 +2781,9 @@ impl App {
         }
         let mode = self.palette.take().map(|p| p.mode);
         match target {
-            Target::Command(Command::ChangeFont) => {
-                let current = self.view.body_font();
-                self.open_palette(Palette::fonts(self.view.font_families(), &current, false));
-            }
-            Target::Command(Command::ChangeCodeFont) => {
-                let current = self.view.code_font();
-                self.open_palette(Palette::fonts(self.view.font_families(), &current, true));
-            }
-            Target::Command(Command::CodeFontSize) => {
-                self.open_palette(Palette::options(&self.view.options(), "Code: Font size"));
-            }
-            Target::Command(Command::UiFontSize) => {
-                self.open_palette(Palette::options(&self.view.options(), "UI: Font size"));
-            }
-            Target::Command(Command::Table(cmd)) => self.table_command(cmd),
-            Target::Command(Command::RenderingOptions) => {
-                self.open_palette(Palette::options(&self.view.options(), ""));
-            }
+            Target::Command(cmd) => self.palette_command(cmd),
             Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
-            Target::Command(Command::QuickOpen) => self.quick_open(),
-            Target::Command(Command::SearchFiles) => self.search_files(),
-            Target::Command(Command::OpenFolder) | Target::OpenFolderDialog => {
-                self.open_folder_dialog()
-            }
-            Target::Command(Command::OpenRecent) => self.recent_folders(),
-            Target::Command(Command::CloseFolder) => self.close_folder(),
-            Target::Command(Command::NewFile) => self.new_item_prompt(false),
-            Target::Command(Command::NewFolder) => self.new_item_prompt(true),
-            Target::Command(Command::ToggleExplorer) => self.toggle_explorer(),
-            Target::Command(Command::ToggleOutline) => self.toggle_outline(),
-            Target::Command(Command::FolderSettings) => self.folder_settings_palette(),
-            Target::Command(Command::ToggleSource) => self.toggle_source(),
-            Target::Command(Command::ToggleTheme) => self.toggle_theme(),
-            Target::Command(Command::OpenSettingsFolder) => self.open_settings_folder(),
-            Target::Command(Command::WriteKeymap) => self.write_keymap(),
-            Target::Command(Command::Help) => {
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).arg("--help").spawn();
-                }
-            }
+            Target::OpenFolderDialog => self.open_folder_dialog(),
             Target::OpenFile(path) => self.open_file_in_folder(&path),
             Target::OpenMatch {
                 path,
@@ -2843,6 +2807,49 @@ impl App {
             }
         }
         self.invalidate();
+    }
+
+    /// Runs a command from the palette, or from a key bound to it in the keymap.
+    fn palette_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::ChangeFont => {
+                let current = self.view.body_font();
+                self.open_palette(Palette::fonts(self.view.font_families(), &current, false));
+            }
+            Command::ChangeCodeFont => {
+                let current = self.view.code_font();
+                self.open_palette(Palette::fonts(self.view.font_families(), &current, true));
+            }
+            Command::CodeFontSize => {
+                self.open_palette(Palette::options(&self.view.options(), "Code: Font size"));
+            }
+            Command::UiFontSize => {
+                self.open_palette(Palette::options(&self.view.options(), "UI: Font size"));
+            }
+            Command::Table(cmd) => self.table_command(cmd),
+            Command::RenderingOptions => {
+                self.open_palette(Palette::options(&self.view.options(), ""));
+            }
+            Command::QuickOpen => self.quick_open(),
+            Command::SearchFiles => self.search_files(),
+            Command::OpenFolder => self.open_folder_dialog(),
+            Command::OpenRecent => self.recent_folders(),
+            Command::CloseFolder => self.close_folder(),
+            Command::NewFile => self.new_item_prompt(false),
+            Command::NewFolder => self.new_item_prompt(true),
+            Command::ToggleExplorer => self.toggle_explorer(),
+            Command::ToggleOutline => self.toggle_outline(),
+            Command::FolderSettings => self.folder_settings_palette(),
+            Command::ToggleSource => self.toggle_source(),
+            Command::ToggleTheme => self.toggle_theme(),
+            Command::OpenSettingsFolder => self.open_settings_folder(),
+            Command::WriteKeymap => self.write_keymap(),
+            Command::Help => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("--help").spawn();
+                }
+            }
+        }
     }
 
     /// Applies a change to the rendering options, re-renders, and saves it.
@@ -4175,8 +4182,11 @@ mod tests {
         assert!(a.editor_key(VK_B, true, true, false));
         assert_eq!(a.doc.lines[0], "**word**");
         // A rebound key runs its new command, and the old key does nothing.
-        a.keymap = Keymap::parse("bold = Ctrl+Q
-italic =").0;
+        a.keymap = Keymap::parse(
+            "bold = Ctrl+Q
+italic =",
+        )
+        .0;
         a.set_sel(Pos::new(0, 2), Pos::new(0, 6));
         assert!(!a.editor_key(VK_I, true, false, false));
         assert!(a.editor_key(VK_Q, true, false, false));

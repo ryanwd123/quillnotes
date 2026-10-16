@@ -6,7 +6,9 @@ use std::time::SystemTime;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
+use crate::palette::Command;
 use crate::settings;
+use crate::table::TableCmd;
 
 /// The file name in the settings folder.
 pub const FILE: &str = "keymap.ini";
@@ -69,6 +71,8 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    /// A palette command with no action of its own.
+    Run(Command),
 }
 
 /// Every action: (group, name in keymap.ini, action, default keys).
@@ -96,6 +100,30 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
         "recent_folders",
         Action::RecentFolders,
         "Ctrl+R",
+    ),
+    (
+        "Files and folders",
+        "open_folder",
+        Action::Run(Command::OpenFolder),
+        "",
+    ),
+    (
+        "Files and folders",
+        "close_folder",
+        Action::Run(Command::CloseFolder),
+        "",
+    ),
+    (
+        "Files and folders",
+        "new_file_in_folder",
+        Action::Run(Command::NewFile),
+        "",
+    ),
+    (
+        "Files and folders",
+        "new_folder",
+        Action::Run(Command::NewFolder),
+        "",
     ),
     (
         "Files and folders",
@@ -259,6 +287,115 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
         "Ctrl+-, Ctrl+Shift+-, Ctrl+Num-",
     ),
     ("View", "zoom_reset", Action::ZoomReset, "Ctrl+Num0"),
+    (
+        "Tables",
+        "table_align_left",
+        Action::Run(Command::Table(TableCmd::AlignLeft)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_align_center",
+        Action::Run(Command::Table(TableCmd::AlignCenter)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_align_right",
+        Action::Run(Command::Table(TableCmd::AlignRight)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_row_above",
+        Action::Run(Command::Table(TableCmd::RowAbove)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_row_below",
+        Action::Run(Command::Table(TableCmd::RowBelow)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_delete_row",
+        Action::Run(Command::Table(TableCmd::DeleteRow)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_column_left",
+        Action::Run(Command::Table(TableCmd::ColumnLeft)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_column_right",
+        Action::Run(Command::Table(TableCmd::ColumnRight)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_delete_column",
+        Action::Run(Command::Table(TableCmd::DeleteColumn)),
+        "",
+    ),
+    (
+        "Tables",
+        "table_delete",
+        Action::Run(Command::Table(TableCmd::DeleteTable)),
+        "",
+    ),
+    (
+        "Preferences",
+        "folder_settings",
+        Action::Run(Command::FolderSettings),
+        "",
+    ),
+    (
+        "Preferences",
+        "change_font",
+        Action::Run(Command::ChangeFont),
+        "",
+    ),
+    (
+        "Preferences",
+        "change_code_font",
+        Action::Run(Command::ChangeCodeFont),
+        "",
+    ),
+    (
+        "Preferences",
+        "code_font_size",
+        Action::Run(Command::CodeFontSize),
+        "",
+    ),
+    (
+        "Preferences",
+        "ui_font_size",
+        Action::Run(Command::UiFontSize),
+        "",
+    ),
+    (
+        "Preferences",
+        "rendering_options",
+        Action::Run(Command::RenderingOptions),
+        "",
+    ),
+    (
+        "Preferences",
+        "open_settings_folder",
+        Action::Run(Command::OpenSettingsFolder),
+        "",
+    ),
+    (
+        "Preferences",
+        "write_keymap",
+        Action::Run(Command::WriteKeymap),
+        "",
+    ),
+    ("Preferences", "help", Action::Run(Command::Help), ""),
 ];
 
 /// A key with its modifiers.
@@ -523,6 +660,12 @@ impl Keymap {
     }
 
     /// The first key of `action`, for showing beside it (empty when it has none).
+    /// The name of `action` in keymap.ini.
+    #[cfg(test)]
+    pub fn name(action: Action) -> Option<&'static str> {
+        ACTIONS.iter().find(|a| a.2 == action).map(|a| a.1)
+    }
+
     pub fn hint(&self, action: Action) -> String {
         ACTIONS
             .iter()
@@ -544,6 +687,7 @@ impl Keymap {
              ; PageDown, Backspace, Delete, Insert, the punctuation keys = - [ ] ; ' , . / \\ `\n\
              ; and the number pad keys Num0-Num9, Num+, Num-, Num*, Num/, Num.\n\
              ;\n\
+             ; Commands with nothing after the = have no shortcut; add keys to give them one.\n\
              ; Commands left out of this file keep their default keys, and a key given to a\n\
              ; command here is taken from any command that has it by default. Changes apply\n\
              ; when you switch back to Penmark, or save this file in it. Delete this file to\n\

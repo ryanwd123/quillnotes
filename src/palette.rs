@@ -284,16 +284,16 @@ impl Palette {
         let mut items: Vec<Item> = COMMANDS
             .iter()
             .map(|&(label, action, cmd)| {
-                let hint = action.map(|a| keys.hint(a)).unwrap_or_default();
+                let hint = keys.hint(action.unwrap_or(Action::Run(cmd)));
                 Item::new(label, hint, Target::Command(cmd))
             })
             .collect();
         items.extend(TableCmd::ALL.iter().map(|&(cmd, label)| {
-            let hint = if cmd == TableCmd::RowBelow {
-                "Ctrl+Enter"
-            } else {
-                ""
-            };
+            let mut hint = keys.hint(Action::Run(Command::Table(cmd)));
+            if hint.is_empty() && cmd == TableCmd::RowBelow {
+                // Fixed inside a table.
+                hint = "Ctrl+Enter".to_string();
+            }
             Item::new(
                 format!("Table: {label}"),
                 hint,
@@ -790,6 +790,32 @@ mod tests {
         let line = format!("{}\u{e9}", "\u{e9}".repeat(40));
         let (label, _) = result_label(&line, "\u{e9}", line.len() - 2);
         assert!(label.starts_with('\u{2026}'));
+    }
+
+    #[test]
+    fn every_command_is_in_the_keymap() {
+        for item in Palette::commands(&Keymap::defaults()).items {
+            let Target::Command(cmd) = item.target else {
+                unreachable!()
+            };
+            let action = COMMANDS
+                .iter()
+                .find(|c| c.2 == cmd)
+                .and_then(|c| c.1)
+                .unwrap_or(Action::Run(cmd));
+            assert!(
+                Keymap::name(action).is_some(),
+                "{cmd:?} is not in the keymap"
+            );
+        }
+        let (keys, errors) = Keymap::parse("change_font = F2");
+        assert!(errors.is_empty());
+        let p = Palette::commands(&keys);
+        let font = p
+            .items
+            .iter()
+            .find(|i| i.label == "Font: Change Editor Font");
+        assert_eq!(font.unwrap().detail, "F2");
     }
 
     #[test]
