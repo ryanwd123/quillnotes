@@ -1,0 +1,231 @@
+#![windows_subsystem = "windows"]
+
+mod app;
+mod doc;
+mod markdown;
+mod palette;
+mod platform;
+mod render;
+mod settings;
+
+use std::path::PathBuf;
+
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Com::*;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::*;
+use windows::Win32::UI::Shell::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
+
+use app::App;
+
+fn app_of(hwnd: HWND) -> Option<&'static mut App> {
+    let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut App;
+    unsafe { p.as_mut() }
+}
+
+fn xy(lparam: LPARAM) -> (i32, i32) {
+    (
+        (lparam.0 & 0xFFFF) as i16 as i32,
+        ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+    )
+}
+
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        if msg == WM_NCCREATE {
+            let cs = &*(lparam.0 as *const CREATESTRUCTW);
+            let app = cs.lpCreateParams as *mut App;
+            (*app).hwnd = hwnd;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize);
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        let Some(app) = app_of(hwnd) else {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        };
+        if platform::IN_MODAL.with(|m| m.get()) && msg != WM_SIZE && msg != WM_DPICHANGED {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                BeginPaint(hwnd, &mut ps);
+                app.paint();
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            WM_SIZE => {
+                let (w, h) = xy(lparam);
+                app.on_size(w as u16 as u32, h as u16 as u32);
+                LRESULT(0)
+            }
+            WM_DPICHANGED => {
+                app.view.dpi = (wparam.0 & 0xFFFF) as f32;
+                let r = &*(lparam.0 as *const RECT);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                app.on_size(rc.right as u32, rc.bottom as u32);
+                LRESULT(0)
+            }
+            WM_CHAR => {
+                app.on_char(wparam.0 as u16);
+                LRESULT(0)
+            }
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                if app.on_key(wparam.0 as u16) {
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
+            WM_SYSCHAR if wparam.0 == ' ' as usize => DefWindowProcW(hwnd, msg, wparam, lparam),
+            WM_LBUTTONDOWN => {
+                let (x, y) = xy(lparam);
+                app.on_mouse_down(x, y);
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                let (x, y) = xy(lparam);
+                app.on_mouse_move(x, y);
+                LRESULT(0)
+            }
+            WM_LBUTTONUP | WM_CAPTURECHANGED => {
+                app.on_mouse_up();
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                app.on_wheel((wparam.0 >> 16) as i16);
+                LRESULT(0)
+            }
+            WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let id = if app.is_text_area(pt.x, pt.y) {
+                    IDC_IBEAM
+                } else {
+                    IDC_ARROW
+                };
+                SetCursor(LoadCursorW(None, id).ok());
+                LRESULT(1)
+            }
+            WM_TIMER => {
+                app.on_timer();
+                LRESULT(0)
+            }
+            WM_SETFOCUS => {
+                app.on_focus(true);
+                LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                app.on_focus(false);
+                LRESULT(0)
+            }
+            WM_DROPFILES => {
+                let hdrop = HDROP(wparam.0 as _);
+                let mut buf = [0u16; 1024];
+                let n = DragQueryFileW(hdrop, 0, Some(&mut buf)) as usize;
+                DragFinish(hdrop);
+                if n > 0 {
+                    app.on_drop(PathBuf::from(String::from_utf16_lossy(&buf[..n])));
+                }
+                LRESULT(0)
+            }
+            WM_SETTINGCHANGE => {
+                app.invalidate();
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_CLOSE => {
+                if app.confirm_discard() {
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
+        let instance: HINSTANCE = GetModuleHandleW(None)?.into();
+        let class = w!("PenmarkEditor");
+        let wc = WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            hIcon: LoadIconW(Some(instance), PCWSTR(1 as _))
+                .or_else(|_| LoadIconW(None, IDI_APPLICATION))?,
+            hInstance: instance,
+            lpszClassName: class,
+            lpfnWndProc: Some(wndproc),
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+
+        let dark = platform::system_prefers_dark();
+        let view = render::View::new(dark)?;
+        let app = Box::into_raw(Box::new(App::new(view)));
+
+        let scale = GetDpiForSystem() as f32 / 96.0;
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class,
+            &HSTRING::from(app::APP_NAME),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            (1000.0 * scale) as i32,
+            (780.0 * scale) as i32,
+            None,
+            None,
+            Some(instance),
+            Some(app as _),
+        )?;
+
+        let a = &mut *app;
+        a.view.dpi = GetDpiForWindow(hwnd) as f32;
+        platform::set_dark_titlebar(hwnd, dark);
+        DragAcceptFiles(hwnd, true);
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        a.on_size(rc.right as u32, rc.bottom as u32);
+        if let Some(path) = std::env::args_os().nth(1) {
+            let path = PathBuf::from(path);
+            if path.as_os_str() == "--help" {
+                a.show_help();
+            } else if path.exists() {
+                a.open_path(&path);
+            } else {
+                a.doc.path = Some(path);
+            }
+        }
+        a.update_title();
+
+        let _ = ShowWindow(hwnd, SW_SHOWDEFAULT);
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).into() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        drop(Box::from_raw(app));
+        Ok(())
+    }
+}
