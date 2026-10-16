@@ -696,6 +696,8 @@ impl App {
                 }
                 self.rescan();
                 self.open_file_in_folder(&target);
+                // Ready to write in, as after opening a file from the explorer.
+                self.tree_focus = false;
             }
             PromptKind::NewFolder => {
                 let target = path.join(&name);
@@ -1012,6 +1014,39 @@ mod tests {
         assert!(a.palette.is_none());
         assert_eq!(a.sel(), (Pos::new(1, 4), Pos::new(1, 10)));
         assert_eq!(a.find_query, "needle");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn new_file_prompt_takes_keys_from_explorer() {
+        let root = std::env::temp_dir().join(format!("penmark-newfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // A in the explorer starts a new file; the next A types into its name.
+        let mut a = app("");
+        a.folder = Some(root.clone());
+        a.explorer = true;
+        a.tree_focus = true;
+        // A key press: the key, then the character it types.
+        let press = |a: &mut App, vk: VIRTUAL_KEY, c: u8| {
+            a.on_key(vk.0);
+            a.on_char(c as u16);
+        };
+        press(&mut a, VK_A, b'a');
+        assert_eq!(a.prompt.as_ref().unwrap().text, "");
+        press(&mut a, VK_A, b'a');
+        press(&mut a, VK_B, b'b');
+        assert_eq!(a.prompt.as_ref().unwrap().text, "ab");
+        // Up / Down stay in the prompt instead of moving the explorer.
+        assert!(a.on_key(VK_DOWN.0));
+        assert!(a.on_key(VK_RETURN.0));
+
+        // The new file opens with the editor focused.
+        let file = root.join("ab.md");
+        assert!(file.exists());
+        assert_eq!(a.doc.path.as_deref(), Some(file.as_path()));
+        assert!(a.prompt.is_none() && !a.tree_focus);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

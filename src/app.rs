@@ -722,10 +722,21 @@ impl App {
             self.palette_key(VIRTUAL_KEY(vk), ctrl, shift);
             return true;
         }
-        if self.prompt.is_some() && self.prompt_key(vk, ctrl, shift) {
-            return true;
+        if self.prompt.is_some() {
+            if self.prompt_key(vk, ctrl, shift) {
+                return true;
+            }
+            // A file-name prompt owns the keyboard, even when opened from the
+            // explorer: its keys must not reach the explorer (where A would start
+            // another new file) or the document behind it.
+            if self.prompt.as_ref().is_some_and(|p| p.path.is_some())
+                && !alt
+                && !self.opens_palette(vk, ctrl, shift)
+            {
+                return true;
+            }
         }
-        if self.tree_focus && !alt && self.tree_key(key, ctrl) {
+        if self.tree_focus && self.prompt.is_none() && !alt && self.tree_key(key, ctrl) {
             return true;
         }
         // The slash menu takes selection keys; everything else edits as usual.
@@ -1793,18 +1804,23 @@ impl App {
         self.invalidate();
     }
 
-    fn prompt_key(&mut self, vk: u16, ctrl: bool, shift: bool) -> bool {
-        let key = VIRTUAL_KEY(vk);
+    /// Whether the key opens a palette, which works over the prompt.
+    fn opens_palette(&self, vk: u16, ctrl: bool, shift: bool) -> bool {
         let chord = Chord {
             vk,
             ctrl,
             shift,
             alt: false,
         };
-        if matches!(
+        matches!(
             self.keymap.action(chord),
             Some(Action::Palette | Action::QuickOpen | Action::SearchFiles)
-        ) {
+        )
+    }
+
+    fn prompt_key(&mut self, vk: u16, ctrl: bool, shift: bool) -> bool {
+        let key = VIRTUAL_KEY(vk);
+        if self.opens_palette(vk, ctrl, shift) {
             return false;
         }
         let p = self.prompt.as_mut().unwrap();
