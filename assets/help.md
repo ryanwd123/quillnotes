@@ -2,15 +2,35 @@
 
 Penmark edits plain Markdown files. The lines you are editing show their Markdown syntax; everything else is rendered. Nothing is converted: the file on disk is exactly what you typed.
 
-## File
+Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+B`, `Ctrl+I` and `Ctrl+K` stay bold, italic and link).
+
+## Files and folders
 
 | Shortcut | Action |
 | --- | --- |
+| `Ctrl+P` | Go to a file in the open folder (type part of its name or folder) |
+| `Ctrl+R` | Open a recent folder, or **Open Folder…** |
+| `Ctrl+Shift+E` | Show / hide the explorer |
+| `Ctrl+0` | Focus the explorer (`Esc` returns to the editor) |
 | `Ctrl+N` | New document |
-| `Ctrl+Shift+N` | New window |
-| `Ctrl+O` | Open (or drop a file on the window) |
+| `Ctrl+O` | Open a file (or drop one on the window) |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
-| `Ctrl+W` | Close window |
+| `Ctrl+W` | Close the file |
+| `Ctrl+Shift+N` / `Ctrl+Shift+W` | New window / close window |
+
+## Explorer
+
+| Key | Action |
+| --- | --- |
+| `Up` / `Down`, `Left` / `Right` | Move, collapse / expand folders |
+| `Enter` or click | Open the file, or open / close the folder |
+| `F2` | Rename (type `folder/name.md` to move it) |
+| `Delete` | Move to the Recycle Bin |
+| `Ctrl+X` then `Ctrl+V` | Move into the selected folder |
+| Drag and drop | Move onto a folder (or below the files: the top folder) |
+| Right-click | New file, new folder, rename, delete, reveal in File Explorer |
+
+**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit.
 
 ## Formatting
 
@@ -24,8 +44,9 @@ Penmark edits plain Markdown files. The lines you are editing show their Markdow
 | `Ctrl+1` … `Ctrl+6` | Heading level (press again to clear) |
 | `Ctrl+Shift+8` / `7` / `9` | Bullet / numbered / task list |
 | `Ctrl+Shift+.` | Quote |
-| `Ctrl+Enter` | Toggle task done |
-| `Tab` / `Shift+Tab` | Indent / outdent |
+| `Alt+C` | Toggle task done |
+| `Ctrl+/` | Toggle comment (`<!-- -->`) |
+| `Tab` / `Shift+Tab`, `Ctrl+]` / `Ctrl+[` | Indent / outdent |
 
 Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 
@@ -47,9 +68,12 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
-| `Ctrl+D` | Duplicate line |
+| `Ctrl+D` | Select the word, then the next occurrence |
+| `Ctrl+L` | Select the line (again to extend) |
 | `Ctrl+Shift+K` | Delete line |
 | `Alt+Up` / `Alt+Down` | Move line |
+| `Shift+Alt+Up` / `Shift+Alt+Down` | Copy line up / down |
+| `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |
 | `Ctrl+C` / `Ctrl+X` | Copy / cut (the whole line when nothing is selected) |
 | `Enter` | New line, continuing lists and quotes |
 | `Shift+Enter` | New line without continuing the list |
@@ -58,11 +82,12 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+Shift+P` | Command palette: *Font: Change Editor Font*, *View: Rendering Options* (←/→ adjust, Enter toggles) |
+| `F1` or `Ctrl+Shift+P` | Command palette (fonts, rendering options, folder settings, table actions, …) |
 | `Ctrl+F` | Find (`Enter`/`F3` next, `Shift+Enter`/`Shift+F3` previous) |
 | `Ctrl+G` | Go to line |
 | `Ctrl+Click` | Open link (`[[Note]]` links open `Note.md` next to this file) |
-| `Ctrl+/` | Toggle source mode |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out (5% steps) / reset; the zoom is remembered |
+| `Ctrl+Shift+V` | Toggle source mode |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+Numpad0` | Zoom in / out (5% steps) / reset; the zoom is remembered |
 | `Ctrl+Shift+T` | Light / dark theme |
-| `F1` | This help |
+
+This page: **Help: Keyboard Shortcuts** in the command palette.

@@ -1,6 +1,7 @@
 //! Thin wrappers over Win32 services: clipboard, dialogs, shell, theme.
 
 use std::cell::Cell;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::*;
@@ -133,6 +134,52 @@ pub fn save_dialog(hwnd: HWND, current: Option<&Path>, suggested: &str) -> Optio
         dlg.Show(Some(hwnd)).ok()?;
         result_path(&dlg.GetResult().ok()?)
     })
+}
+
+pub fn folder_dialog(hwnd: HWND, start: Option<&Path>) -> Option<PathBuf> {
+    modal(|| unsafe {
+        let dlg: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = dlg.GetOptions().ok()?;
+        dlg.SetOptions(opts | FOS_PICKFOLDERS).ok()?;
+        if let Some(item) = start.and_then(|d| {
+            SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(d.as_os_str()), None)
+                .ok()
+        }) {
+            let _ = dlg.SetFolder(&item);
+        }
+        dlg.Show(Some(hwnd)).ok()?;
+        result_path(&dlg.GetResult().ok()?)
+    })
+}
+
+/// Moves a file or folder to the Recycle Bin. Returns false on failure.
+pub fn recycle(hwnd: HWND, path: &Path) -> bool {
+    // pFrom is a list of paths, each null-terminated, ending with an extra null.
+    let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd,
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_WANTNUKEWARNING).0 as u16,
+        ..Default::default()
+    };
+    modal(|| unsafe { SHFileOperationW(&mut op) == 0 && !op.fAnyOperationsAborted.as_bool() })
+}
+
+/// Opens File Explorer with `path` selected.
+pub fn reveal(hwnd: HWND, path: &Path) {
+    let args = format!("/select,\"{}\"", path.display());
+    unsafe {
+        ShellExecuteW(
+            Some(hwnd),
+            w!("open"),
+            w!("explorer.exe"),
+            &HSTRING::from(args),
+            None,
+            SW_SHOWNORMAL,
+        );
+    }
 }
 
 pub fn message_box(

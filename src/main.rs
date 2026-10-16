@@ -10,6 +10,7 @@ mod render;
 mod settings;
 mod slash;
 mod table;
+mod workspace;
 
 use std::path::PathBuf;
 
@@ -226,15 +227,15 @@ fn main() -> Result<()> {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
         a.on_size(rc.right as u32, rc.bottom as u32);
-        if let Some(path) = std::env::args_os().nth(1) {
-            let path = PathBuf::from(path);
-            if path.as_os_str() == "--help" {
-                a.show_help();
-            } else if path.exists() {
-                a.open_path(&path);
-            } else {
-                a.doc.path = Some(path);
-            }
+        match std::env::args_os().nth(1).map(PathBuf::from) {
+            Some(arg) if arg.as_os_str() == "--help" => a.show_help(),
+            // A new window (Ctrl+Shift+N) starts empty.
+            Some(arg) if arg.as_os_str() == "--new" => {}
+            Some(dir) if dir.is_dir() => a.open_folder(&dir),
+            Some(file) if file.exists() => a.open_path(&file),
+            Some(file) => a.doc.path = Some(file),
+            // No arguments: reopen the most recent folder and its last file.
+            None => a.restore_last_folder(),
         }
         a.update_title();
 

@@ -99,6 +99,35 @@ fn range(a: u32, b: u32) -> DWRITE_TEXT_RANGE {
 
 pub const STATUS_H: f32 = 26.0;
 
+/// Explorer side panel geometry (DIPs, not zoomed).
+pub const SIDEBAR_W: f32 = 250.0;
+pub const SIDEBAR_HEADER_H: f32 = 34.0;
+pub const SIDEBAR_ROW_H: f32 = 24.0;
+const SIDEBAR_INDENT: f32 = 14.0;
+
+pub struct SidebarRow {
+    pub name: String,
+    pub depth: usize,
+    pub is_dir: bool,
+    pub expanded: bool,
+    /// The file open in the editor.
+    pub current: bool,
+    /// Cut (Ctrl+X) and waiting to be pasted.
+    pub cut: bool,
+}
+
+pub struct SidebarView {
+    pub title: String,
+    pub rows: Vec<SidebarRow>,
+    pub selected: Option<usize>,
+    pub hover: Option<usize>,
+    /// Folder row highlighted as a drop target while dragging (or the root).
+    pub drop: Option<usize>,
+    pub drop_root: bool,
+    pub scroll: f32,
+    pub focused: bool,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct BoxStyle {
     mono: bool,
@@ -396,6 +425,8 @@ pub struct View {
     pub palette_geom: Option<PaletteGeom>,
     pub popup_geom: Option<PaletteGeom>,
     pub grid_geom: Option<TableGeom>,
+    /// Left edge of the editor area (the explorer's width when it is shown).
+    pub inset: f32,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -451,6 +482,7 @@ impl View {
                 palette_geom: None,
                 popup_geom: None,
                 grid_geom: None,
+                inset: 0.0,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -1015,8 +1047,9 @@ impl View {
         let opt = |i: usize| o.num(i) * z;
         let max_w = opt(num::CONTENT_WIDTH);
         let margin = 48.0 * z;
-        self.cw = (self.w - 2.0 * margin).min(max_w).max(120.0);
-        self.x0 = ((self.w - self.cw) / 2.0).max(16.0).floor();
+        let area = self.w - self.inset;
+        self.cw = (area - 2.0 * margin).min(max_w).max(120.0);
+        self.x0 = (self.inset + ((area - self.cw) / 2.0).max(16.0)).floor();
         let (x0, cw) = (self.x0, self.cw);
         let (qw, lw, code_pad) = (opt(num::QUOTE_INDENT), opt(num::LIST_INDENT), 16.0 * z);
         let right = x0 + cw;
@@ -1660,6 +1693,7 @@ impl View {
         palette: Option<&PaletteView>,
         popup: Option<&PopupView>,
         mouse: Option<(f32, f32)>,
+        sidebar: Option<&SidebarView>,
     ) {
         if self.ensure_target(hwnd).is_err() {
             return;
@@ -1672,7 +1706,7 @@ impl View {
             rt.Clear(Some(&color(self.palette()[Ink::Bg as usize])));
             rt.SetTransform(&Matrix3x2::translation(0.0, -scroll));
             rt.PushAxisAlignedClip(
-                &rect(0.0, scroll, self.w, scroll + view_h),
+                &rect(self.inset, scroll, self.w, scroll + view_h),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
 
@@ -1735,6 +1769,9 @@ impl View {
                 rt.FillRoundedRectangle(&rr, self.brush(Ink::Scrollbar));
             }
 
+            if let Some(sb) = sidebar {
+                self.paint_sidebar(&rt, sb);
+            }
             self.paint_status(&rt, status);
             self.popup_geom = None;
             if let Some(p) = popup {
@@ -2217,6 +2254,13 @@ impl View {
                         let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
                         let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                         let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        // Clip a long detail instead of running over the label.
+                        let trim = DWRITE_TRIMMING {
+                            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                            delimiter: 0,
+                            delimiterCount: 0,
+                        };
+                        let _ = l.SetTrimming(&trim, None);
                         rt.DrawTextLayout(
                             v2(right - 16.0 - detail_w, y),
                             &l,
@@ -2260,6 +2304,118 @@ impl View {
                 }
                 y += item_h;
             }
+        }
+    }
+
+    /// Draws the explorer: a header with the folder name, then the visible tree rows.
+    unsafe fn paint_sidebar(&mut self, rt: &ID2D1HwndRenderTarget, sb: &SidebarView) {
+        let (w, bottom) = (SIDEBAR_W, self.h - STATUS_H);
+        let title_f = self.format(Family::Ui, 11.5, 600);
+        let row_f = self.format(Family::Ui, 13.0, 400);
+        let current_f = self.format(Family::Ui, 13.0, 600);
+        unsafe {
+            rt.FillRectangle(&rect(0.0, 0.0, w, bottom), self.brush(Ink::StatusBg));
+            rt.FillRectangle(&rect(w - 1.0, 0.0, w, bottom), self.brush(Ink::Rule));
+            let title: Vec<u16> = sb.title.to_uppercase().encode_utf16().collect();
+            if let Ok(l) = self
+                .dw
+                .CreateTextLayout(&title, &title_f, w - 28.0, SIDEBAR_HEADER_H)
+            {
+                let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let trim = DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    delimiter: 0,
+                    delimiterCount: 0,
+                };
+                let _ = l.SetTrimming(&trim, None);
+                rt.DrawTextLayout(
+                    v2(14.0, 0.0),
+                    &l,
+                    self.brush(Ink::StatusText),
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+            if sb.drop_root {
+                rt.DrawRectangle(
+                    &rect(1.0, 1.0, w - 2.0, bottom - 1.0),
+                    self.brush(Ink::Accent),
+                    1.5,
+                    None,
+                );
+            }
+            rt.PushAxisAlignedClip(
+                &rect(0.0, SIDEBAR_HEADER_H, w - 1.0, bottom),
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+            for (i, row) in sb.rows.iter().enumerate() {
+                let y = SIDEBAR_HEADER_H + i as f32 * SIDEBAR_ROW_H - sb.scroll;
+                if y + SIDEBAR_ROW_H < SIDEBAR_HEADER_H || y > bottom {
+                    continue;
+                }
+                let r = rect(0.0, y, w - 1.0, y + SIDEBAR_ROW_H);
+                if sb.selected == Some(i) {
+                    let ink = if sb.focused {
+                        Ink::PaletteSel
+                    } else {
+                        Ink::TableHeader
+                    };
+                    rt.FillRectangle(&r, self.brush(ink));
+                } else if sb.hover == Some(i) {
+                    rt.FillRectangle(&r, self.brush(Ink::TableHeader));
+                }
+                if sb.drop == Some(i) {
+                    rt.DrawRectangle(
+                        &rect(1.0, y + 0.5, w - 2.0, y + SIDEBAR_ROW_H - 0.5),
+                        self.brush(Ink::Accent),
+                        1.5,
+                        None,
+                    );
+                }
+                let x = 10.0 + row.depth as f32 * SIDEBAR_INDENT;
+                if row.is_dir {
+                    // Chevron: pointing right when collapsed, down when expanded.
+                    let (cx, cy, s) = (x + 4.0, y + SIDEBAR_ROW_H / 2.0, 3.5);
+                    let b = self.brush(Ink::StatusText);
+                    if row.expanded {
+                        rt.DrawLine(v2(cx - s, cy - s / 2.0), v2(cx, cy + s / 2.0), b, 1.4, None);
+                        rt.DrawLine(v2(cx, cy + s / 2.0), v2(cx + s, cy - s / 2.0), b, 1.4, None);
+                    } else {
+                        rt.DrawLine(v2(cx - s / 2.0, cy - s), v2(cx + s / 2.0, cy), b, 1.4, None);
+                        rt.DrawLine(v2(cx + s / 2.0, cy), v2(cx - s / 2.0, cy + s), b, 1.4, None);
+                    }
+                }
+                let name: Vec<u16> = row.name.encode_utf16().collect();
+                let f = if row.current { &current_f } else { &row_f };
+                let tx = x + 14.0;
+                if let Ok(l) =
+                    self.dw
+                        .CreateTextLayout(&name, f, (w - tx - 8.0).max(10.0), SIDEBAR_ROW_H)
+                {
+                    let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    let trim = DWRITE_TRIMMING {
+                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                        delimiter: 0,
+                        delimiterCount: 0,
+                    };
+                    let _ = l.SetTrimming(&trim, None);
+                    let ink = if row.cut {
+                        Ink::Dim
+                    } else if row.current {
+                        Ink::Accent
+                    } else {
+                        Ink::Text
+                    };
+                    rt.DrawTextLayout(
+                        v2(tx, y),
+                        &l,
+                        self.brush(ink),
+                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                    );
+                }
+            }
+            rt.PopAxisAlignedClip();
         }
     }
 

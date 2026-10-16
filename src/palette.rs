@@ -1,21 +1,62 @@
 //! Command palette state: the query, term filtering, and selection.
 
+use std::path::{Path, PathBuf};
+
 use crate::doc;
 use crate::options::{Opt, RenderOptions};
 use crate::render::PALETTE_ROWS;
 use crate::table::TableCmd;
+use crate::workspace::{self, Entry, FolderOpt, FolderSettings};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
+    QuickOpen,
+    OpenFolder,
+    OpenRecent,
+    CloseFolder,
+    NewFile,
+    NewFolder,
+    ToggleExplorer,
+    FolderSettings,
     ChangeFont,
     RenderingOptions,
+    ToggleSource,
+    ToggleTheme,
+    Help,
     Table(TableCmd),
 }
 
 /// Every command, in the order shown for an empty query: (label, shortcut hint, command).
 const COMMANDS: &[(&str, &str, Command)] = &[
+    ("Go to File\u{2026}", "Ctrl+P", Command::QuickOpen),
+    ("File: Open Folder\u{2026}", "", Command::OpenFolder),
+    (
+        "File: Open Recent Folder\u{2026}",
+        "Ctrl+R",
+        Command::OpenRecent,
+    ),
+    ("File: Close Folder", "", Command::CloseFolder),
+    ("File: New File in Folder\u{2026}", "", Command::NewFile),
+    ("File: New Folder\u{2026}", "", Command::NewFolder),
+    (
+        "View: Toggle Explorer",
+        "Ctrl+Shift+E",
+        Command::ToggleExplorer,
+    ),
+    ("Preferences: Folder Settings", "", Command::FolderSettings),
     ("Font: Change Editor Font", "", Command::ChangeFont),
     ("View: Rendering Options", "", Command::RenderingOptions),
+    (
+        "View: Toggle Source Mode",
+        "Ctrl+Shift+V",
+        Command::ToggleSource,
+    ),
+    (
+        "Preferences: Toggle Light/Dark Theme",
+        "Ctrl+Shift+T",
+        Command::ToggleTheme,
+    ),
+    ("Help: Keyboard Shortcuts", "", Command::Help),
 ];
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -24,14 +65,32 @@ pub enum Target {
     Font(String),
     Option(Opt),
     ResetOptions,
+    OpenFile(PathBuf),
+    SwitchFolder(PathBuf),
+    OpenFolderDialog,
+    FolderOpt(FolderOpt),
 }
 
 pub struct Item {
     pub label: String,
     pub detail: String,
+    /// Extra text matched by the search but not highlighted (e.g. a file's folder).
+    pub keywords: String,
     pub target: Target,
     /// For fonts: whether to draw the label in the font itself.
     pub preview: bool,
+}
+
+impl Item {
+    fn new(label: impl Into<String>, detail: impl Into<String>, target: Target) -> Self {
+        Item {
+            label: label.into(),
+            detail: detail.into(),
+            keywords: String::new(),
+            target,
+            preview: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -39,6 +98,9 @@ pub enum Mode {
     Commands,
     Fonts,
     Options,
+    Files,
+    Folders,
+    FolderSettings,
 }
 
 pub struct Palette {
@@ -55,6 +117,18 @@ pub struct Palette {
     first: usize,
     /// Font to restore when the font picker is cancelled.
     pub restore_font: Option<String>,
+}
+
+/// `path` shortened from the left to about `max` characters, e.g. `…\work\notes`.
+fn short_path(path: &str, max: usize) -> String {
+    let n = path.chars().count();
+    if n <= max {
+        return path.to_string();
+    }
+    let tail: String = path.chars().skip(n - (max - 1)).collect();
+    // Start at a separator when there is one, so no folder name is cut in half.
+    let tail = tail.find('\\').map_or(tail.as_str(), |i| &tail[i..]);
+    format!("\u{2026}{tail}")
 }
 
 fn fold(c: char) -> char {
@@ -113,22 +187,19 @@ impl Palette {
     pub fn commands() -> Self {
         let mut items: Vec<Item> = COMMANDS
             .iter()
-            .map(|&(label, detail, cmd)| Item {
-                label: label.into(),
-                detail: detail.into(),
-                target: Target::Command(cmd),
-                preview: false,
-            })
+            .map(|&(label, detail, cmd)| Item::new(label, detail, Target::Command(cmd)))
             .collect();
-        items.extend(TableCmd::ALL.iter().map(|&(cmd, label)| Item {
-            label: format!("Table: {label}"),
-            detail: if cmd == TableCmd::RowBelow {
-                "Ctrl+Enter".into()
+        items.extend(TableCmd::ALL.iter().map(|&(cmd, label)| {
+            let hint = if cmd == TableCmd::RowBelow {
+                "Ctrl+Enter"
             } else {
-                String::new()
-            },
-            target: Target::Command(Command::Table(cmd)),
-            preview: false,
+                ""
+            };
+            Item::new(
+                format!("Table: {label}"),
+                hint,
+                Target::Command(Command::Table(cmd)),
+            )
         }));
         Palette::new(Mode::Commands, items)
     }
@@ -137,15 +208,16 @@ impl Palette {
     pub fn fonts(families: Vec<(String, bool)>, current: &str) -> Self {
         let items = families
             .into_iter()
-            .map(|(name, preview)| Item {
-                detail: match (name == current, preview) {
-                    (true, _) => "Current".into(),
-                    (false, false) => "Symbols".into(),
-                    _ => String::new(),
-                },
-                target: Target::Font(name.clone()),
-                label: name,
-                preview,
+            .map(|(name, preview)| {
+                let detail = match (name == current, preview) {
+                    (true, _) => "Current",
+                    (false, false) => "Symbols",
+                    _ => "",
+                };
+                Item {
+                    preview,
+                    ..Item::new(name.clone(), detail, Target::Font(name))
+                }
             })
             .collect();
         let mut p = Palette::new(Mode::Fonts, items);
@@ -164,20 +236,105 @@ impl Palette {
     pub fn options(o: &RenderOptions) -> Self {
         let mut items: Vec<Item> = Opt::all()
             .into_iter()
-            .map(|opt| Item {
-                label: opt.label(),
-                detail: opt.value_text(o),
-                target: Target::Option(opt),
-                preview: false,
+            .map(|opt| Item::new(opt.label(), opt.value_text(o), Target::Option(opt)))
+            .collect();
+        items.push(Item::new(
+            "Reset rendering options to defaults",
+            "",
+            Target::ResetOptions,
+        ));
+        Palette::new(Mode::Options, items)
+    }
+
+    /// Quick open: the Penmark-readable files under `root`, by name, with their
+    /// folder shown and searchable.
+    pub fn files(root: &Path, entries: &[Entry], current: Option<&Path>) -> Self {
+        let mut items: Vec<Item> = entries
+            .iter()
+            .filter(|e| !e.is_dir && workspace::is_text(&e.path))
+            .map(|e| {
+                let folder = e
+                    .path
+                    .parent()
+                    .map(|p| workspace::relative(root, p))
+                    .unwrap_or_default();
+                let detail = if current == Some(e.path.as_path()) {
+                    if folder.is_empty() {
+                        "open".to_string()
+                    } else {
+                        format!("{folder}  \u{b7}  open")
+                    }
+                } else {
+                    folder.clone()
+                };
+                Item {
+                    keywords: folder,
+                    ..Item::new(e.name.clone(), detail, Target::OpenFile(e.path.clone()))
+                }
             })
             .collect();
-        items.push(Item {
-            label: "Reset rendering options to defaults".into(),
-            detail: String::new(),
-            target: Target::ResetOptions,
-            preview: false,
+        items.sort_by(|a, b| {
+            a.label
+                .to_lowercase()
+                .cmp(&b.label.to_lowercase())
+                .then(a.keywords.cmp(&b.keywords))
         });
-        Palette::new(Mode::Options, items)
+        Palette::new(Mode::Files, items)
+    }
+
+    /// Recent folders, with "Open Folder..." first.
+    pub fn folders(recent: &[PathBuf], current: Option<&Path>) -> Self {
+        let same = |a: &Path, b: &Path| workspace::contains(a, b) && workspace::contains(b, a);
+        let mut items = vec![Item::new(
+            "Open Folder\u{2026}",
+            "",
+            Target::OpenFolderDialog,
+        )];
+        for path in recent {
+            let name = path.file_name().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let parent = path
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let shown = short_path(&parent, 40);
+            let detail = if current.is_some_and(|c| same(c, path)) {
+                format!("{shown}  \u{b7}  current")
+            } else {
+                shown
+            };
+            items.push(Item {
+                keywords: parent,
+                ..Item::new(name, detail, Target::SwitchFolder(path.clone()))
+            });
+        }
+        let mut p = Palette::new(Mode::Folders, items);
+        // Start on the most recent folder other than the current one.
+        let first_is_current = recent
+            .first()
+            .is_some_and(|f| current.is_some_and(|c| same(c, f)));
+        let start = if first_is_current { 2 } else { 1 };
+        p.select(start.min(p.filtered.len().saturating_sub(1)));
+        p
+    }
+
+    /// The open folder's settings.
+    pub fn folder_settings(f: &FolderSettings) -> Self {
+        let items = FolderOpt::ALL
+            .iter()
+            .map(|&opt| Item::new(opt.label(), opt.value_text(f), Target::FolderOpt(opt)))
+            .collect();
+        Palette::new(Mode::FolderSettings, items)
+    }
+
+    pub fn refresh_folder_values(&mut self, f: &FolderSettings) {
+        for item in &mut self.items {
+            if let Target::FolderOpt(opt) = item.target {
+                item.detail = opt.value_text(f);
+            }
+        }
     }
 
     /// Refreshes option values after a change, keeping the query and selection.
@@ -194,6 +351,9 @@ impl Palette {
             Mode::Commands => "Type a command",
             Mode::Fonts => "Choose the editor font",
             Mode::Options => "Filter options  ·  ←/→ adjust (Shift for more)  ·  Enter toggles",
+            Mode::Files => "Go to file by name (add a folder name to narrow it down)",
+            Mode::Folders => "Open a recent folder",
+            Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles",
         }
     }
 
@@ -202,6 +362,9 @@ impl Palette {
             Mode::Commands => "No matching commands",
             Mode::Fonts => "No matching fonts",
             Mode::Options => "No matching options",
+            Mode::Files => "No matching files",
+            Mode::Folders => "No matching folders",
+            Mode::FolderSettings => "No matching settings",
         }
     }
 
@@ -210,7 +373,19 @@ impl Palette {
             .items
             .iter()
             .enumerate()
-            .filter_map(|(i, it)| term_match(&self.query, &it.label).map(|(s, m)| (s, i, m)))
+            .filter_map(|(i, it)| {
+                // Keywords are searched too, but only label characters are highlighted.
+                let (score, hits) = if it.keywords.is_empty() {
+                    term_match(&self.query, &it.label)?
+                } else {
+                    term_match(&self.query, &format!("{} {}", it.label, it.keywords))?
+                };
+                Some((
+                    score,
+                    i,
+                    hits.into_iter().filter(|&b| b < it.label.len()).collect(),
+                ))
+            })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         self.filtered = scored.into_iter().map(|(_, i, m)| (i, m)).collect();
@@ -326,6 +501,15 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortens_paths() {
+        assert_eq!(short_path(r"C:\notes", 40), r"C:\notes");
+        assert_eq!(
+            short_path(r"C:\Users\someone\AppData\Local\Temp\work\scratchpad", 20),
+            "\u{2026}\\work\\scratchpad"
+        );
+    }
 
     #[test]
     fn term_matching() {

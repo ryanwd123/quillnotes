@@ -31,19 +31,49 @@ entities.
 
 ## Keyboard
 
-Press **F1** in the app for the full list. It opens [`assets/help.md`](assets/help.md),
-rendered by the editor itself. The highlights:
+Shortcuts follow VS Code's defaults where they don't clash with Markdown formatting:
+`Ctrl+B`, `Ctrl+I` and `Ctrl+K` stay bold, italic and link, as in other Markdown
+editors. The full list is [`assets/help.md`](assets/help.md), shown rendered by
+**Help: Keyboard Shortcuts** in the command palette. The highlights:
 
 | | |
 | --- | --- |
+| `F1` / `Ctrl+Shift+P`, `Ctrl+P`, `Ctrl+R` | Command palette, go to file, recent folders |
+| `Ctrl+Shift+E`, `Ctrl+0` | Show / hide the explorer, focus it |
 | `Ctrl+B` `Ctrl+I` `Ctrl+E` `Ctrl+K` | Bold, italic, code, link |
 | `Ctrl+1`…`6`, `Ctrl+Shift+7/8/9`, `Ctrl+Shift+.` | Headings, lists, tasks, quote |
 | `Enter`, `Tab`, `Shift+Tab` | Continue, indent and outdent lists |
-| `Ctrl+Enter` | Toggle a task's checkbox |
+| `Alt+C` | Toggle a task's checkbox |
 | `Ctrl+F`, `F3`, `Ctrl+G` | Find, find next, go to line (in the status bar) |
-| `Alt+Up/Down`, `Ctrl+D`, `Ctrl+Shift+K` | Move, duplicate, delete lines |
-| `Ctrl+/`, `Ctrl+Shift+T`, `Ctrl+=`/`-`/`0` | Source mode, theme, zoom (5% steps) |
-| `Ctrl+Shift+P` | Command palette |
+| `Ctrl+D`, `Ctrl+L` | Select word / next occurrence, select line |
+| `Alt+Up/Down`, `Shift+Alt+Up/Down`, `Ctrl+Shift+K` | Move, copy, delete lines |
+| `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |
+| `Ctrl+/` | Toggle comment |
+| `Ctrl+Shift+V`, `Ctrl+Shift+T`, `Ctrl+=`/`-`/`Numpad0` | Source mode, theme, zoom (5% steps) |
+| `Ctrl+W`, `Ctrl+Shift+W` | Close file, close window |
+
+### Folders
+
+A window can have one folder open, like a VS Code workspace (subfolders included, no
+multi-root). Open one with **File: Open Folder…** in the palette, `Ctrl+R`, or
+`penmark.exe C:\path\to\folder`. Started without arguments, Penmark reopens the last
+folder and the file that was open in it.
+
+* `Ctrl+P` lists the folder's Markdown and text files by name, with their subfolder
+  shown on the right. The search matches the name and the folder, so `2024 jan` finds
+  `projects/2024/jan.md`.
+* `Ctrl+R` lists recent folders, with **Open Folder…** first.
+* The **explorer** (`Ctrl+Shift+E` to show or hide, `Ctrl+0` to focus) shows the
+  folder tree, skipping hidden folders such as `.git` and `node_modules`. Click or
+  press `Enter` to open a file; non-text files open in their usual app. `Delete` moves
+  to the Recycle Bin after a confirmation. `F2` renames, and a name like
+  `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files
+  and folders. Right-click for New File, New Folder, Rename, Delete and Reveal in File
+  Explorer. If the open file is moved or renamed, the editor follows it.
+* **Preferences: Folder Settings** in the palette holds per-folder settings: autosave
+  on or off, and the delay in seconds after the last edit. With autosave on, switching
+  files saves instead of asking. Folder settings live in Penmark's settings file, not
+  in the folder.
 
 The zoom level and the window's size, position and maximized state are remembered
 between runs. A saved position on a monitor that is no longer connected is ignored.
@@ -132,8 +162,9 @@ Studio C++ build tools and provides `rc.exe`, which embeds the icon and manifest
 cargo build --release
 ```
 
-The executable is `target/release/penmark.exe`. To open a file, pass it as an argument
-(`penmark.exe notes.md`), drop it on the window, or use `Ctrl+O`.
+The executable is `target/release/penmark.exe`. To open a file or folder, pass it as an
+argument (`penmark.exe notes.md`, `penmark.exe C:\notes`), drop a file on the window, or
+use `Ctrl+O` / `Ctrl+R`.
 
 ## Code layout
 
@@ -143,6 +174,8 @@ The executable is `target/release/penmark.exe`. To open a file, pass it as an ar
 | `src/doc.rs` | Text model as a list of lines, grouped undo/redo, grapheme and word boundaries. Unit-tested. |
 | `src/render.rs` | DirectWrite layout per line with a source↔display offset map, layout caching, painting, hit-testing. |
 | `src/app.rs` | Editor state, key and mouse handling, Markdown-aware editing commands, find, files. |
+| `src/app/folder.rs` | Open folder, quick open, explorer panel and its file operations, folder settings, autosave. |
+| `src/workspace.rs` | Folder scanning, tree visibility, recent folders, folder settings model. Unit-tested. |
 | `src/palette.rs` | Command palette: commands, term matching, filtering and selection. Unit-tested. |
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
 | `src/table.rs` | Tables: cell lookup, row/column/alignment changes, serialization. Unit-tested. |
@@ -158,4 +191,4 @@ the lines that changed, which costs about 0.5 ms of CPU on a 20,000-line documen
 
 Syntax highlighting inside code blocks, math rendering, footnote rendering, setext
 headings, reference-style link resolution, remote images, HTML/PDF export, and
-remembering window size and recent files.
+search across all files in a folder.

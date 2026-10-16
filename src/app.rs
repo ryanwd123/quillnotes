@@ -1,5 +1,8 @@
 //! Editor state and input handling.
 
+mod folder;
+
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -16,11 +19,12 @@ use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
-    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, STATUS_H, Status, TableUi, View,
+    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SIDEBAR_W, STATUS_H, Status, TableUi, View,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
 use crate::table::{self, Grid, TableCmd};
+use crate::workspace::{Entry, FolderSettings};
 
 pub const APP_NAME: &str = "Penmark";
 
@@ -35,6 +39,11 @@ fn clamp_zoom(z: f32) -> f32 {
 enum PromptKind {
     Find,
     GoTo,
+    /// Rename (or move, with a relative path) the explorer entry `Prompt::path`.
+    Rename,
+    /// Create a file or folder inside the folder `Prompt::path`.
+    NewFile,
+    NewFolder,
 }
 
 struct Prompt {
@@ -42,6 +51,8 @@ struct Prompt {
     text: String,
     cur: usize,
     origin: (Pos, Pos, f32),
+    /// The file or folder a rename / new-item prompt acts on.
+    path: Option<PathBuf>,
 }
 
 /// Everything the layout depends on: doc version, selected lines, table being edited,
@@ -122,6 +133,23 @@ pub struct App {
     /// Table-control hover state last painted: near the table, control, column.
     table_hover: (bool, Option<TableUi>, Option<usize>),
     tracking_leave: bool,
+    // The open folder and its explorer panel (see app/folder.rs).
+    folder: Option<PathBuf>,
+    entries: Vec<Entry>,
+    expanded: HashSet<PathBuf>,
+    folder_settings: FolderSettings,
+    /// Whether the explorer is shown while a folder is open.
+    explorer: bool,
+    tree_focus: bool,
+    tree_sel: Option<PathBuf>,
+    tree_scroll: f32,
+    tree_cut: Option<PathBuf>,
+    tree_drag: Option<folder::TreeDrag>,
+    tree_hover: Option<usize>,
+    /// For autosave: when the document last changed, and a version that failed to save.
+    last_edit: Instant,
+    seen_version: u64,
+    autosave_failed: Option<u64>,
 }
 
 fn ctrl_down() -> bool {
@@ -175,6 +203,7 @@ impl App {
             view.set_body_font(font);
         }
         view.set_options(RenderOptions::load(&settings));
+        let explorer = settings.get("explorer") != Some("off");
         if let Some(pct) = settings.get("zoom").and_then(|z| z.parse::<f32>().ok()) {
             view.zoom = clamp_zoom(pct / 100.0);
         }
@@ -206,6 +235,20 @@ impl App {
             mouse: None,
             table_hover: (false, None, None),
             tracking_leave: false,
+            folder: None,
+            entries: Vec::new(),
+            expanded: HashSet::new(),
+            folder_settings: FolderSettings::default(),
+            explorer,
+            tree_focus: false,
+            tree_sel: None,
+            tree_scroll: 0.0,
+            tree_cut: None,
+            tree_drag: None,
+            tree_hover: None,
+            last_edit: Instant::now(),
+            seen_version: 0,
+            autosave_failed: None,
             restoring_placement: false,
         }
     }
@@ -334,6 +377,11 @@ impl App {
         }
         self.caret_on = true;
         self.restart_blink();
+        if self.doc.version != self.seen_version {
+            self.seen_version = self.doc.version;
+            self.last_edit = Instant::now();
+            self.autosave_failed = None;
+        }
         self.snap_to_cell();
         self.update_slash();
         self.scroll_to_caret();
@@ -427,10 +475,15 @@ impl App {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.untitled_name.into());
+        let folder = self
+            .folder
+            .as_ref()
+            .and_then(|f| f.file_name())
+            .map(|n| format!(" — {}", n.to_string_lossy()))
+            .unwrap_or_default();
         let title = format!(
-            "{}{} — {APP_NAME}",
+            "{}{name}{folder} — {APP_NAME}",
             if self.doc.is_dirty() { "• " } else { "" },
-            name
         );
         if title != self.last_title {
             unsafe {
@@ -542,6 +595,9 @@ impl App {
             self.prompt_changed();
             return;
         }
+        if self.tree_focus {
+            return;
+        }
         // A pipe typed in a table cell must not split the cell.
         let s = if s == "|" && self.grid_block() != 0 {
             r"\|".to_string()
@@ -571,6 +627,9 @@ impl App {
             return true;
         }
         let key = VIRTUAL_KEY(vk);
+        if self.tree_focus && !alt && self.tree_key(key, ctrl) {
+            return true;
+        }
         // The slash menu takes selection keys; everything else edits as usual.
         if let Some(m) = &mut self.slash
             && !ctrl
@@ -599,6 +658,10 @@ impl App {
         if ctrl {
             match key {
                 VK_P if shift => self.open_palette(Palette::commands()),
+                VK_P => self.quick_open(),
+                VK_R => self.recent_folders(),
+                VK_E if shift => self.toggle_explorer(),
+                VK_0 if !shift => self.focus_explorer(),
                 VK_N if shift => self.new_window(),
                 VK_N => self.new_doc(),
                 VK_O => self.open(),
@@ -608,9 +671,10 @@ impl App {
                 VK_S => {
                     self.save();
                 }
-                VK_W => unsafe {
+                VK_W if shift => unsafe {
                     let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 },
+                VK_W => self.new_doc(),
                 VK_Z if shift => self.undo(false),
                 VK_Z => self.undo(true),
                 VK_Y => self.undo(false),
@@ -621,6 +685,7 @@ impl App {
                 VK_C => self.copy(false),
                 VK_X if shift => self.toggle_wrap("~~"),
                 VK_X => self.copy(true),
+                VK_V if shift => self.toggle_source(),
                 VK_V => self.paste(),
                 VK_B => self.toggle_wrap("**"),
                 VK_I => self.toggle_wrap("*"),
@@ -628,22 +693,17 @@ impl App {
                 VK_H if shift => self.toggle_wrap("=="),
                 VK_K if shift => self.delete_lines(),
                 VK_K => self.make_link(),
-                VK_D if !shift => self.duplicate_lines(),
+                VK_D if !shift => self.select_next_match(),
+                VK_L if !shift => self.select_line(),
+                VK_OEM_6 => self.indent(true),
+                VK_OEM_4 => self.indent(false),
                 VK_T if shift => self.toggle_theme(),
                 VK_F => self.open_prompt(PromptKind::Find),
                 VK_G => self.open_prompt(PromptKind::GoTo),
-                VK_OEM_2 => {
-                    self.source = !self.source;
-                    self.say(if self.source {
-                        "Source mode"
-                    } else {
-                        "Live preview"
-                    });
-                    self.changed(false);
-                }
+                VK_OEM_2 => self.toggle_comment(),
                 VK_OEM_PLUS | VK_ADD => self.set_zoom(self.view.zoom + ZOOM_STEP),
                 VK_OEM_MINUS | VK_SUBTRACT => self.set_zoom(self.view.zoom - ZOOM_STEP),
-                VK_0 | VK_NUMPAD0 if !shift => self.set_zoom(1.0),
+                VK_NUMPAD0 => self.set_zoom(1.0),
                 VK_1 | VK_2 | VK_3 | VK_4 | VK_5 | VK_6 if !shift => {
                     self.set_heading((vk - VK_0.0) as u8)
                 }
@@ -651,7 +711,7 @@ impl App {
                 VK_7 if shift => self.set_list(ListStyle::Ordered),
                 VK_9 if shift => self.set_list(ListStyle::Task),
                 VK_OEM_PERIOD if shift => self.toggle_quote(),
-                VK_RETURN => self.toggle_task(self.cursor.line),
+                VK_RETURN => self.open_line(!shift),
                 VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END | VK_BACK | VK_DELETE => {
                     self.nav_key(key, true, shift)
                 }
@@ -661,18 +721,17 @@ impl App {
         }
         if alt {
             match key {
+                VK_UP if shift => self.duplicate_lines(false),
+                VK_DOWN if shift => self.duplicate_lines(true),
                 VK_UP => self.move_lines(false),
                 VK_DOWN => self.move_lines(true),
+                VK_C => self.toggle_task(self.cursor.line),
                 _ => return false,
             }
             return true;
         }
         match key {
-            VK_F1 => {
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).arg("--help").spawn();
-                }
-            }
+            VK_F1 => self.open_palette(Palette::commands()),
             VK_F3 => self.find_next(!shift),
             VK_ESCAPE => {
                 if self.anchor != self.cursor {
@@ -1268,16 +1327,121 @@ impl App {
         self.commit();
     }
 
-    fn duplicate_lines(&mut self) {
+    /// Shift+Alt+Down / Up: copy the selected lines below (moving to the copy) or
+    /// above (staying on the upper copy).
+    fn duplicate_lines(&mut self, down: bool) {
         let (l0, l1) = self.line_range();
         let block = self.doc.lines[l0..=l1].join("\n");
         self.begin(EditKind::Other);
         let end = Pos::new(l1, self.doc.line_len(l1));
         self.doc.replace(end, end, &format!("\n{block}"));
-        let k = l1 - l0 + 1;
-        let d = |p: Pos| Pos::new(p.line + k, p.col);
-        self.set_sel(d(self.anchor), d(self.cursor));
+        if down {
+            let k = l1 - l0 + 1;
+            let d = |p: Pos| Pos::new(p.line + k, p.col);
+            self.set_sel(d(self.anchor), d(self.cursor));
+        }
         self.commit();
+    }
+
+    /// Ctrl+L: select the current line; again to extend by a line.
+    fn select_line(&mut self) {
+        let (a, b) = self.sel();
+        let whole = a.col == 0 && b.col == 0 && b.line > a.line;
+        let first = if whole { a.line } else { self.cursor.line };
+        let next = if whole {
+            b.line + 1
+        } else {
+            self.cursor.line + 1
+        };
+        let end = if next < self.doc.lines.len() {
+            Pos::new(next, 0)
+        } else {
+            self.doc.end()
+        };
+        self.set_sel(Pos::new(first, 0), end);
+        self.changed(false);
+    }
+
+    /// Ctrl+D: select the word at the caret, then each next occurrence of the
+    /// selection (wrapping around the document).
+    fn select_next_match(&mut self) {
+        let (a, b) = self.sel();
+        if a == b {
+            let (s, e) = doc::word_at(&self.doc.lines[a.line], a.col);
+            self.set_sel(Pos::new(a.line, s), Pos::new(a.line, e));
+            return self.changed(false);
+        }
+        if a.line != b.line {
+            return;
+        }
+        let needle = self.doc.text_range(a, b);
+        let n = self.doc.lines.len();
+        for k in 0..=n {
+            let l = (b.line + k) % n;
+            let from = if k == 0 { b.col } else { 0 };
+            if let Some(i) = self.doc.lines[l][from..].find(&needle) {
+                let start = Pos::new(l, from + i);
+                self.set_sel(start, Pos::new(l, start.col + needle.len()));
+                return self.changed(false);
+            }
+        }
+    }
+
+    /// Ctrl+/: wrap the selected lines in `<!-- -->`, or unwrap them.
+    fn toggle_comment(&mut self) {
+        let (l0, l1) = self.line_range();
+        let lines: Vec<usize> = (l0..=l1)
+            .filter(|&l| !self.doc.lines[l].trim().is_empty())
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let commented = |s: &str| {
+            let t = s.trim();
+            t.starts_with("<!--") && t.ends_with("-->")
+        };
+        let all = lines.iter().all(|&l| commented(&self.doc.lines[l]));
+        self.begin(EditKind::Other);
+        for l in lines {
+            let line = self.doc.lines[l].clone();
+            let lead = line.len() - line.trim_start().len();
+            let end = line.trim_end().len();
+            if all {
+                let inner = &line[lead + 4..end - 3];
+                let inner = inner.strip_prefix(' ').unwrap_or(inner);
+                let inner = inner.strip_suffix(' ').unwrap_or(inner);
+                self.replace_keep(Pos::new(l, lead), Pos::new(l, end), inner);
+            } else {
+                self.replace_keep(Pos::new(l, end), Pos::new(l, end), " -->");
+                self.replace_keep(Pos::new(l, lead), Pos::new(l, lead), "<!-- ");
+            }
+        }
+        self.commit();
+    }
+
+    /// Ctrl+Enter / Ctrl+Shift+Enter: start a new empty line below / above.
+    fn open_line(&mut self, below: bool) {
+        let l = self.cursor.line;
+        self.begin(EditKind::Other);
+        let p = if below {
+            let end = Pos::new(l, self.doc.line_len(l));
+            self.doc.replace(end, end, "\n")
+        } else {
+            self.doc.replace(Pos::new(l, 0), Pos::new(l, 0), "\n");
+            Pos::new(l, 0)
+        };
+        self.set_sel(p, p);
+        self.commit();
+    }
+
+    fn toggle_source(&mut self) {
+        self.source = !self.source;
+        self.say(if self.source {
+            "Source mode"
+        } else {
+            "Live preview"
+        });
+        self.changed(false);
     }
 
     fn delete_lines(&mut self) {
@@ -1366,13 +1530,27 @@ impl App {
         let text = match kind {
             PromptKind::Find if a != b && a.line == b.line => self.doc.text_range(a, b),
             PromptKind::Find => self.find_query.clone(),
-            PromptKind::GoTo => String::new(),
+            _ => String::new(),
         };
         self.prompt = Some(Prompt {
             kind,
             cur: text.len(),
             text,
             origin: (self.anchor, self.cursor, self.scroll),
+            path: None,
+        });
+        self.invalidate();
+    }
+
+    /// A rename / new-item prompt for `path`, starting with `text` (caret at `cur`).
+    fn open_path_prompt(&mut self, kind: PromptKind, path: PathBuf, text: String, cur: usize) {
+        self.slash = None;
+        self.prompt = Some(Prompt {
+            kind,
+            cur,
+            text,
+            origin: (self.anchor, self.cursor, self.scroll),
+            path: Some(path),
         });
         self.invalidate();
     }
@@ -1412,6 +1590,12 @@ impl App {
                         self.set_sel(Pos::new(l, 0), Pos::new(l, 0));
                     }
                     self.changed(false);
+                }
+                kind => {
+                    let p = self.prompt.take().unwrap();
+                    if let Some(path) = p.path {
+                        self.path_prompt_done(kind, path, &p.text);
+                    }
                 }
             },
             VK_BACK => {
@@ -1912,6 +2096,9 @@ impl App {
         }
         self.slash = None;
         let (dx, dy) = self.to_dip(x, y);
+        if self.over_explorer(dx, dy) {
+            return self.tree_right_click(dy, x, y);
+        }
         self.ensure_layout();
         if let Some(TableUi::ColumnHandle(c)) = self.view.table_ui_at(dx, dy + self.scroll) {
             self.focus_column(c);
@@ -2127,6 +2314,13 @@ impl App {
             let steps = if key == VK_LEFT { -1 } else { 1 } * if shift { 5 } else { 1 };
             return self.change_options(|o| opt.adjust(o, steps));
         }
+        if p.mode == Mode::FolderSettings
+            && matches!(key, VK_LEFT | VK_RIGHT)
+            && let Some(Target::FolderOpt(opt)) = p.selected().map(|i| i.target.clone())
+        {
+            let steps = if key == VK_LEFT { -1 } else { 1 } * if shift { 5 } else { 1 };
+            return self.change_folder_settings(|f| opt.adjust(f, steps));
+        }
         match key {
             VK_ESCAPE => return self.close_palette(true),
             VK_P if ctrl && shift => return self.close_palette(true),
@@ -2166,6 +2360,7 @@ impl App {
             // Options stay open so several can be changed in a row.
             Target::Option(opt) => return self.change_options(|o| opt.activate(o)),
             Target::ResetOptions => return self.change_options(|o| *o = RenderOptions::default()),
+            Target::FolderOpt(opt) => return self.change_folder_settings(|f| opt.activate(f)),
             _ => {}
         }
         self.palette = None;
@@ -2178,7 +2373,26 @@ impl App {
             Target::Command(Command::RenderingOptions) => {
                 self.open_palette(Palette::options(&self.view.options()));
             }
-            Target::Option(_) | Target::ResetOptions => {}
+            Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
+            Target::Command(Command::QuickOpen) => self.quick_open(),
+            Target::Command(Command::OpenFolder) | Target::OpenFolderDialog => {
+                self.open_folder_dialog()
+            }
+            Target::Command(Command::OpenRecent) => self.recent_folders(),
+            Target::Command(Command::CloseFolder) => self.close_folder(),
+            Target::Command(Command::NewFile) => self.new_item_prompt(false),
+            Target::Command(Command::NewFolder) => self.new_item_prompt(true),
+            Target::Command(Command::ToggleExplorer) => self.toggle_explorer(),
+            Target::Command(Command::FolderSettings) => self.folder_settings_palette(),
+            Target::Command(Command::ToggleSource) => self.toggle_source(),
+            Target::Command(Command::ToggleTheme) => self.toggle_theme(),
+            Target::Command(Command::Help) => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("--help").spawn();
+                }
+            }
+            Target::OpenFile(path) => self.open_file_in_folder(&path),
+            Target::SwitchFolder(path) => self.switch_folder(&path),
             Target::Font(name) => {
                 self.preview_font(&name);
                 match Settings::update(|s| s.set("font", &name)) {
@@ -2239,6 +2453,7 @@ impl App {
 
     pub fn on_timer(&mut self) {
         self.caret_on = !self.caret_on;
+        self.autosave_tick();
         if self
             .message
             .as_ref()
@@ -2252,6 +2467,10 @@ impl App {
     pub fn on_focus(&mut self, focused: bool) {
         self.focused = focused;
         self.caret_on = focused;
+        if focused && self.folder.is_some() {
+            // Pick up files added or removed outside Penmark.
+            self.rescan();
+        }
         if focused {
             self.restart_blink();
             self.update_ime();
@@ -2326,6 +2545,9 @@ impl App {
                 let label = match p.kind {
                     PromptKind::Find => "Find: ",
                     PromptKind::GoTo => "Go to line: ",
+                    PromptKind::Rename => "Rename to (a/b.md moves it): ",
+                    PromptKind::NewFile => "New file: ",
+                    PromptKind::NewFolder => "New folder: ",
                 };
                 let extra = if p.kind == PromptKind::Find {
                     self.message
@@ -2343,8 +2565,12 @@ impl App {
             right: &status_right,
             prompt: prompt_text.as_ref().map(|(t, c)| (t.as_str(), *c)),
         };
-        let caret =
-            self.caret_on && self.focused && self.prompt.is_none() && self.palette.is_none();
+        let caret = self.caret_on
+            && self.focused
+            && self.prompt.is_none()
+            && self.palette.is_none()
+            && !self.tree_focus;
+        let sidebar = self.sidebar_view();
         let palette = self.palette.as_ref().map(|p| {
             let (rows, selected) = p.visible();
             PaletteView {
@@ -2394,6 +2620,7 @@ impl App {
             palette.as_ref(),
             popup.as_ref(),
             self.mouse.filter(|_| self.palette.is_none()),
+            sidebar.as_ref(),
         );
         self.infos = infos;
     }
@@ -2414,6 +2641,13 @@ impl App {
         }
         if self.slash.is_some() && self.slash_click(dx, dy) {
             return;
+        }
+        if self.over_explorer(dx, dy) {
+            return self.tree_mouse_down(dy);
+        }
+        if self.tree_focus {
+            self.tree_focus = false;
+            self.invalidate();
         }
         if let Some(ui) = self.view.table_ui_at(dx, dy + self.scroll) {
             return self.table_ui_click(ui, x, y);
@@ -2503,7 +2737,12 @@ impl App {
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
         let (dx, dy) = self.to_dip(x, y);
         match self.drag {
-            Drag::None => self.hover(dx, dy),
+            Drag::None => {
+                if self.explorer_visible() {
+                    self.tree_mouse_move(dx, dy);
+                }
+                self.hover(dx, dy);
+            }
             Drag::Scrollbar(_) => self.drag_scrollbar(dy),
             drag => {
                 let vh = self.view_h();
@@ -2587,6 +2826,7 @@ impl App {
     }
 
     pub fn on_mouse_up(&mut self) {
+        self.tree_mouse_up();
         if !matches!(self.drag, Drag::None) {
             self.drag = Drag::None;
             self.update_ime();
@@ -2601,6 +2841,9 @@ impl App {
             p.scroll(-(delta as isize) * 3 / 120);
             self.palette_changed();
             return;
+        }
+        if self.mouse.is_some_and(|(x, y)| self.over_explorer(x, y)) {
+            return self.tree_wheel(delta);
         }
         if ctrl_down() {
             self.set_zoom(self.view.zoom + if delta > 0 { ZOOM_STEP } else { -ZOOM_STEP });
@@ -2631,7 +2874,16 @@ impl App {
                 .palette_geom
                 .is_some_and(|g| dx >= g.left && dx <= g.right && dy >= g.top && dy <= g.bottom);
         let over_table_ui = self.view.table_ui_at(dx, dy + self.scroll).is_some();
-        !over_palette && !over_table_ui && dy < self.view_h() && dx < self.view.w - 12.0
+        !over_palette
+            && !over_table_ui
+            && !self.over_explorer(dx, dy)
+            && dy < self.view_h()
+            && dx < self.view.w - 12.0
+    }
+
+    /// Whether a client point (DIPs) is over the explorer panel.
+    fn over_explorer(&self, x: f32, y: f32) -> bool {
+        self.explorer_visible() && x < SIDEBAR_W && y < self.view_h()
     }
 
     // -----------------------------------------------------------------------
@@ -2654,6 +2906,7 @@ impl App {
                 self.set_sel(Pos::default(), Pos::default());
                 self.scroll = 0.0;
                 self.prompt = None;
+                self.remember_file();
                 self.relayout();
                 self.say(if lossy {
                     "Opened (file was not valid UTF-8; invalid bytes replaced)"
@@ -2676,10 +2929,15 @@ impl App {
     fn write_to(&mut self, path: &Path) -> bool {
         match std::fs::write(path, self.doc.to_bytes()) {
             Ok(()) => {
+                let new_path = self.doc.path.as_deref() != Some(path);
                 self.doc.path = Some(path.to_path_buf());
                 self.doc.mark_saved();
                 self.say("Saved");
                 self.update_title();
+                if new_path && self.folder.is_some() {
+                    self.rescan();
+                    self.remember_file();
+                }
                 true
             }
             Err(e) => {
@@ -2728,6 +2986,9 @@ impl App {
         if !self.doc.is_dirty() {
             return true;
         }
+        if self.autosave_applies() {
+            return self.save();
+        }
         let name = self
             .doc
             .path
@@ -2762,7 +3023,7 @@ impl App {
 
     fn new_window(&mut self) {
         if let Ok(exe) = std::env::current_exe() {
-            let _ = std::process::Command::new(exe).spawn();
+            let _ = std::process::Command::new(exe).arg("--new").spawn();
         }
     }
 
@@ -2770,7 +3031,8 @@ impl App {
         if !self.confirm_discard() {
             return;
         }
-        if let Some(p) = platform::open_dialog(self.hwnd, self.doc_dir().as_deref()) {
+        let start = self.doc_dir().or_else(|| self.folder.clone());
+        if let Some(p) = platform::open_dialog(self.hwnd, start.as_deref()) {
             self.open_path(&p);
         }
     }
