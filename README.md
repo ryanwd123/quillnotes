@@ -35,7 +35,8 @@ Shortcuts follow VS Code's defaults where they don't clash with Markdown formatt
 `Ctrl+I` and `Ctrl+K` stay italic and link, as in other Markdown editors, and bold is
 `Ctrl+Shift+B` so that `Ctrl+B` can toggle the explorer as in VS Code. The full list
 is [`assets/help.md`](assets/help.md), shown rendered by **Help: Keyboard Shortcuts**
-in the command palette. The highlights:
+in the command palette. Shortcuts can be changed in `keymap.ini` (see
+[Command palette](#command-palette)). The highlights:
 
 | | |
 | --- | --- |
@@ -221,8 +222,21 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
   * line height, content width, code font size and UI font size;
   * reset to defaults.
 
+* **Preferences: Open Settings Folder** opens `%APPDATA%\Penmark` in Explorer.
+* **Preferences: Write keymap.ini** writes `%APPDATA%\Penmark\keymap.ini` with every
+  command and its current keys, then opens it in the app for `.ini` files. Each line
+  is `command = keys`, such as `redo = Ctrl+Y, Ctrl+Shift+Z`; an empty value removes
+  the shortcut, and commands left out keep their defaults. A key given to a command
+  in the file is taken from any command that has it by default. The file is reloaded
+  when Penmark gets focus (or when it is saved in Penmark), and problems in it show
+  in the status bar. Caret movement, Enter, Tab, Backspace, Delete, and keys inside
+  the palette, explorer and tables stay fixed. Writing it again keeps changed keys
+  but not comments, so Penmark asks first.
+
 To add a command, add a variant to `Command` and an entry to `COMMANDS` in
-`src/palette.rs`, then handle it in `App::palette_accept`.
+`src/palette.rs`, then handle it in `App::palette_accept`. To give it a shortcut, add
+an `Action` and its default keys to `ACTIONS` in `src/keymap.rs`, then handle it in
+`App::run_action`.
 
 The status bar shows the file name and modified state on the left. On the right it
 shows line and column, word count (selected and total), line endings and mode.
@@ -252,6 +266,7 @@ use `Ctrl+O` / `Ctrl+R`.
 | `src/workspace.rs` | Folder scanning, tree visibility, recent folders, folder settings model. Unit-tested. |
 | `src/palette.rs` | Command palette: commands, term matching, filtering and selection. Unit-tested. |
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
+| `src/keymap.rs` | Keyboard shortcuts: commands, default keys, parsing and writing `keymap.ini`. Unit-tested. |
 | `src/table.rs` | Tables: cell lookup, row/column/alignment changes, serialization. Unit-tested. |
 | `src/slash.rs` | The `/` menu: items, filtering, and the edits they make. Unit-tested. |
 | `src/attach.rs` | Dropped and pasted files: copying into `data`, relative links. Unit-tested. |
