@@ -40,6 +40,7 @@ in the command palette. The highlights:
 | | |
 | --- | --- |
 | `F1` / `Ctrl+Shift+P`, `Ctrl+P`, `Ctrl+R` | Command palette, go to file, recent folders |
+| `Ctrl+Shift+F` | Search the folder's Markdown files |
 | `Ctrl+B`, `Ctrl+Shift+E`, `Ctrl+0` | Show / hide the explorer, switch focus to / from it, focus it |
 | `Ctrl+Shift+O` | Show / hide the outline |
 | `Alt+Left/Right`, mouse back/forward | Previous / next file |
@@ -65,6 +66,11 @@ folder and the file that was open in it.
 * `Ctrl+P` lists the folder's Markdown and text files by name, with their subfolder
   shown on the right. The search matches the name and the folder, so `2024 jan` finds
   `projects/2024/jan.md`.
+* `Ctrl+Shift+F` searches the text of the folder's Markdown files (not `.txt` or
+  other files) and lists each matching line with its file and line number. The search
+  is case-insensitive and starts with the selected text; the open file is searched as
+  edited, even unsaved. `Enter` opens the file with the match selected, and `F3` then
+  goes on to the next match in it.
 * `Ctrl+R` lists recent folders, with **Open Folder…** first.
 * The **explorer** (`Ctrl+B` to show or hide, `Ctrl+Shift+E` to switch focus to or
   from it, `Ctrl+0` to focus it) shows the folder tree, skipping hidden folders such
