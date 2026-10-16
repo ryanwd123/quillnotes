@@ -120,6 +120,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 app.on_right_click(x, y);
                 LRESULT(0)
             }
+            // Mouse back / forward buttons.
+            WM_XBUTTONUP => {
+                app.navigate((wparam.0 >> 16) & 0xFFFF == 1);
+                LRESULT(1)
+            }
             WM_MOUSELEAVE => {
                 app.on_mouse_leave();
                 LRESULT(0)

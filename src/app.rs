@@ -91,6 +91,15 @@ struct SlashMenu {
     selected: usize,
 }
 
+/// A place in a file, for going back and forward between files.
+struct NavEntry {
+    path: PathBuf,
+    cursor: Pos,
+    scroll: f32,
+}
+
+const NAV_MAX: usize = 50;
+
 #[derive(Clone, Copy)]
 enum Drag {
     None,
@@ -150,6 +159,9 @@ pub struct App {
     last_edit: Instant,
     seen_version: u64,
     autosave_failed: Option<u64>,
+    /// Files to go back / forward to (most recent last).
+    back: Vec<NavEntry>,
+    forward: Vec<NavEntry>,
 }
 
 fn ctrl_down() -> bool {
@@ -249,6 +261,8 @@ impl App {
             last_edit: Instant::now(),
             seen_version: 0,
             autosave_failed: None,
+            back: Vec::new(),
+            forward: Vec::new(),
             restoring_placement: false,
         }
     }
@@ -734,6 +748,8 @@ impl App {
                 VK_UP => self.move_lines(false),
                 VK_DOWN => self.move_lines(true),
                 VK_C => self.toggle_task(self.cursor.line),
+                VK_LEFT => self.navigate(true),
+                VK_RIGHT => self.navigate(false),
                 _ => return false,
             }
             return true;
@@ -2968,7 +2984,64 @@ impl App {
         self.changed(false);
     }
 
+    /// Where the open file is, for the back / forward history.
+    fn nav_entry(&self) -> Option<NavEntry> {
+        Some(NavEntry {
+            path: self.doc.path.clone()?,
+            cursor: self.cursor,
+            scroll: self.scroll,
+        })
+    }
+
+    /// Mouse back / forward buttons, Alt+Left / Alt+Right: the previous or next file
+    /// in this window's history, at the position it was left.
+    pub fn navigate(&mut self, back: bool) {
+        let entry = loop {
+            let stack = if back { &mut self.back } else { &mut self.forward };
+            match stack.pop() {
+                Some(e) if e.path.is_file() => break e,
+                Some(_) => {}
+                None => return self.say(if back { "No previous file" } else { "No next file" }),
+            }
+        };
+        if !self.confirm_discard() {
+            let stack = if back { &mut self.back } else { &mut self.forward };
+            stack.push(entry);
+            return;
+        }
+        let current = self.nav_entry();
+        self.read_path(&entry.path);
+        if self.doc.path.as_deref() != Some(entry.path.as_path()) {
+            return; // Could not be read; open_path reported it.
+        }
+        if let Some(c) = current {
+            let other = if back { &mut self.forward } else { &mut self.back };
+            other.push(c);
+        }
+        let p = self.doc.clamp(entry.cursor);
+        self.set_sel(p, p);
+        self.scroll = entry.scroll;
+        self.clamp_scroll();
+        self.reveal_in_tree(&entry.path);
+        self.changed(true);
+    }
+
+    /// Opens `path`, recording the file being left in the back history.
     pub fn open_path(&mut self, path: &Path) {
+        let leaving = self.nav_entry().filter(|e| e.path != path);
+        self.read_path(path);
+        if let Some(e) = leaving
+            && self.doc.path.as_deref() == Some(path)
+        {
+            if self.back.len() >= NAV_MAX {
+                self.back.remove(0);
+            }
+            self.back.push(e);
+            self.forward.clear();
+        }
+    }
+
+    fn read_path(&mut self, path: &Path) {
         match std::fs::read(path) {
             Ok(bytes) => {
                 let (doc, lossy) = Document::from_bytes(&bytes, Some(path.to_path_buf()));

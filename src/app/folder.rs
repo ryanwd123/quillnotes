@@ -79,6 +79,9 @@ impl App {
             }
             None => self.blank_doc(),
         }
+        // History is per folder.
+        self.back.clear();
+        self.forward.clear();
         self.say(format!("Opened folder {}", name_of(dir)));
         self.update_title();
     }
