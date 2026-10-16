@@ -330,6 +330,13 @@ pub struct PaletteGeom {
     pub item_h: f32,
 }
 
+/// A small menu anchored at a document position (the `/` command menu).
+pub struct PopupView<'a> {
+    pub at: Pos,
+    pub items: Vec<PaletteItem<'a>>,
+    pub selected: usize,
+}
+
 /// Number of palette items visible at once.
 pub const PALETTE_ROWS: usize = 10;
 
@@ -350,6 +357,7 @@ pub struct View {
     /// Formats for font-picker previews, by family name.
     preview_formats: HashMap<String, IDWriteTextFormat>,
     pub palette_geom: Option<PaletteGeom>,
+    pub popup_geom: Option<PaletteGeom>,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -403,6 +411,7 @@ impl View {
                 formats: HashMap::new(),
                 preview_formats: HashMap::new(),
                 palette_geom: None,
+                popup_geom: None,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -1454,6 +1463,7 @@ impl View {
         scroll: f32,
         status: &Status,
         palette: Option<&PaletteView>,
+        popup: Option<&PopupView>,
     ) {
         if self.ensure_target(hwnd).is_err() {
             return;
@@ -1527,6 +1537,10 @@ impl View {
             }
 
             self.paint_status(&rt, status);
+            self.popup_geom = None;
+            if let Some(p) = popup {
+                self.paint_popup(&rt, p, scroll);
+            }
             self.palette_geom = None;
             if let Some(p) = palette {
                 self.paint_palette(&rt, p);
@@ -1777,6 +1791,96 @@ impl View {
         let f = f.unwrap_or_else(|_| self.format(Family::Ui, size, 400));
         self.preview_formats.insert(family.to_string(), f.clone());
         f
+    }
+
+    /// Draws a menu below the caret line at `p.at`, or above it when it would not fit.
+    unsafe fn paint_popup(&mut self, rt: &ID2D1HwndRenderTarget, p: &PopupView, scroll: f32) {
+        let Some((cx, cy, ch)) = self.caret_rect(p.at) else {
+            return;
+        };
+        let (pw, item_h, pad) = (240.0, 30.0, 4.0);
+        let ph = p.items.len() as f32 * item_h + 2.0 * pad;
+        let view_h = self.h - STATUS_H;
+        let (cy, ch) = (cy - scroll, ch.max(self.base()));
+        let top = if cy + ch + 4.0 + ph <= view_h || cy - 4.0 - ph < 0.0 {
+            cy + ch + 4.0
+        } else {
+            cy - 4.0 - ph
+        };
+        let left = (cx - 12.0).clamp(8.0, (self.w - pw - 8.0).max(8.0));
+        let (right, bottom) = (left + pw, top + ph);
+        self.popup_geom = Some(PaletteGeom {
+            left,
+            top,
+            right,
+            bottom,
+            items_top: top + pad,
+            item_h,
+        });
+        let label_f = self.format(Family::Ui, 14.0, 400);
+        let hint_f = self.format(Family::Mono, 12.5, 400);
+        unsafe {
+            for k in 1..=3 {
+                let o = k as f32 * 1.5;
+                let rr = D2D1_ROUNDED_RECT {
+                    rect: rect(left - o, top - o + 2.0, right + o, bottom + o + 2.0),
+                    radiusX: 6.0 + o,
+                    radiusY: 6.0 + o,
+                };
+                rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
+            }
+            let panel = D2D1_ROUNDED_RECT {
+                rect: rect(left, top, right, bottom),
+                radiusX: 6.0,
+                radiusY: 6.0,
+            };
+            rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
+            rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+            let mut y = top + pad;
+            for (i, item) in p.items.iter().enumerate() {
+                if i == p.selected {
+                    let rr = D2D1_ROUNDED_RECT {
+                        rect: rect(left + pad, y, right - pad, y + item_h),
+                        radiusX: 4.0,
+                        radiusY: 4.0,
+                    };
+                    rt.FillRoundedRectangle(&rr, self.brush(Ink::PaletteSel));
+                }
+                let wide: Vec<u16> = item.label.encode_utf16().collect();
+                if let Ok(l) = self.dw.CreateTextLayout(&wide, &label_f, pw - 90.0, item_h) {
+                    let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    for &b in item.matches {
+                        let Some(ch) = item.label[b..].chars().next() else {
+                            continue;
+                        };
+                        let at = item.label[..b].encode_utf16().count() as u32;
+                        let r = range(at, at + ch.len_utf16() as u32);
+                        let _ = l.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
+                        let _ = l.SetDrawingEffect(self.brush(Ink::Accent), r);
+                    }
+                    rt.DrawTextLayout(
+                        v2(left + 14.0, y),
+                        &l,
+                        self.brush(Ink::Text),
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+                let wide: Vec<u16> = item.detail.encode_utf16().collect();
+                if let Ok(l) = self.dw.CreateTextLayout(&wide, &hint_f, 80.0, item_h) {
+                    let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                    let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    rt.DrawTextLayout(
+                        v2(right - 14.0 - 80.0, y),
+                        &l,
+                        self.brush(Ink::Dim),
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+                y += item_h;
+            }
+        }
     }
 
     /// Draws the command palette near the top of the window.

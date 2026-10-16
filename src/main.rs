@@ -8,6 +8,7 @@ mod palette;
 mod platform;
 mod render;
 mod settings;
+mod slash;
 
 use std::path::PathBuf;
 

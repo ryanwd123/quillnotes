@@ -48,6 +48,21 @@ rendered by the editor itself. The highlights:
 The zoom level and the window's size, position and maximized state are remembered
 between runs. A saved position on a monitor that is no longer connected is ignored.
 
+### Slash menu
+
+Type `/` at the start of a line or after a space to open a small menu at the cursor.
+Keep typing to filter it (`/co`, `/h2`). `Up`/`Down` select, `Enter` or `Tab`
+inserts, and `Esc` closes it and leaves what you typed. The typed `/command` is
+replaced, and one `Ctrl+Z` undoes the whole insertion.
+
+* **Code block** inserts a fenced code block with the cursor inside it. On a line
+  that already has text, the block goes below it, inside the same list item or
+  quote.
+* **Heading 1** to **Heading 5** turn the current line into that heading.
+
+A `/` inside a word (`a/b`, URLs) or inside a code block does not open the menu.
+Items are defined in `src/slash.rs`.
+
 ### Command palette
 
 `Ctrl+Shift+P` opens a searchable list of commands. The search is split into
@@ -101,6 +116,7 @@ The executable is `target/release/penmark.exe`. To open a file, pass it as an ar
 | `src/app.rs` | Editor state, key and mouse handling, Markdown-aware editing commands, find, files. |
 | `src/palette.rs` | Command palette: commands, term matching, filtering and selection. Unit-tested. |
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
+| `src/slash.rs` | The `/` menu: items, filtering, and the edits they make. Unit-tested. |
 | `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard, file dialogs, message boxes, shell, theme detection. |
 | `src/main.rs` | Window class, message loop, message dispatch. |

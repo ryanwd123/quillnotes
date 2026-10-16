@@ -29,6 +29,8 @@ Penmark edits plain Markdown files. The lines you are editing show their Markdow
 
 Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 
+Type `/` at the start of a line or after a space for the slash menu: **Code block** and **Heading 1**–**5**. Keep typing to filter it, `Enter` inserts, `Esc` closes.
+
 ## Editing
 
 | Shortcut | Action |

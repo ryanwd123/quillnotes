@@ -15,8 +15,9 @@ use crate::markdown::{self, Kind, LineInfo};
 use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
-use crate::render::{PALETTE_ROWS, PaletteItem, PaletteView, STATUS_H, Status, View};
+use crate::render::{PALETTE_ROWS, PaletteItem, PaletteView, PopupView, STATUS_H, Status, View};
 use crate::settings::Settings;
+use crate::slash::{self, SlashCmd};
 
 pub const APP_NAME: &str = "Penmark";
 
@@ -38,6 +39,16 @@ struct Prompt {
     text: String,
     cur: usize,
     origin: (Pos, Pos, f32),
+}
+
+/// The open `/` menu, for the `/` at `line`, `col`.
+struct SlashMenu {
+    line: usize,
+    col: usize,
+    query: String,
+    /// Matching [`slash::ITEMS`] indices with highlighted label offsets.
+    matches: Vec<(usize, Vec<usize>)>,
+    selected: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -76,6 +87,7 @@ pub struct App {
     /// True while the saved placement is applied, so a DPI change keeps the saved size.
     pub restoring_placement: bool,
     palette: Option<Palette>,
+    slash: Option<SlashMenu>,
 }
 
 fn ctrl_down() -> bool {
@@ -156,6 +168,7 @@ impl App {
             last_title: String::new(),
             untitled_name: "Untitled",
             palette: None,
+            slash: None,
             restoring_placement: false,
         }
     }
@@ -281,6 +294,7 @@ impl App {
         }
         self.caret_on = true;
         self.restart_blink();
+        self.update_slash();
         self.scroll_to_caret();
         self.update_ime();
         self.update_title();
@@ -488,6 +502,9 @@ impl App {
             return;
         }
         self.type_text(&s);
+        if s == "/" {
+            self.open_slash();
+        }
     }
 
     /// Returns true when the key was handled.
@@ -507,6 +524,28 @@ impl App {
             return true;
         }
         let key = VIRTUAL_KEY(vk);
+        // The slash menu takes selection keys; everything else edits as usual.
+        if let Some(m) = &mut self.slash
+            && !ctrl
+            && !alt
+        {
+            let n = m.matches.len();
+            match key {
+                VK_UP => m.selected = (m.selected + n - 1) % n,
+                VK_DOWN => m.selected = (m.selected + 1) % n,
+                VK_RETURN | VK_TAB => self.slash_accept(),
+                VK_ESCAPE => self.slash = None,
+                _ => return self.editor_key(key, ctrl, shift, alt),
+            }
+            self.invalidate();
+            return true;
+        }
+        self.editor_key(key, ctrl, shift, alt)
+    }
+
+    /// The editor's own key bindings, after overlays have had their turn.
+    fn editor_key(&mut self, key: VIRTUAL_KEY, ctrl: bool, shift: bool, alt: bool) -> bool {
+        let vk = key.0;
         if ctrl {
             match key {
                 VK_P if shift => self.open_palette(Palette::commands()),
@@ -1426,10 +1465,120 @@ impl App {
     // View
 
     // -----------------------------------------------------------------------
+    // Slash menu
+
+    /// Opens the menu if the `/` just typed before the cursor can start a command.
+    fn open_slash(&mut self) {
+        let c = self.cursor;
+        if self.source || c.col == 0 || self.anchor != c {
+            return;
+        }
+        let info = self.info(c.line);
+        let line = &self.doc.lines[c.line];
+        let col = c.col - 1;
+        if line.as_bytes()[col] == b'/' && slash::can_open(line, &info, col) {
+            self.slash = Some(SlashMenu {
+                line: c.line,
+                col,
+                query: String::new(),
+                matches: Vec::new(),
+                selected: 0,
+            });
+            self.update_slash();
+            self.invalidate();
+        }
+    }
+
+    /// Refilters the menu from the text after the `/`, closing it when the caret
+    /// leaves that text or nothing matches.
+    fn update_slash(&mut self) {
+        let Some(m) = &mut self.slash else { return };
+        let c = self.cursor;
+        let line = &self.doc.lines.get(m.line).map_or("", |l| l.as_str());
+        let valid = self.anchor == c
+            && c.line == m.line
+            && c.col > m.col
+            && c.col <= line.len()
+            && line.as_bytes().get(m.col) == Some(&b'/');
+        let query = if valid { &line[m.col + 1..c.col] } else { "" };
+        let matches = if valid && !query.contains(char::is_whitespace) {
+            slash::filter(query)
+        } else {
+            Vec::new()
+        };
+        if matches.is_empty() {
+            self.slash = None;
+            return;
+        }
+        if m.query != query {
+            m.query = query.to_string();
+            m.selected = 0;
+        }
+        m.matches = matches;
+        m.selected = m.selected.min(m.matches.len() - 1);
+    }
+
+    /// Replaces the typed `/command` with the selected item's result.
+    fn slash_accept(&mut self) {
+        let Some(m) = self.slash.take() else { return };
+        let Some(&(item, _)) = m.matches.get(m.selected) else {
+            return;
+        };
+        let l = m.line;
+        self.begin(EditKind::Other);
+        let at = Pos::new(l, m.col);
+        self.doc.replace(at, self.cursor, "");
+        self.set_sel(at, at);
+        match slash::ITEMS[item].3 {
+            SlashCmd::Heading(n) => {
+                let (s, e) = self.prefix_range(l);
+                self.replace_keep(
+                    Pos::new(l, s),
+                    Pos::new(l, e),
+                    &format!("{} ", "#".repeat(n as usize)),
+                );
+            }
+            SlashCmd::CodeBlock => {
+                let info = self.info(l);
+                let edit = slash::code_block(&self.doc.lines[l], &info);
+                self.doc
+                    .replace(Pos::new(l, edit.start), Pos::new(l, edit.end), &edit.text);
+                let caret = Pos::new(l + edit.caret.0, edit.caret.1);
+                self.set_sel(caret, caret);
+            }
+        }
+        self.commit();
+    }
+
+    /// Handles a click while the slash menu is open. Returns true if it was on the menu.
+    fn slash_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(g) = self.view.popup_geom else {
+            self.slash = None;
+            return false;
+        };
+        if x < g.left || x > g.right || y < g.top || y > g.bottom {
+            self.slash = None;
+            self.invalidate();
+            return false;
+        }
+        if let Some(m) = &mut self.slash
+            && y >= g.items_top
+        {
+            let row = ((y - g.items_top) / g.item_h) as usize;
+            if row < m.matches.len() {
+                m.selected = row;
+                self.slash_accept();
+            }
+        }
+        true
+    }
+
+    // -----------------------------------------------------------------------
     // Command palette
 
     fn open_palette(&mut self, p: Palette) {
         self.prompt = None;
+        self.slash = None;
         self.palette = Some(p);
         self.invalidate();
     }
@@ -1718,6 +1867,20 @@ impl App {
                     .collect(),
             }
         });
+        let popup = self.slash.as_ref().map(|m| PopupView {
+            at: Pos::new(m.line, m.col),
+            selected: m.selected,
+            items: m
+                .matches
+                .iter()
+                .map(|(i, hits)| PaletteItem {
+                    label: slash::ITEMS[*i].0,
+                    matches: hits,
+                    detail: slash::ITEMS[*i].1,
+                    font: None,
+                })
+                .collect(),
+        });
         let infos = std::mem::take(&mut self.infos);
         self.view.paint(
             self.hwnd,
@@ -1729,6 +1892,7 @@ impl App {
             self.scroll,
             &status,
             palette.as_ref(),
+            popup.as_ref(),
         );
         self.infos = infos;
     }
@@ -1745,6 +1909,9 @@ impl App {
         let (dx, dy) = self.to_dip(x, y);
         if self.palette.is_some() {
             self.palette_click(dx, dy);
+            return;
+        }
+        if self.slash.is_some() && self.slash_click(dx, dy) {
             return;
         }
         unsafe {
