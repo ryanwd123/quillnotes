@@ -22,6 +22,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::doc::Pos;
 use crate::markdown::{self, Align, Kind, LineInfo, Style};
+use crate::options::{RenderOptions, num};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Ink {
@@ -349,6 +350,7 @@ pub struct View {
     /// Formats for font-picker previews, by family name.
     preview_formats: HashMap<String, IDWriteTextFormat>,
     pub palette_geom: Option<PaletteGeom>,
+    opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
     boxes: HashMap<u64, Rc<TextBox>>,
@@ -401,6 +403,7 @@ impl View {
                 formats: HashMap::new(),
                 preview_formats: HashMap::new(),
                 palette_geom: None,
+                opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
                 boxes: HashMap::new(),
@@ -484,6 +487,23 @@ impl View {
         &self.brushes[ink as usize]
     }
 
+    pub fn options(&self) -> RenderOptions {
+        self.opts
+    }
+
+    /// Applies new rendering options; cached document layouts are rebuilt.
+    pub fn set_options(&mut self, o: RenderOptions) {
+        if self.opts == o {
+            return;
+        }
+        if self.opts.num(num::LINE_HEIGHT) != o.num(num::LINE_HEIGHT) {
+            self.formats.retain(|k, _| k.0 == Family::Ui);
+        }
+        self.opts = o;
+        self.boxes.clear();
+        self.tables.clear();
+    }
+
     pub fn body_font(&self) -> String {
         self.body_font.to_string()
     }
@@ -559,6 +579,7 @@ impl View {
             return f.clone();
         }
         let mono = family == Family::Mono;
+        let is_ui = family == Family::Ui;
         let ui = HSTRING::from("Segoe UI");
         let family = match family {
             Family::Body => &self.body_font,
@@ -579,7 +600,15 @@ impl View {
                 )
                 .expect("CreateTextFormat");
             let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK);
-            let (spacing, baseline) = if mono { (1.3, 1.15) } else { (1.25, 1.12) };
+            // Proportional spacing; the extra space is split roughly evenly above and
+            // below the text. Code lines are a touch looser than body text.
+            let lh = if is_ui {
+                1.25
+            } else {
+                self.opts.num(num::LINE_HEIGHT) / 100.0
+            };
+            let spacing = if mono { lh + 0.05 } else { lh };
+            let baseline = 1.0 + (spacing - 1.0) * 0.5;
             let _ = f.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_PROPORTIONAL, spacing, baseline);
             f
         };
@@ -828,7 +857,7 @@ impl View {
         width: f32,
     ) -> TableBox {
         let z = self.zoom;
-        let (pad_x, pad_y) = (10.0 * z, 6.0 * z);
+        let (pad_x, pad_y) = (10.0 * z, self.opts.num(num::TABLE_PADDING) * z);
         let qend = infos[start].qend;
         let aligns =
             markdown::delim_row(&lines[start + 1][infos[start + 1].qend..]).unwrap_or_default();
@@ -915,12 +944,15 @@ impl View {
         }
         let z = self.zoom;
         let base = self.base();
-        let max_w = 760.0 * z;
+        let o = self.opts;
+        // Option lengths scale with zoom.
+        let opt = |i: usize| o.num(i) * z;
+        let max_w = opt(num::CONTENT_WIDTH);
         let margin = 48.0 * z;
         self.cw = (self.w - 2.0 * margin).min(max_w).max(120.0);
         self.x0 = ((self.w - self.cw) / 2.0).max(16.0).floor();
         let (x0, cw) = (self.x0, self.cw);
-        let (qw, lw, code_pad) = (20.0 * z, 28.0 * z, 16.0 * z);
+        let (qw, lw, code_pad) = (opt(num::QUOTE_INDENT), opt(num::LIST_INDENT), 16.0 * z);
         let right = x0 + cw;
 
         let mut old_boxes = std::mem::take(&mut self.boxes);
@@ -978,9 +1010,29 @@ impl View {
                     o.kind == Kind::Para && o.quote == info.quote && o.level == info.level
                 })
             };
+            let para = opt(num::PARAGRAPH);
             let para_pad = (
-                if i > 0 && joins(i - 1) { 0.0 } else { 3.0 * z },
-                if joins(i + 1) { 0.0 } else { 3.0 * z },
+                if i > 0 && joins(i - 1) { 0.0 } else { para },
+                if joins(i + 1) { 0.0 } else { para },
+            );
+            // List items: half the item gap between items, else the list's outer spacing.
+            let is_item = |j: usize| {
+                infos
+                    .get(j)
+                    .is_some_and(|o| matches!(o.kind, Kind::List { .. }) && o.quote == info.quote)
+            };
+            let half_gap = opt(num::LIST_ITEM) / 2.0;
+            let list_pad = (
+                if i > 0 && is_item(i - 1) {
+                    half_gap
+                } else {
+                    opt(num::LIST_BEFORE)
+                },
+                if is_item(i + 1) {
+                    half_gap
+                } else {
+                    opt(num::LIST_AFTER)
+                },
             );
 
             // Generic text row: content at `cx`, `pad` above and below.
@@ -1049,7 +1101,7 @@ impl View {
                             (0.0, 0.0),
                             &mut old_boxes,
                         );
-                        let bh = (base * 0.75).round();
+                        let bh = opt(num::BLANK_LINE).round();
                         row.top = (bh - row.h) / 2.0;
                         row.h = bh;
                     }
@@ -1089,9 +1141,10 @@ impl View {
                             ink: Ink::Heading,
                             callout: false,
                         };
-                        let rule = n <= 2;
-                        let top = base * if n <= 2 { 1.0 } else { 0.8 };
-                        let bottom = base * 0.3 + if rule { 8.0 * z } else { 0.0 };
+                        let rule = o.heading_rule[n as usize - 1];
+                        // Smaller headings get a little less space above.
+                        let top = opt(num::HEADING_ABOVE) * if n <= 2 { 1.0 } else { 0.8 };
+                        let bottom = opt(num::HEADING_BELOW) + if rule { 8.0 * z } else { 0.0 };
                         text_row(
                             self,
                             &mut row,
@@ -1126,13 +1179,13 @@ impl View {
                             lx + lw,
                             0.0,
                             true,
-                            (2.0 * z, 2.0 * z),
+                            list_pad,
                             &mut old_boxes,
                         );
                     }
                     Kind::Rule if !act => {
                         row.vis = Vis::Rule;
-                        row.h = base * 1.6;
+                        row.h = opt(num::RULE_SPACING);
                     }
                     Kind::Rule => text_row(
                         self,
@@ -1144,7 +1197,7 @@ impl View {
                         (3.0 * z, 3.0 * z),
                         &mut old_boxes,
                     ),
-                    Kind::Fence if !act => row.h = 10.0 * z,
+                    Kind::Fence if !act => row.h = opt(num::CODE_PADDING),
                     Kind::Fence | Kind::Code => {
                         let st = BoxStyle {
                             ink: if act && info.kind == Kind::Fence {
@@ -1604,6 +1657,14 @@ impl View {
                                     radiusX: r,
                                     radiusY: r,
                                 };
+                                if self.opts.dash_bullets {
+                                    let half = base * 0.22;
+                                    rt.FillRectangle(
+                                        &rect(cx - half, cy - 0.7 * z, cx + half, cy + 0.7 * z),
+                                        self.brush(Ink::Text),
+                                    );
+                                    return;
+                                }
                                 match info.level % 3 {
                                     0 => rt.FillEllipse(&e, self.brush(Ink::Text)),
                                     1 => rt.DrawEllipse(&e, self.brush(Ink::Text), 1.2 * z, None),

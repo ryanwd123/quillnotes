@@ -48,13 +48,23 @@ rendered by the editor itself. The highlights:
 ### Command palette
 
 `Ctrl+Shift+P` opens a fuzzy-searchable list of commands. Use `Up`/`Down` (or the
-mouse) to select, `Enter` to run, and `Esc` to close. The palette currently has one
-command:
+mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
+`%APPDATA%\Penmark\settings.ini`.
 
 * **Font: Change Editor Font** lists every installed font, with each name drawn in
   its own typeface. The document previews the highlighted font live. `Enter` keeps
-  it and `Esc` reverts. The choice is saved to `%APPDATA%\Penmark\settings.ini`
-  (`font=…`). Code blocks and inline code stay monospace.
+  it and `Esc` reverts. Code blocks and inline code stay monospace.
+* **View: Rendering Options** lists every option with its current value. Type to
+  filter, `Left`/`Right` to adjust (`Shift` for bigger steps), and `Enter` to
+  toggle. Changes apply and save immediately. The options are:
+  * bullet style (dot or dash);
+  * a line under each heading level, set separately for H1 to H6;
+  * spacing around paragraphs, above and below headings, before and after
+    lists, and between list items;
+  * list and quote indent, blank-line height, code block padding, table cell
+    padding, and horizontal rule spacing;
+  * line height and content width;
+  * reset to defaults.
 
 To add a command, add a variant to `Command` and an entry to `COMMANDS` in
 `src/palette.rs`, then handle it in `App::palette_accept`.
@@ -84,6 +94,7 @@ The executable is `target/release/penmark.exe`. To open a file, pass it as an ar
 | `src/app.rs` | Editor state, key and mouse handling, Markdown-aware editing commands, find, files. |
 | `src/palette.rs` | Command palette: commands, fuzzy matching, filtering and selection. Unit-tested. |
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
+| `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard, file dialogs, message boxes, shell, theme detection. |
 | `src/main.rs` | Window class, message loop, message dispatch. |
 

@@ -29,9 +29,12 @@ impl Settings {
         self.values.get(key).map(String::as_str)
     }
 
-    /// Stores `value` and writes the file.
-    pub fn set(&mut self, key: &str, value: &str) -> std::io::Result<()> {
+    /// Stores `value`; call [`save`](Self::save) to write the file.
+    pub fn set(&mut self, key: &str, value: &str) {
         self.values.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
         let path = path().ok_or(std::io::ErrorKind::NotFound)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;

@@ -12,6 +12,7 @@ use windows::core::HSTRING;
 
 use crate::doc::{self, Document, EditKind, Pos};
 use crate::markdown::{self, Kind, LineInfo};
+use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{PALETTE_ROWS, PaletteItem, PaletteView, STATUS_H, Status, View};
@@ -119,6 +120,7 @@ impl App {
         if let Some(font) = settings.get("font").filter(|f| view.has_font(f)) {
             view.set_body_font(font);
         }
+        view.set_options(RenderOptions::load(&settings));
         App {
             hwnd: HWND::default(),
             doc: Document::new(),
@@ -1392,6 +1394,14 @@ impl App {
     fn palette_key(&mut self, key: VIRTUAL_KEY, ctrl: bool, shift: bool) {
         let Some(p) = &mut self.palette else { return };
         let page = PALETTE_ROWS as isize;
+        // In the options list, Left/Right change the selected value.
+        if p.mode == Mode::Options
+            && matches!(key, VK_LEFT | VK_RIGHT)
+            && let Some(Target::Option(opt)) = p.selected().map(|i| i.target.clone())
+        {
+            let steps = if key == VK_LEFT { -1 } else { 1 } * if shift { 5 } else { 1 };
+            return self.change_options(|o| opt.adjust(o, steps));
+        }
         match key {
             VK_ESCAPE => return self.close_palette(true),
             VK_P if ctrl && shift => return self.close_palette(true),
@@ -1427,21 +1437,47 @@ impl App {
         else {
             return;
         };
+        match target {
+            // Options stay open so several can be changed in a row.
+            Target::Option(opt) => return self.change_options(|o| opt.activate(o)),
+            Target::ResetOptions => return self.change_options(|o| *o = RenderOptions::default()),
+            _ => {}
+        }
         self.palette = None;
         match target {
             Target::Command(Command::ChangeFont) => {
                 let current = self.view.body_font();
                 self.open_palette(Palette::fonts(self.view.font_families(), &current));
             }
+            Target::Command(Command::RenderingOptions) => {
+                self.open_palette(Palette::options(&self.view.options()));
+            }
+            Target::Option(_) | Target::ResetOptions => {}
             Target::Font(name) => {
                 self.preview_font(&name);
-                match self.settings.set("font", &name) {
+                self.settings.set("font", &name);
+                match self.settings.save() {
                     Ok(()) => self.say(format!("Font: {name}")),
                     Err(e) => self.say(format!("Font: {name} (setting not saved: {e})")),
                 }
             }
         }
         self.invalidate();
+    }
+
+    /// Applies a change to the rendering options, re-renders, and saves it.
+    fn change_options(&mut self, f: impl FnOnce(&mut RenderOptions)) {
+        let mut o = self.view.options();
+        f(&mut o);
+        self.view.set_options(o);
+        if let Some(p) = &mut self.palette {
+            p.refresh_values(&o);
+        }
+        o.store(&mut self.settings);
+        if let Err(e) = self.settings.save() {
+            self.say(format!("Rendering options not saved: {e}"));
+        }
+        self.relayout();
     }
 
     /// Handles a click while the palette is open: pick an item, or close when outside.

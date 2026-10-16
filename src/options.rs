@@ -1,0 +1,271 @@
+//! User-adjustable rendering options, persisted in the settings file.
+
+use crate::settings::Settings;
+
+/// Rendering options. Lengths are in DIPs at 100% zoom.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RenderOptions {
+    pub dash_bullets: bool,
+    /// Rule under headings 1–6.
+    pub heading_rule: [bool; 6],
+    pub nums: [f32; NUM_COUNT],
+}
+
+/// Numeric options: (settings key, palette label, default, min, max, step).
+const NUMS: [(&str, &str, f32, f32, f32, f32); NUM_COUNT] = [
+    (
+        "paragraph",
+        "Spacing: Around paragraphs",
+        3.0,
+        0.0,
+        40.0,
+        1.0,
+    ),
+    (
+        "heading_above",
+        "Spacing: Above headings",
+        16.0,
+        0.0,
+        80.0,
+        1.0,
+    ),
+    (
+        "heading_below",
+        "Spacing: Below headings",
+        5.0,
+        0.0,
+        60.0,
+        1.0,
+    ),
+    ("list_before", "Spacing: Before lists", 2.0, 0.0, 40.0, 1.0),
+    ("list_after", "Spacing: After lists", 2.0, 0.0, 40.0, 1.0),
+    (
+        "list_item",
+        "Spacing: Between list items",
+        4.0,
+        0.0,
+        40.0,
+        1.0,
+    ),
+    ("list_indent", "Spacing: List indent", 28.0, 12.0, 80.0, 1.0),
+    ("blank_line", "Spacing: Blank lines", 12.0, 0.0, 60.0, 1.0),
+    (
+        "quote_indent",
+        "Spacing: Quote indent",
+        20.0,
+        8.0,
+        80.0,
+        1.0,
+    ),
+    (
+        "code_padding",
+        "Spacing: Code block padding",
+        10.0,
+        0.0,
+        40.0,
+        1.0,
+    ),
+    (
+        "table_padding",
+        "Spacing: Table cell padding",
+        6.0,
+        0.0,
+        30.0,
+        1.0,
+    ),
+    (
+        "rule_spacing",
+        "Spacing: Horizontal rules",
+        26.0,
+        4.0,
+        100.0,
+        1.0,
+    ),
+    ("line_height", "Text: Line height", 125.0, 100.0, 250.0, 5.0),
+    (
+        "content_width",
+        "Layout: Content width",
+        760.0,
+        400.0,
+        2400.0,
+        20.0,
+    ),
+];
+pub const NUM_COUNT: usize = 14;
+
+/// Indices into [`RenderOptions::nums`].
+pub mod num {
+    pub const PARAGRAPH: usize = 0;
+    pub const HEADING_ABOVE: usize = 1;
+    pub const HEADING_BELOW: usize = 2;
+    pub const LIST_BEFORE: usize = 3;
+    pub const LIST_AFTER: usize = 4;
+    pub const LIST_ITEM: usize = 5;
+    pub const LIST_INDENT: usize = 6;
+    pub const BLANK_LINE: usize = 7;
+    pub const QUOTE_INDENT: usize = 8;
+    pub const CODE_PADDING: usize = 9;
+    pub const TABLE_PADDING: usize = 10;
+    pub const RULE_SPACING: usize = 11;
+    pub const LINE_HEIGHT: usize = 12;
+    pub const CONTENT_WIDTH: usize = 13;
+}
+
+/// One adjustable option, as listed in the palette.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Opt {
+    Bullets,
+    HeadingRule(usize),
+    Num(usize),
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        RenderOptions {
+            dash_bullets: false,
+            heading_rule: [true, true, false, false, false, false],
+            nums: NUMS.map(|n| n.2),
+        }
+    }
+}
+
+impl RenderOptions {
+    pub fn num(&self, i: usize) -> f32 {
+        self.nums[i]
+    }
+
+    pub fn load(s: &Settings) -> Self {
+        let mut o = RenderOptions::default();
+        if let Some(v) = s.get("render.bullets") {
+            o.dash_bullets = v == "dash";
+        }
+        if let Some(v) = s.get("render.heading_rules") {
+            o.heading_rule = [false; 6];
+            for level in v.split(',').filter_map(|l| l.trim().parse::<usize>().ok()) {
+                if (1..=6).contains(&level) {
+                    o.heading_rule[level - 1] = true;
+                }
+            }
+        }
+        for (i, &(key, _, _, min, max, _)) in NUMS.iter().enumerate() {
+            if let Some(v) = s
+                .get(&format!("render.{key}"))
+                .and_then(|v| v.parse::<f32>().ok())
+            {
+                o.nums[i] = v.clamp(min, max);
+            }
+        }
+        o
+    }
+
+    pub fn store(&self, s: &mut Settings) {
+        s.set(
+            "render.bullets",
+            if self.dash_bullets { "dash" } else { "dot" },
+        );
+        let levels: Vec<String> = (1..=6)
+            .filter(|l| self.heading_rule[l - 1])
+            .map(|l| l.to_string())
+            .collect();
+        s.set("render.heading_rules", &levels.join(","));
+        for (i, &(key, ..)) in NUMS.iter().enumerate() {
+            s.set(&format!("render.{key}"), &self.nums[i].to_string());
+        }
+    }
+}
+
+impl Opt {
+    /// Every option in palette order.
+    pub fn all() -> Vec<Opt> {
+        let mut v = vec![Opt::Bullets];
+        v.extend((0..6).map(Opt::HeadingRule));
+        v.extend((0..NUM_COUNT).map(Opt::Num));
+        v
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Opt::Bullets => "Lists: Bullet style".into(),
+            Opt::HeadingRule(l) => format!("Headings: Line under heading {}", l + 1),
+            Opt::Num(i) => NUMS[i].1.into(),
+        }
+    }
+
+    pub fn value_text(self, o: &RenderOptions) -> String {
+        match self {
+            Opt::Bullets => (if o.dash_bullets {
+                "‹ Dash ›"
+            } else {
+                "‹ Dot ›"
+            })
+            .into(),
+            Opt::HeadingRule(l) => (if o.heading_rule[l] {
+                "☑ On"
+            } else {
+                "☐ Off"
+            })
+            .into(),
+            Opt::Num(i) => {
+                let unit = if i == num::LINE_HEIGHT { "%" } else { " px" };
+                format!("‹ {}{unit} ›", o.nums[i])
+            }
+        }
+    }
+
+    /// Steps a value; `steps` is ±1 (or larger for coarse changes).
+    pub fn adjust(self, o: &mut RenderOptions, steps: i32) {
+        match self {
+            Opt::Bullets => o.dash_bullets = !o.dash_bullets,
+            Opt::HeadingRule(l) => o.heading_rule[l] = steps > 0,
+            Opt::Num(i) => {
+                let (_, _, _, min, max, step) = NUMS[i];
+                o.nums[i] = (o.nums[i] + step * steps as f32).clamp(min, max);
+            }
+        }
+    }
+
+    /// Enter / click: toggles switches; numbers are adjusted with arrows instead.
+    pub fn activate(self, o: &mut RenderOptions) {
+        match self {
+            Opt::Bullets => o.dash_bullets = !o.dash_bullets,
+            Opt::HeadingRule(l) => o.heading_rule[l] = !o.heading_rule[l],
+            Opt::Num(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adjust_clamps_and_toggles() {
+        let mut o = RenderOptions::default();
+        Opt::Num(num::LIST_ITEM).adjust(&mut o, -100);
+        assert_eq!(o.num(num::LIST_ITEM), 0.0);
+        Opt::Num(num::LINE_HEIGHT).adjust(&mut o, 2);
+        assert_eq!(o.num(num::LINE_HEIGHT), 135.0);
+        Opt::HeadingRule(0).activate(&mut o);
+        assert!(!o.heading_rule[0]);
+        Opt::HeadingRule(2).adjust(&mut o, 1);
+        assert!(o.heading_rule[2]);
+        Opt::Bullets.activate(&mut o);
+        assert!(o.dash_bullets);
+        assert_eq!(Opt::all().len(), 1 + 6 + NUM_COUNT);
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let mut o = RenderOptions::default();
+        o.dash_bullets = true;
+        o.heading_rule = [false, true, true, false, false, true];
+        o.nums[num::PARAGRAPH] = 9.0;
+        let mut s = Settings::default();
+        o.store(&mut s);
+        assert_eq!(s.get("render.heading_rules"), Some("2,3,6"));
+        assert_eq!(RenderOptions::load(&s), o);
+        // Out-of-range values are clamped.
+        s.set("render.list_indent", "1");
+        assert_eq!(RenderOptions::load(&s).num(num::LIST_INDENT), 12.0);
+    }
+}

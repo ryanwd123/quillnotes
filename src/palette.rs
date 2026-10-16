@@ -1,20 +1,27 @@
 //! Command palette state: the query, fuzzy filtering, and selection.
 
 use crate::doc;
+use crate::options::{Opt, RenderOptions};
 use crate::render::PALETTE_ROWS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     ChangeFont,
+    RenderingOptions,
 }
 
 /// Every command, in the order shown for an empty query: (label, shortcut hint, command).
-const COMMANDS: &[(&str, &str, Command)] = &[("Font: Change Editor Font", "", Command::ChangeFont)];
+const COMMANDS: &[(&str, &str, Command)] = &[
+    ("Font: Change Editor Font", "", Command::ChangeFont),
+    ("View: Rendering Options", "", Command::RenderingOptions),
+];
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Target {
     Command(Command),
     Font(String),
+    Option(Opt),
+    ResetOptions,
 }
 
 pub struct Item {
@@ -29,6 +36,7 @@ pub struct Item {
 pub enum Mode {
     Commands,
     Fonts,
+    Options,
 }
 
 pub struct Palette {
@@ -162,10 +170,40 @@ impl Palette {
         p
     }
 
+    /// The rendering options list, with values from `o`.
+    pub fn options(o: &RenderOptions) -> Self {
+        let mut items: Vec<Item> = Opt::all()
+            .into_iter()
+            .map(|opt| Item {
+                label: opt.label(),
+                detail: opt.value_text(o),
+                target: Target::Option(opt),
+                preview: false,
+            })
+            .collect();
+        items.push(Item {
+            label: "Reset rendering options to defaults".into(),
+            detail: String::new(),
+            target: Target::ResetOptions,
+            preview: false,
+        });
+        Palette::new(Mode::Options, items)
+    }
+
+    /// Refreshes option values after a change, keeping the query and selection.
+    pub fn refresh_values(&mut self, o: &RenderOptions) {
+        for item in &mut self.items {
+            if let Target::Option(opt) = item.target {
+                item.detail = opt.value_text(o);
+            }
+        }
+    }
+
     pub fn placeholder(&self) -> &'static str {
         match self.mode {
             Mode::Commands => "Type a command",
             Mode::Fonts => "Choose the editor font",
+            Mode::Options => "Filter options  ·  ←/→ adjust (Shift for more)  ·  Enter toggles",
         }
     }
 
@@ -173,6 +211,7 @@ impl Palette {
         match self.mode {
             Mode::Commands => "No matching commands",
             Mode::Fonts => "No matching fonts",
+            Mode::Options => "No matching options",
         }
     }
 

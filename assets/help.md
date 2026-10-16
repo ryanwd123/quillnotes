@@ -45,7 +45,7 @@ Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+Shift+P` | Command palette (for example *Font: Change Editor Font*) |
+| `Ctrl+Shift+P` | Command palette: *Font: Change Editor Font*, *View: Rendering Options* (←/→ adjust, Enter toggles) |
 | `Ctrl+F` | Find (`Enter`/`F3` next, `Shift+Enter`/`Shift+F3` previous) |
 | `Ctrl+G` | Go to line |
 | `Ctrl+Click` | Open link (`[[Note]]` links open `Note.md` next to this file) |

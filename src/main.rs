@@ -3,6 +3,7 @@
 mod app;
 mod doc;
 mod markdown;
+mod options;
 mod palette;
 mod platform;
 mod render;
