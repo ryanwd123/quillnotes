@@ -25,6 +25,14 @@ impl Settings {
         }
     }
 
+    /// Applies `f` to the settings on disk and saves them. Reloading first keeps
+    /// changes made by other Penmark windows since this one started.
+    pub fn update(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
+        let mut s = Settings::load();
+        f(&mut s);
+        s.save()
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }

@@ -20,6 +20,13 @@ use crate::settings::Settings;
 
 pub const APP_NAME: &str = "Penmark";
 
+const ZOOM_STEP: f32 = 0.05;
+
+/// Rounds to the nearest 5% step within 60%–300%.
+fn clamp_zoom(z: f32) -> f32 {
+    (z / ZOOM_STEP).round().clamp(12.0, 60.0) * ZOOM_STEP
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum PromptKind {
     Find,
@@ -67,7 +74,6 @@ pub struct App {
     /// Display name for a document without a path.
     untitled_name: &'static str,
     palette: Option<Palette>,
-    settings: Settings,
 }
 
 fn ctrl_down() -> bool {
@@ -121,6 +127,9 @@ impl App {
             view.set_body_font(font);
         }
         view.set_options(RenderOptions::load(&settings));
+        if let Some(pct) = settings.get("zoom").and_then(|z| z.parse::<f32>().ok()) {
+            view.zoom = clamp_zoom(pct / 100.0);
+        }
         App {
             hwnd: HWND::default(),
             doc: Document::new(),
@@ -145,7 +154,6 @@ impl App {
             last_title: String::new(),
             untitled_name: "Untitled",
             palette: None,
-            settings,
         }
     }
 
@@ -475,8 +483,8 @@ impl App {
                     });
                     self.changed(false);
                 }
-                VK_OEM_PLUS | VK_ADD => self.set_zoom(self.view.zoom + 0.1),
-                VK_OEM_MINUS | VK_SUBTRACT => self.set_zoom(self.view.zoom - 0.1),
+                VK_OEM_PLUS | VK_ADD => self.set_zoom(self.view.zoom + ZOOM_STEP),
+                VK_OEM_MINUS | VK_SUBTRACT => self.set_zoom(self.view.zoom - ZOOM_STEP),
                 VK_0 | VK_NUMPAD0 if !shift => self.set_zoom(1.0),
                 VK_1 | VK_2 | VK_3 | VK_4 | VK_5 | VK_6 if !shift => {
                     self.set_heading((vk - VK_0.0) as u8)
@@ -1455,8 +1463,7 @@ impl App {
             Target::Option(_) | Target::ResetOptions => {}
             Target::Font(name) => {
                 self.preview_font(&name);
-                self.settings.set("font", &name);
-                match self.settings.save() {
+                match Settings::update(|s| s.set("font", &name)) {
                     Ok(()) => self.say(format!("Font: {name}")),
                     Err(e) => self.say(format!("Font: {name} (setting not saved: {e})")),
                 }
@@ -1473,8 +1480,7 @@ impl App {
         if let Some(p) = &mut self.palette {
             p.refresh_values(&o);
         }
-        o.store(&mut self.settings);
-        if let Err(e) = self.settings.save() {
+        if let Err(e) = Settings::update(|s| o.store(s)) {
             self.say(format!("Rendering options not saved: {e}"));
         }
         self.relayout();
@@ -1496,8 +1502,12 @@ impl App {
     }
 
     fn set_zoom(&mut self, z: f32) {
-        self.view.zoom = (z * 10.0).round().clamp(6.0, 30.0) / 10.0;
-        self.say(format!("Zoom {}%", (self.view.zoom * 100.0).round()));
+        self.view.zoom = clamp_zoom(z);
+        let pct = (self.view.zoom * 100.0).round();
+        match Settings::update(|s| s.set("zoom", &pct.to_string())) {
+            Ok(()) => self.say(format!("Zoom {pct}%")),
+            Err(e) => self.say(format!("Zoom {pct}% (setting not saved: {e})")),
+        }
         self.relayout();
         self.scroll_to_caret();
     }
@@ -1820,7 +1830,7 @@ impl App {
             return;
         }
         if ctrl_down() {
-            self.set_zoom(self.view.zoom + if delta > 0 { 0.1 } else { -0.1 });
+            self.set_zoom(self.view.zoom + if delta > 0 { ZOOM_STEP } else { -ZOOM_STEP });
             return;
         }
         let mut lines = 3u32;
@@ -2064,4 +2074,17 @@ enum ListStyle {
     Bullet,
     Ordered,
     Task,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_steps() {
+        assert_eq!((clamp_zoom(1.0 + ZOOM_STEP) * 100.0).round(), 105.0);
+        assert_eq!((clamp_zoom(1.07) * 100.0).round(), 105.0);
+        assert_eq!((clamp_zoom(0.1) * 100.0).round(), 60.0);
+        assert_eq!((clamp_zoom(9.0) * 100.0).round(), 300.0);
+    }
 }
