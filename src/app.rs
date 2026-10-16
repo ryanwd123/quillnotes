@@ -25,7 +25,7 @@ use crate::render::{
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
 use crate::table::{self, Grid, TableCmd};
-use crate::workspace::{self, Entry, FolderSettings};
+use crate::workspace::{self, Entry, FolderSettings, NoteLink};
 
 pub const APP_NAME: &str = "Penmark";
 
@@ -98,15 +98,21 @@ impl CellSel {
     }
 }
 
-/// The open `/` menu, for the `/` at `line`, `col`.
+/// The open `/` menu, for the `/` at `line`, `col`; or the `[[` note menu, whose
+/// `col` is just after the `[[`.
 struct SlashMenu {
     line: usize,
     col: usize,
     query: String,
-    /// Matching [`slash::ITEMS`] indices with highlighted label offsets.
+    /// Matching [`slash::ITEMS`] (or `notes`) indices with highlighted label offsets.
     matches: Vec<(usize, Vec<usize>)>,
     selected: usize,
+    /// The notes offered, for the `[[` menu.
+    notes: Option<Vec<NoteLink>>,
 }
+
+/// Rows in the `[[` note menu.
+const NOTE_MENU_ROWS: usize = 10;
 
 /// A place in a file, for going back and forward between files.
 struct NavEntry {
@@ -676,6 +682,8 @@ impl App {
         self.type_text(&s);
         if s == "/" {
             self.open_slash();
+        } else if s == "[" {
+            self.open_note_menu();
         }
     }
 
@@ -2371,28 +2379,63 @@ impl App {
                 query: String::new(),
                 matches: Vec::new(),
                 selected: 0,
+                notes: None,
             });
             self.update_slash();
             self.invalidate();
         }
     }
 
-    /// Refilters the menu from the text after the `/`, closing it when the caret
-    /// leaves that text or nothing matches.
+    /// Opens the note menu when `[[` was just typed in a folder, outside code.
+    fn open_note_menu(&mut self) {
+        let c = self.cursor;
+        let Some(root) = self.folder.clone() else {
+            return;
+        };
+        if self.source || self.anchor != c || c.col < 2 {
+            return;
+        }
+        let info = self.info(c.line);
+        let line = &self.doc.lines[c.line];
+        if &line[c.col - 2..c.col] != "[[" || matches!(info.kind, Kind::Code | Kind::Fence) {
+            return;
+        }
+        let notes = workspace::note_links(&root, &self.entries, self.doc.path.as_deref());
+        self.slash = Some(SlashMenu {
+            line: c.line,
+            col: c.col,
+            query: String::new(),
+            matches: Vec::new(),
+            selected: 0,
+            notes: Some(notes),
+        });
+        self.update_slash();
+        self.invalidate();
+    }
+
+    /// Refilters the menu from the text after the `/` (or `[[`), closing it when the
+    /// caret leaves that text or nothing matches.
     fn update_slash(&mut self) {
         let Some(m) = &mut self.slash else { return };
         let c = self.cursor;
         let line = &self.doc.lines.get(m.line).map_or("", |l| l.as_str());
+        let notes = m.notes.is_some();
         let valid = self.anchor == c
             && c.line == m.line
-            && c.col > m.col
             && c.col <= line.len()
-            && line.as_bytes().get(m.col) == Some(&b'/');
-        let query = if valid { &line[m.col + 1..c.col] } else { "" };
-        let matches = if valid && !query.contains(char::is_whitespace) {
-            slash::filter(query)
-        } else {
-            Vec::new()
+            && if notes {
+                c.col >= m.col && line.get(m.col - 2..m.col) == Some("[[")
+            } else {
+                c.col > m.col && line.as_bytes().get(m.col) == Some(&b'/')
+            };
+        let from = if notes { m.col } else { m.col + 1 };
+        let query = if valid { &line[from..c.col] } else { "" };
+        let matches = match &m.notes {
+            _ if !valid => Vec::new(),
+            Some(_) if query.contains(['[', ']', '|']) => Vec::new(),
+            Some(list) => workspace::filter_notes(list, query, NOTE_MENU_ROWS),
+            None if query.contains(char::is_whitespace) => Vec::new(),
+            None => slash::filter(query),
         };
         if matches.is_empty() {
             self.slash = None;
@@ -2406,7 +2449,8 @@ impl App {
         m.selected = m.selected.min(m.matches.len() - 1);
     }
 
-    /// Replaces the typed `/command` with the selected item's result.
+    /// Replaces the typed `/command` with the selected item's result, or completes
+    /// the `[[` link with the selected note.
     fn slash_accept(&mut self) {
         let Some(m) = self.slash.take() else { return };
         let Some(&(item, _)) = m.matches.get(m.selected) else {
@@ -2414,6 +2458,21 @@ impl App {
         };
         let l = m.line;
         self.begin(EditKind::Other);
+        if let Some(notes) = &m.notes {
+            // Replace the typed query, and a closing `]]` already there.
+            let c = self.cursor;
+            let end = if self.doc.lines[l][c.col..].starts_with("]]") {
+                c.col + 2
+            } else {
+                c.col
+            };
+            let text = format!("{}]]", notes[item].target);
+            let p = self
+                .doc
+                .replace(Pos::new(l, m.col), Pos::new(l, end), &text);
+            self.set_sel(p, p);
+            return self.commit();
+        }
         let at = Pos::new(l, m.col);
         self.doc.replace(at, self.cursor, "");
         self.set_sel(at, at);
@@ -2851,19 +2910,28 @@ impl App {
             })
             .collect();
         let popup = self.slash.as_ref().map(|m| PopupView {
-            at: Pos::new(m.line, m.col),
+            at: Pos::new(m.line, m.col - if m.notes.is_some() { 2 } else { 0 }),
+            wide: m.notes.is_some(),
             selected: m.selected,
             items: m
                 .matches
                 .iter()
-                .map(|(i, hits)| PaletteItem {
-                    label: slash::ITEMS[*i].0,
-                    matches: hits,
-                    detail: match slash::ITEMS[*i].3 {
-                        SlashCmd::Date(_) => &dates[*i],
-                        _ => slash::ITEMS[*i].1,
+                .map(|(i, hits)| match &m.notes {
+                    Some(notes) => PaletteItem {
+                        label: &notes[*i].name,
+                        matches: hits,
+                        detail: &notes[*i].folder,
+                        font: None,
                     },
-                    font: None,
+                    None => PaletteItem {
+                        label: slash::ITEMS[*i].0,
+                        matches: hits,
+                        detail: match slash::ITEMS[*i].3 {
+                            SlashCmd::Date(_) => &dates[*i],
+                            _ => slash::ITEMS[*i].1,
+                        },
+                        font: None,
+                    },
                 })
                 .collect(),
         });
@@ -3565,18 +3633,20 @@ impl App {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         if let Some(name) = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
             let name = name.split('#').next().unwrap_or(name).trim();
-            let file = if name.ends_with(".md") {
-                name.to_string()
-            } else {
-                format!("{name}.md")
-            };
-            let path = dir.join(file);
+            let found = workspace::resolve_note(self.folder.as_deref(), &self.entries, &dir, name);
             if !self.confirm_discard() {
                 return;
             }
-            if path.exists() {
+            if let Some(path) = found {
                 self.open_path(&path);
+                self.reveal_in_tree(&path);
             } else {
+                let file = if workspace::is_markdown(Path::new(name)) {
+                    name.to_string()
+                } else {
+                    format!("{name}.md")
+                };
+                let path = dir.join(file);
                 self.doc = Document::new();
                 self.doc.path = Some(path);
                 self.infos_ver = None;

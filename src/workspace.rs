@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::palette::term_match;
 use crate::settings::Settings;
 
 /// One file or folder under the open folder, in tree order.
@@ -84,6 +85,114 @@ pub fn is_text(path: &Path) -> bool {
             "md" | "markdown" | "mdown" | "mkd" | "txt"
         )
     })
+}
+
+/// A note offered when typing `[[`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoteLink {
+    /// File name without the extension.
+    pub name: String,
+    /// Folder, relative to the root (empty for the root).
+    pub folder: String,
+    /// Text that goes inside `[[...]]`: the name when no other note shares it, else
+    /// the path from the root, both without the extension.
+    pub target: String,
+}
+
+fn stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The folder's Markdown notes as `[[...]]` targets, except `exclude`.
+pub fn note_links(root: &Path, entries: &[Entry], exclude: Option<&Path>) -> Vec<NoteLink> {
+    let notes: Vec<&Entry> = entries
+        .iter()
+        .filter(|e| !e.is_dir && is_markdown(&e.path))
+        .collect();
+    let mut count = std::collections::HashMap::new();
+    for e in &notes {
+        *count.entry(stem(&e.path).to_lowercase()).or_insert(0) += 1;
+    }
+    notes
+        .into_iter()
+        .filter(|e| exclude != Some(e.path.as_path()))
+        .map(|e| {
+            let name = stem(&e.path);
+            let rel = relative(root, &e.path);
+            let target = if count[&name.to_lowercase()] > 1 {
+                rel[..rel.len() - e.path.extension().map_or(0, |x| x.len() + 1)].to_string()
+            } else {
+                name.clone()
+            };
+            NoteLink {
+                folder: e
+                    .path
+                    .parent()
+                    .map(|p| relative(root, p))
+                    .unwrap_or_default(),
+                name,
+                target,
+            }
+        })
+        .collect()
+}
+
+/// Notes matching `query` (typed after `[[`), best first, at most `max`, with the
+/// matched byte offsets in each name.
+pub fn filter_notes(notes: &[NoteLink], query: &str, max: usize) -> Vec<(usize, Vec<usize>)> {
+    let mut found: Vec<(i32, usize, Vec<usize>)> = notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            let (score, hits) = term_match(query, &format!("{} {}", n.name, n.folder))?;
+            let hits = hits.into_iter().filter(|&b| b < n.name.len()).collect();
+            Some((score, i, hits))
+        })
+        .collect();
+    found.sort_by(|a, b| {
+        b.0.cmp(&a.0).then_with(|| {
+            notes[a.1]
+                .name
+                .to_lowercase()
+                .cmp(&notes[b.1].name.to_lowercase())
+        })
+    });
+    found.truncate(max);
+    found.into_iter().map(|(_, i, hits)| (i, hits)).collect()
+}
+
+/// The note a `[[name]]` link points to: `name` relative to `dir` (the linking
+/// note's folder), then to `root`, then any note in `entries` with that file name.
+pub fn resolve_note(
+    root: Option<&Path>,
+    entries: &[Entry],
+    dir: &Path,
+    name: &str,
+) -> Option<PathBuf> {
+    let file = if is_markdown(Path::new(name)) {
+        name.to_string()
+    } else {
+        format!("{name}.md")
+    };
+    let candidates = [Some(dir), root];
+    if let Some(p) = candidates
+        .into_iter()
+        .flatten()
+        .map(|d| d.join(&file))
+        .find(|p| p.is_file())
+    {
+        return Some(p);
+    }
+    let want = Path::new(&file)
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
+    entries
+        .iter()
+        .find(|e| !e.is_dir && e.name.to_lowercase() == want)
+        .map(|e| e.path.clone())
 }
 
 /// Indices of the entries visible in the tree: those whose parent folders are all
@@ -356,6 +465,44 @@ mod tests {
         );
         assert!(contains(&root, &root.join("notes")));
         assert!(!contains(&root.join("notes"), &root.join("notes2")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn note_links_and_resolution() {
+        let root = std::env::temp_dir().join(format!("penmark-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["a", "b"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in ["todo.md", "a/todo.md", "a/plan.md", "b/pic.png"] {
+            std::fs::write(root.join(f), "x").unwrap();
+        }
+        let entries = scan(&root);
+        let links = note_links(&root, &entries, Some(&root.join("todo.md")));
+        let t: Vec<(&str, &str, &str)> = links
+            .iter()
+            .map(|l| (l.name.as_str(), l.folder.as_str(), l.target.as_str()))
+            .collect();
+        assert_eq!(t, vec![("plan", "a", "plan"), ("todo", "a", "a/todo")]);
+        let names = |q: &str| -> Vec<String> {
+            filter_notes(&links, q, 10)
+                .iter()
+                .map(|(i, _)| links[*i].target.clone())
+                .collect()
+        };
+        assert_eq!(names("pl"), vec!["plan"]);
+        assert_eq!(names(""), vec!["plan", "a/todo"]);
+        assert_eq!(names("a todo"), vec!["a/todo"]);
+        // Next to the note, then from the root, then by file name anywhere.
+        let r = |dir: &str, name: &str| {
+            resolve_note(Some(&root), &entries, &root.join(dir), name).map(|p| relative(&root, &p))
+        };
+        assert_eq!(r("a", "todo").as_deref(), Some("a/todo.md"));
+        assert_eq!(r("b", "todo").as_deref(), Some("todo.md"));
+        assert_eq!(r("b", "a/plan").as_deref(), Some("a/plan.md"));
+        assert_eq!(r("b", "plan").as_deref(), Some("a/plan.md"));
+        assert_eq!(r("b", "nope"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

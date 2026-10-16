@@ -459,6 +459,8 @@ pub struct PaletteGeom {
 /// A small menu anchored at a document position (the `/` command menu).
 pub struct PopupView<'a> {
     pub at: Pos,
+    /// Wider, with room for a folder as the detail (the `[[` note menu).
+    pub wide: bool,
     pub items: Vec<PaletteItem<'a>>,
     pub selected: usize,
 }
@@ -2237,7 +2239,12 @@ impl View {
             return;
         };
         let k = self.ui();
-        let (pw, item_h, pad, hint_w) = (240.0 * k, 30.0 * k, 4.0 * k, 80.0 * k);
+        let (pw, hint_w) = if p.wide {
+            (360.0, 140.0)
+        } else {
+            (240.0, 80.0)
+        };
+        let (pw, item_h, pad, hint_w) = (pw * k, 30.0 * k, 4.0 * k, hint_w * k);
         let ph = p.items.len() as f32 * item_h + 2.0 * pad;
         let (head, view_h) = (self.header_h(), self.view_h());
         let (cy, ch) = (cy - scroll + head, ch.max(self.base()));
@@ -2313,6 +2320,12 @@ impl View {
                     let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
                     let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                     let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    let trim = DWRITE_TRIMMING {
+                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                        delimiter: 0,
+                        delimiterCount: 0,
+                    };
+                    let _ = l.SetTrimming(&trim, None);
                     rt.DrawTextLayout(
                         v2(right - 14.0 * k - hint_w, y),
                         &l,
