@@ -23,6 +23,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::doc::Pos;
 use crate::markdown::{self, Align, Kind, LineInfo, Style};
 use crate::options::{RenderOptions, num};
+use crate::table;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Ink {
@@ -249,6 +250,18 @@ pub struct TableBox {
     rows: Vec<(Vec<Cellbox>, f32)>,
 }
 
+impl TableBox {
+    /// The cell of table row `r` that holds source byte `col`.
+    fn cell_at_col(&self, r: usize, col: usize) -> usize {
+        let ranges: Vec<std::ops::Range<usize>> = self.rows[r]
+            .0
+            .iter()
+            .map(|c| c.tb.d2s[0] as usize..*c.tb.d2s.last().unwrap() as usize)
+            .collect();
+        table::cell_index(&ranges, col)
+    }
+}
+
 pub struct Img {
     bmp: ID2D1Bitmap,
     w: f32,
@@ -272,6 +285,27 @@ pub struct Row {
     x: f32,
     vis: Vis,
     active: bool,
+    /// Row of the table whose cells are being edited.
+    grid: bool,
+}
+
+/// Table editing controls shown while the mouse is near the table being edited.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TableUi {
+    AddColumn,
+    AddRow,
+    /// Handle above a column that opens the column menu.
+    ColumnHandle(usize),
+}
+
+/// Bounds (document coordinates) of the table being edited.
+pub struct TableGeom {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub col_x: Vec<f32>,
+    pub col_w: Vec<f32>,
 }
 
 enum Decor {
@@ -358,6 +392,7 @@ pub struct View {
     preview_formats: HashMap<String, IDWriteTextFormat>,
     pub palette_geom: Option<PaletteGeom>,
     pub popup_geom: Option<PaletteGeom>,
+    pub grid_geom: Option<TableGeom>,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -412,6 +447,7 @@ impl View {
                 preview_formats: HashMap::new(),
                 palette_geom: None,
                 popup_geom: None,
+                grid_geom: None,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -939,13 +975,17 @@ impl View {
         TableBox { col_x, col_w, rows }
     }
 
-    /// Lays out every line. `active` is the inclusive line range being edited.
+    /// Lays out every line. `active` is the inclusive line range being edited; `grid`
+    /// is the block id of a table whose cells are being edited (0 for none), which
+    /// stays rendered as a table.
+    #[allow(clippy::too_many_arguments)]
     pub fn layout(
         &mut self,
         hwnd: HWND,
         lines: &[String],
         infos: &[LineInfo],
         active: (usize, usize),
+        grid: u32,
         source: bool,
         doc_dir: Option<&Path>,
     ) {
@@ -984,7 +1024,8 @@ impl View {
         let mut table: Option<Rc<TableBox>> = None;
         for (i, line) in lines.iter().enumerate() {
             let info = infos[i];
-            let act = source || (lo..=hi).contains(&i);
+            let in_grid = !source && grid != 0 && info.block == grid;
+            let act = source || ((lo..=hi).contains(&i) && !in_grid);
             let qx = x0 + info.quote as f32 * qw;
             let lx = qx + info.level as f32 * lw;
             let mut row = Row {
@@ -994,6 +1035,7 @@ impl View {
                 x: lx,
                 vis: Vis::None,
                 active: act,
+                grid: in_grid,
             };
 
             let mut hasher = DefaultHasher::new();
@@ -1351,7 +1393,134 @@ impl View {
             }
         }
         self.total_h = y;
+        self.grid_geom = None;
+        let grid_rows: Vec<&Row> = rows.iter().filter(|r| r.grid && r.h > 0.0).collect();
+        if let (Some(first), Some(last)) = (grid_rows.first(), grid_rows.last())
+            && let Vis::Table(t, _) = &first.vis
+        {
+            let x0 = first.x;
+            self.grid_geom = Some(TableGeom {
+                x0,
+                y0: first.y,
+                x1: x0 + t.col_w.iter().sum::<f32>(),
+                y1: last.y + last.h,
+                col_x: t.col_x.iter().map(|c| x0 + c).collect(),
+                col_w: t.col_w.clone(),
+            });
+        }
         self.rows = rows;
+    }
+
+    fn table_button(&self) -> (f32, f32) {
+        (3.0 * self.zoom, 16.0 * self.zoom)
+    }
+
+    /// Whether (x, y) in document coordinates is near the table being edited, where
+    /// its editing controls appear.
+    pub fn near_grid(&self, x: f32, y: f32) -> bool {
+        let Some(g) = &self.grid_geom else {
+            return false;
+        };
+        let (gap, bw) = self.table_button();
+        x >= g.x0 - 8.0
+            && x <= g.x1 + gap + bw + 8.0
+            && y >= g.y0 - 14.0 * self.zoom
+            && y <= g.y1 + gap + bw + 8.0
+    }
+
+    /// The table editing control at (x, y), document coordinates.
+    pub fn table_ui_at(&self, x: f32, y: f32) -> Option<TableUi> {
+        if !self.near_grid(x, y) {
+            return None;
+        }
+        let g = self.grid_geom.as_ref()?;
+        let (gap, bw) = self.table_button();
+        let z = self.zoom;
+        if x >= g.x1 + gap && x <= g.x1 + gap + bw && y >= g.y0 && y <= g.y1 {
+            return Some(TableUi::AddColumn);
+        }
+        if y >= g.y1 + gap && y <= g.y1 + gap + bw && x >= g.x0 && x <= g.x1 {
+            return Some(TableUi::AddRow);
+        }
+        if y >= g.y0 - 12.0 * z && y < g.y0 {
+            let c = self.grid_column_at(x)?;
+            let mid = g.col_x[c] + g.col_w[c] / 2.0;
+            if (x - mid).abs() <= 14.0 * z {
+                return Some(TableUi::ColumnHandle(c));
+            }
+        }
+        None
+    }
+
+    /// Column of the table being edited under document x.
+    pub fn grid_column_at(&self, x: f32) -> Option<usize> {
+        let g = self.grid_geom.as_ref()?;
+        (0..g.col_x.len()).find(|&c| x >= g.col_x[c] && x < g.col_x[c] + g.col_w[c])
+    }
+
+    /// Draws the add-row/add-column buttons and the hovered column's handle.
+    unsafe fn paint_table_ui(&self, rt: &ID2D1HwndRenderTarget, mouse: (f32, f32)) {
+        let Some(g) = &self.grid_geom else { return };
+        if !self.near_grid(mouse.0, mouse.1) {
+            return;
+        }
+        let z = self.zoom;
+        let (gap, bw) = self.table_button();
+        let hover = self.table_ui_at(mouse.0, mouse.1);
+        let plus = |cx: f32, cy: f32, ink: Ink| unsafe {
+            let s = 4.0 * z;
+            rt.FillRectangle(
+                &rect(cx - s, cy - 0.75 * z, cx + s, cy + 0.75 * z),
+                self.brush(ink),
+            );
+            rt.FillRectangle(
+                &rect(cx - 0.75 * z, cy - s, cx + 0.75 * z, cy + s),
+                self.brush(ink),
+            );
+        };
+        let button = |r: D2D_RECT_F, on: bool| unsafe {
+            let rr = D2D1_ROUNDED_RECT {
+                rect: r,
+                radiusX: 4.0 * z,
+                radiusY: 4.0 * z,
+            };
+            rt.FillRoundedRectangle(
+                &rr,
+                self.brush(if on {
+                    Ink::PaletteSel
+                } else {
+                    Ink::TableHeader
+                }),
+            );
+            rt.DrawRoundedRectangle(&rr, self.brush(Ink::Rule), 1.0, None);
+            let ink = if on { Ink::Accent } else { Ink::Dim };
+            plus((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0, ink);
+        };
+        unsafe {
+            button(
+                rect(g.x1 + gap, g.y0, g.x1 + gap + bw, g.y1),
+                hover == Some(TableUi::AddColumn),
+            );
+            button(
+                rect(g.x0, g.y1 + gap, g.x1, g.y1 + gap + bw),
+                hover == Some(TableUi::AddRow),
+            );
+            if let Some(c) = self.grid_column_at(mouse.0) {
+                let mid = g.col_x[c] + g.col_w[c] / 2.0;
+                let on = hover == Some(TableUi::ColumnHandle(c));
+                let rr = D2D1_ROUNDED_RECT {
+                    rect: rect(
+                        mid - 11.0 * z,
+                        g.y0 - 9.0 * z,
+                        mid + 11.0 * z,
+                        g.y0 - 3.0 * z,
+                    ),
+                    radiusX: 3.0 * z,
+                    radiusY: 3.0 * z,
+                };
+                rt.FillRoundedRectangle(&rr, self.brush(if on { Ink::Accent } else { Ink::Dim }));
+            }
+        }
     }
 
     pub fn max_scroll(&self) -> f32 {
@@ -1365,6 +1534,13 @@ impl View {
             Vis::Text(tb) => {
                 let (x, y, h) = tb.caret(tb.s2d(p.col));
                 Some((row.x + x, row.y + row.top + y, h))
+            }
+            Vis::Table(t, r) if row.h > 0.0 => {
+                let c = t.cell_at_col(*r, p.col);
+                let tb = &t.rows[*r].0.get(c)?.tb;
+                let (x, y, h) = tb.caret(tb.s2d(p.col));
+                let top = row.y + (row.h - tb.height.get()) / 2.0;
+                Some((row.x + t.col_x[c] + 10.0 * self.zoom + x, top + y, h))
             }
             _ => Some((row.x, row.y, row.h.max(self.base()))),
         }
@@ -1464,6 +1640,7 @@ impl View {
         status: &Status,
         palette: Option<&PaletteView>,
         popup: Option<&PopupView>,
+        mouse: Option<(f32, f32)>,
     ) {
         if self.ensure_target(hwnd).is_err() {
             return;
@@ -1519,6 +1696,9 @@ impl View {
                     &rect(x, y, x + 1.6 * z.max(1.0), y + h),
                     self.brush(Ink::Caret),
                 );
+            }
+            if let Some(m) = mouse {
+                self.paint_table_ui(&rt, (m.0, m.1 + scroll));
             }
             rt.PopAxisAlignedClip();
             rt.SetTransform(&Matrix3x2::identity());
@@ -1716,6 +1896,10 @@ impl View {
                     let pad_x = 10.0 * z;
                     let border = self.brush(Ink::Rule);
                     let total_w: f32 = t.col_w.iter().sum();
+                    // While editing this table, the cell with the caret is outlined and
+                    // a selection inside it is highlighted.
+                    let active_cell =
+                        (row.grid && sel.0.line == i).then(|| t.cell_at_col(*r, sel.0.col));
                     if *r == 0 {
                         rt.FillRectangle(
                             &rect(row.x, row.y, row.x + total_w, row.y + h),
@@ -1737,6 +1921,20 @@ impl View {
                         );
                         // Center vertically: cells of only code have a shorter line.
                         let (ox, oy) = (cx + pad_x, row.y + (h - cell.tb.height.get()) / 2.0);
+                        if active_cell == Some(c) && sel.0 != sel.1 && sel.1.line == i {
+                            let (a, b) = (cell.tb.s2d(sel.0.col), cell.tb.s2d(sel.1.col));
+                            for m in cell.tb.rects(a, b.max(a)) {
+                                rt.FillRectangle(
+                                    &rect(
+                                        ox + m.left,
+                                        oy + m.top,
+                                        ox + m.left + m.width,
+                                        oy + m.top + m.height,
+                                    ),
+                                    self.brush(Ink::Selection),
+                                );
+                            }
+                        }
                         for &(a, b, ink) in &cell.tb.bgs {
                             for m in cell.tb.rects(a, b) {
                                 rt.FillRectangle(
@@ -1755,6 +1953,20 @@ impl View {
                             &cell.tb.layout,
                             self.brush(cell.tb.ink),
                             D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                        );
+                    }
+                    if let Some(c) = active_cell.filter(|&c| c < t.col_x.len()) {
+                        let cx = row.x + t.col_x[c];
+                        rt.DrawRectangle(
+                            &rect(
+                                cx + 1.0,
+                                row.y + 1.0,
+                                cx + t.col_w[c] - 1.0,
+                                row.y + h - 1.0,
+                            ),
+                            self.brush(Ink::Accent),
+                            1.5 * z.max(1.0),
+                            None,
                         );
                     }
                 }

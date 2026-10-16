@@ -2,16 +2,19 @@
 
 use crate::markdown::{Kind, LineInfo};
 use crate::palette::term_match;
+use crate::table::Grid;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SlashCmd {
     CodeBlock,
+    Table,
     Heading(u8),
 }
 
 /// (label, hint shown on the right, extra search words, command)
-pub const ITEMS: [(&str, &str, &str, SlashCmd); 6] = [
+pub const ITEMS: [(&str, &str, &str, SlashCmd); 7] = [
     ("Code block", "```", "fence", SlashCmd::CodeBlock),
+    ("Table", "| |", "grid", SlashCmd::Table),
     ("Heading 1", "#", "h1 title", SlashCmd::Heading(1)),
     ("Heading 2", "##", "h2", SlashCmd::Heading(2)),
     ("Heading 3", "###", "h3", SlashCmd::Heading(3)),
@@ -47,20 +50,42 @@ pub struct LineEdit {
     pub text: String,
     /// (lines below the edited line, byte column)
     pub caret: (usize, usize),
+    /// Bytes before the caret to select (0 for none).
+    pub select: usize,
 }
 
-/// Inserts a fenced code block for `line` (from which the `/command` was removed).
-/// An empty line becomes the block; otherwise the block goes below the line, indented
-/// to stay inside a list item or quote.
-pub fn code_block(line: &str, info: &LineInfo) -> LineEdit {
+/// Inserts `block` (lines without any prefix) for `line`, from which the `/command`
+/// was removed. An empty line becomes the block; otherwise the block goes below the
+/// line, indented to stay inside a list item or quote, after a blank line if `gap`.
+/// `caret` is a (line, byte) position within `block`.
+fn insert_block(
+    line: &str,
+    info: &LineInfo,
+    block: &[String],
+    caret: (usize, usize),
+    select: usize,
+    gap: bool,
+) -> LineEdit {
     let quote = &line[..info.qend];
     let empty = line[info.content.min(line.len())..].trim().is_empty();
     if empty && !matches!(info.kind, Kind::List { .. }) {
+        let text: Vec<String> = block
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                if i == 0 {
+                    l.clone()
+                } else {
+                    format!("{quote}{l}")
+                }
+            })
+            .collect();
         return LineEdit {
             start: info.qend,
             end: line.len(),
-            text: format!("```\n{quote}\n{quote}```"),
-            caret: (1, quote.len()),
+            text: text.join("\n"),
+            caret: (caret.0, quote.len() + caret.1),
+            select,
         };
     }
     let indent = match info.kind {
@@ -68,12 +93,39 @@ pub fn code_block(line: &str, info: &LineInfo) -> LineEdit {
         _ => String::new(),
     };
     let pre = format!("{quote}{indent}");
+    let mut text = String::new();
+    let mut below = 1;
+    if gap {
+        text.push('\n');
+        text.push_str(quote.trim_end());
+        below += 1;
+    }
+    for l in block {
+        text.push('\n');
+        text.push_str(&pre);
+        text.push_str(l);
+    }
     LineEdit {
         start: line.len(),
         end: line.len(),
-        text: format!("\n{pre}```\n{pre}\n{pre}```"),
-        caret: (2, pre.len()),
+        text,
+        caret: (caret.0 + below, pre.len() + caret.1),
+        select,
     }
+}
+
+/// A fenced code block with the caret on its empty middle line.
+pub fn code_block(line: &str, info: &LineInfo) -> LineEdit {
+    let block = ["```".to_string(), String::new(), "```".to_string()];
+    insert_block(line, info, &block, (1, 0), 0, false)
+}
+
+/// A table with a header row and one body row; the first header is selected so
+/// typing replaces it.
+pub fn table(line: &str, info: &LineInfo) -> LineEdit {
+    let first = "Column 1";
+    let block = Grid::new("", &[first, "Column 2"]).to_lines();
+    insert_block(line, info, &block, (0, 2 + first.len()), first.len(), true)
 }
 
 /// Whether a `/` typed at byte `col` should open the menu: at the start of the
@@ -102,7 +154,8 @@ mod tests {
                 .map(|(i, _)| ITEMS[*i].0)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(labels("").len(), 6);
+        assert_eq!(labels("").len(), 7);
+        assert_eq!(labels("tab"), vec!["Table"]);
         assert_eq!(labels("code"), vec!["Code block"]);
         assert_eq!(labels("h2"), vec!["Heading 2"]);
         assert_eq!(labels("head 3"), vec!["Heading 3"]);
@@ -131,6 +184,29 @@ mod tests {
         let e = code_block("- item", &info("- item"));
         assert_eq!(e.text, "\n  ```\n  \n  ```");
         assert_eq!(e.caret, (2, 2));
+    }
+
+    #[test]
+    fn table_edits() {
+        let e = table("", &info(""));
+        assert_eq!(
+            e.text,
+            "| Column 1 | Column 2 |
+| -------- | -------- |
+|          |          |"
+        );
+        assert_eq!((e.caret, e.select), ((0, 10), 8));
+        // After text: a blank line first, so the table is not part of the paragraph.
+        let e = table("intro", &info("intro"));
+        assert!(e.text.starts_with(
+            "
+
+| Column 1"
+        ));
+        assert_eq!(e.caret, (2, 10));
+        let e = table("> ", &info("> "));
+        assert_eq!(e.text.lines().nth(1), Some("> | -------- | -------- |"));
+        assert_eq!(e.caret, (0, 12));
     }
 
     #[test]

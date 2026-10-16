@@ -3,11 +3,13 @@
 use crate::doc;
 use crate::options::{Opt, RenderOptions};
 use crate::render::PALETTE_ROWS;
+use crate::table::TableCmd;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     ChangeFont,
     RenderingOptions,
+    Table(TableCmd),
 }
 
 /// Every command, in the order shown for an empty query: (label, shortcut hint, command).
@@ -109,7 +111,7 @@ impl Palette {
     }
 
     pub fn commands() -> Self {
-        let items = COMMANDS
+        let mut items: Vec<Item> = COMMANDS
             .iter()
             .map(|&(label, detail, cmd)| Item {
                 label: label.into(),
@@ -118,6 +120,16 @@ impl Palette {
                 preview: false,
             })
             .collect();
+        items.extend(TableCmd::ALL.iter().map(|&(cmd, label)| Item {
+            label: format!("Table: {label}"),
+            detail: if cmd == TableCmd::RowBelow {
+                "Ctrl+Enter".into()
+            } else {
+                String::new()
+            },
+            target: Target::Command(Command::Table(cmd)),
+            preview: false,
+        }));
         Palette::new(Mode::Commands, items)
     }
 

@@ -11,13 +11,16 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::HSTRING;
 
 use crate::doc::{self, Document, EditKind, Pos};
-use crate::markdown::{self, Kind, LineInfo};
+use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
-use crate::render::{PALETTE_ROWS, PaletteItem, PaletteView, PopupView, STATUS_H, Status, View};
+use crate::render::{
+    PALETTE_ROWS, PaletteItem, PaletteView, PopupView, STATUS_H, Status, TableUi, View,
+};
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
+use crate::table::{self, Grid, TableCmd};
 
 pub const APP_NAME: &str = "Penmark";
 
@@ -39,6 +42,32 @@ struct Prompt {
     text: String,
     cur: usize,
     origin: (Pos, Pos, f32),
+}
+
+/// Everything the layout depends on: doc version, selected lines, table being edited,
+/// source mode, width, zoom, DPI.
+type LayoutKey = (u64, usize, usize, u32, bool, u32, u32, u32);
+
+/// Where the caret goes when moving to a table cell.
+#[derive(Clone, Copy)]
+enum Place {
+    Start,
+    End,
+    /// Select the cell's text (Tab / Shift+Tab), so typing replaces it.
+    All,
+}
+
+/// A table cell located from a document position.
+struct Cell {
+    /// First table line and one past the last.
+    start: usize,
+    end: usize,
+    qend: usize,
+    /// Grid row (header 0, delimiter skipped) and column.
+    row: usize,
+    col: usize,
+    /// Byte range of the cell's text on its line.
+    range: std::ops::Range<usize>,
 }
 
 /// The open `/` menu, for the `/` at `line`, `col`.
@@ -73,7 +102,7 @@ pub struct App {
     source: bool,
     caret_on: bool,
     focused: bool,
-    layout_key: Option<(u64, usize, usize, bool, u32, u32, u32)>,
+    layout_key: Option<LayoutKey>,
     message: Option<(String, Instant)>,
     prompt: Option<Prompt>,
     find_query: String,
@@ -88,6 +117,11 @@ pub struct App {
     pub restoring_placement: bool,
     palette: Option<Palette>,
     slash: Option<SlashMenu>,
+    /// Mouse position (client DIPs) while over the window, for table controls.
+    mouse: Option<(f32, f32)>,
+    /// Table-control hover state last painted: near the table, control, column.
+    table_hover: (bool, Option<TableUi>, Option<usize>),
+    tracking_leave: bool,
 }
 
 fn ctrl_down() -> bool {
@@ -169,6 +203,9 @@ impl App {
             untitled_name: "Untitled",
             palette: None,
             slash: None,
+            mouse: None,
+            table_hover: (false, None, None),
+            tracking_leave: false,
             restoring_placement: false,
         }
     }
@@ -207,10 +244,12 @@ impl App {
     pub fn ensure_layout(&mut self) {
         self.infos();
         let (a, b) = self.sel();
+        let grid = self.grid_block();
         let key = (
             self.doc.version,
             a.line,
             b.line,
+            grid,
             self.source,
             self.view.w.to_bits(),
             self.view.zoom.to_bits(),
@@ -223,6 +262,7 @@ impl App {
                 &self.doc.lines,
                 &self.infos,
                 (a.line, b.line),
+                grid,
                 self.source,
                 dir.as_deref(),
             );
@@ -294,6 +334,7 @@ impl App {
         }
         self.caret_on = true;
         self.restart_blink();
+        self.snap_to_cell();
         self.update_slash();
         self.scroll_to_caret();
         self.update_ime();
@@ -501,6 +542,12 @@ impl App {
             self.prompt_changed();
             return;
         }
+        // A pipe typed in a table cell must not split the cell.
+        let s = if s == "|" && self.grid_block() != 0 {
+            r"\|".to_string()
+        } else {
+            s
+        };
         self.type_text(&s);
         if s == "/" {
             self.open_slash();
@@ -545,6 +592,9 @@ impl App {
 
     /// The editor's own key bindings, after overlays have had their turn.
     fn editor_key(&mut self, key: VIRTUAL_KEY, ctrl: bool, shift: bool, alt: bool) -> bool {
+        if !alt && self.grid_block() != 0 && self.table_key(key, ctrl, shift) {
+            return true;
+        }
         let vk = key.0;
         if ctrl {
             match key {
@@ -1275,6 +1325,14 @@ impl App {
             return;
         };
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        // A table cell holds one line, and pipes would split it.
+        let text = if self.grid_block() != 0 {
+            text.trim_end_matches('\n')
+                .replace('\n', " ")
+                .replace('|', r"\|")
+        } else {
+            text
+        };
         let (a, b) = self.sel();
         let is_url = (text.starts_with("http://") || text.starts_with("https://"))
             && !text.trim().contains(char::is_whitespace);
@@ -1465,6 +1523,436 @@ impl App {
     // View
 
     // -----------------------------------------------------------------------
+    // Tables
+
+    /// The table cell containing `p`, if any (never the delimiter row).
+    fn cell_at(&mut self, p: Pos) -> Option<Cell> {
+        self.infos();
+        let infos = &self.infos;
+        let info = infos[p.line];
+        let Kind::Table { .. } = info.kind else {
+            return None;
+        };
+        let block = info.block;
+        let start = (0..=p.line)
+            .rev()
+            .take_while(|&l| infos[l].block == block)
+            .last()?;
+        let end = (p.line..infos.len())
+            .take_while(|&l| infos[l].block == block)
+            .last()?
+            + 1;
+        let row = table::row_of_line(p.line - start)?;
+        let cells = markdown::split_cells(&self.doc.lines[p.line], info.qend);
+        let col = table::cell_index(&cells, p.col);
+        Some(Cell {
+            start,
+            end,
+            qend: info.qend,
+            row,
+            col,
+            range: cells.get(col).cloned().unwrap_or(p.col..p.col),
+        })
+    }
+
+    /// Block id of the table being edited cell by cell: the selection is a caret in a
+    /// table or lies within one cell. Any other selection touching a table shows the
+    /// table as Markdown text instead (returns 0).
+    fn grid_block(&mut self) -> u32 {
+        if self.source {
+            return 0;
+        }
+        let (a, b) = self.sel();
+        let Some(ca) = self.cell_at(a) else { return 0 };
+        if a != b {
+            match self.cell_at(b) {
+                Some(cb) if a.line == b.line && cb.col == ca.col => {}
+                _ => return 0,
+            }
+        }
+        self.infos[a.line].block
+    }
+
+    fn table_cols(&mut self, start: usize) -> usize {
+        let qend = self.info(start).qend;
+        markdown::split_cells(&self.doc.lines[start], qend)
+            .len()
+            .max(1)
+    }
+
+    /// Byte range of cell `c` on table line `l`, first adding empty cells if the row
+    /// is short.
+    fn cell_range(&mut self, l: usize, c: usize) -> std::ops::Range<usize> {
+        let qend = self.info(l).qend;
+        let mut cells = markdown::split_cells(&self.doc.lines[l], qend);
+        if c >= cells.len() {
+            let line = &self.doc.lines[l];
+            let mut add = String::new();
+            if !line.trim_end().ends_with('|') {
+                add.push_str(" |");
+            }
+            for _ in cells.len()..=c {
+                add.push_str("   |");
+            }
+            let end = Pos::new(l, line.len());
+            self.doc.replace(end, end, &add);
+            cells = markdown::split_cells(&self.doc.lines[l], qend);
+        }
+        cells[c.min(cells.len() - 1)].clone()
+    }
+
+    /// Moves the caret into cell (`row`, `c`) of the table starting at line `start`.
+    fn goto_cell(&mut self, start: usize, row: usize, c: usize, place: Place) {
+        let l = start + table::line_of_row(row);
+        let r = self.cell_range(l, c);
+        let (a, b) = match place {
+            Place::Start => (r.start, r.start),
+            Place::End => (r.end, r.end),
+            Place::All => (r.start, r.end),
+        };
+        self.set_sel(Pos::new(l, a), Pos::new(l, b));
+        self.changed(false);
+    }
+
+    /// Moves the caret out of the table, above or below it. Below the last table in
+    /// the document, a new empty line is added.
+    fn leave_table(&mut self, cell: &Cell, down: bool) {
+        if down {
+            if cell.end < self.doc.lines.len() {
+                self.set_sel(Pos::new(cell.end, 0), Pos::new(cell.end, 0));
+            } else {
+                self.begin(EditKind::Other);
+                let end = Pos::new(cell.end - 1, self.doc.line_len(cell.end - 1));
+                let p = self.doc.replace(end, end, "\n");
+                self.set_sel(p, p);
+                self.commit();
+                return;
+            }
+        } else if cell.start > 0 {
+            let p = Pos::new(cell.start - 1, self.doc.line_len(cell.start - 1));
+            self.set_sel(p, p);
+        }
+        self.changed(false);
+    }
+
+    /// Keeps a caret in a table inside its cell's text (not on padding or pipes).
+    fn snap_to_cell(&mut self) {
+        if self.anchor != self.cursor || self.grid_block() == 0 {
+            return;
+        }
+        if let Some(cell) = self.cell_at(self.cursor) {
+            let col = self.cursor.col.clamp(cell.range.start, cell.range.end);
+            let p = Pos::new(self.cursor.line, col);
+            self.anchor = p;
+            self.cursor = p;
+        }
+    }
+
+    /// Keys for editing table cells. Returns false for keys handled as usual.
+    fn table_key(&mut self, key: VIRTUAL_KEY, ctrl: bool, shift: bool) -> bool {
+        let Some(cell) = self.cell_at(self.cursor) else {
+            return false;
+        };
+        let cols = self.table_cols(cell.start);
+        let rows = cell.end - cell.start - 1;
+        let (r, c, l) = (cell.row, cell.col, self.cursor.line);
+        let (a, b) = self.sel();
+        match key {
+            VK_TAB if !ctrl && shift => {
+                if c > 0 {
+                    self.goto_cell(cell.start, r, c - 1, Place::All);
+                } else if r > 0 {
+                    self.goto_cell(cell.start, r - 1, cols - 1, Place::All);
+                }
+            }
+            VK_TAB if !ctrl => {
+                if c + 1 < cols {
+                    self.goto_cell(cell.start, r, c + 1, Place::All);
+                } else if r + 1 < rows {
+                    self.goto_cell(cell.start, r + 1, 0, Place::All);
+                } else {
+                    self.table_command_at(TableCmd::RowBelow, Some((r, 0)));
+                }
+            }
+            VK_RETURN if ctrl => self.table_command(TableCmd::RowBelow),
+            VK_RETURN => {
+                if r + 1 < rows {
+                    self.goto_cell(cell.start, r + 1, c, Place::End);
+                } else {
+                    self.table_command(TableCmd::RowBelow);
+                }
+            }
+            VK_UP | VK_DOWN if !ctrl => {
+                let down = key == VK_DOWN;
+                if shift {
+                    // Selections stay within one cell.
+                } else if down && r + 1 < rows {
+                    self.goto_cell(cell.start, r + 1, c, Place::End);
+                } else if !down && r > 0 {
+                    self.goto_cell(cell.start, r - 1, c, Place::End);
+                } else {
+                    self.leave_table(&cell, down);
+                }
+            }
+            VK_HOME | VK_END if !ctrl => {
+                let col = if key == VK_HOME {
+                    cell.range.start
+                } else {
+                    cell.range.end
+                };
+                self.move_to(Pos::new(l, col), shift);
+                self.changed(false);
+            }
+            VK_LEFT | VK_RIGHT => {
+                let left = key == VK_LEFT;
+                let cur = self.cursor.col;
+                let at_edge = if left {
+                    cur <= cell.range.start
+                } else {
+                    cur >= cell.range.end
+                };
+                if !shift && a != b {
+                    self.move_to(if left { a } else { b }, false);
+                    self.changed(false);
+                } else if at_edge && shift {
+                    // Selections stay within one cell.
+                } else if at_edge && left {
+                    // Continue into the previous cell, or out of the table.
+                    if c > 0 {
+                        self.goto_cell(cell.start, r, c - 1, Place::End);
+                    } else if r > 0 {
+                        self.goto_cell(cell.start, r - 1, cols - 1, Place::End);
+                    } else {
+                        self.leave_table(&cell, false);
+                    }
+                } else if at_edge {
+                    if c + 1 < cols {
+                        self.goto_cell(cell.start, r, c + 1, Place::Start);
+                    } else if r + 1 < rows {
+                        self.goto_cell(cell.start, r + 1, 0, Place::Start);
+                    } else {
+                        self.leave_table(&cell, true);
+                    }
+                } else {
+                    let line = &self.doc.lines[l];
+                    let col = match (left, ctrl) {
+                        (true, true) => doc::prev_word(line, cur),
+                        (true, false) => doc::prev_boundary(line, cur),
+                        (false, true) => doc::next_word(line, cur),
+                        (false, false) => doc::next_boundary(line, cur),
+                    };
+                    let col = col.clamp(cell.range.start, cell.range.end);
+                    self.move_to(Pos::new(l, col), shift);
+                    self.changed(false);
+                }
+            }
+            // Deleting stops at the cell's edges instead of joining cells.
+            VK_BACK if a == b && self.cursor.col <= cell.range.start => {}
+            VK_DELETE if a == b && self.cursor.col >= cell.range.end => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn table_command(&mut self, cmd: TableCmd) {
+        self.table_command_at(cmd, None);
+    }
+
+    /// Applies a table action at the caret's cell, or at (`row`, `col`) when given,
+    /// rewriting the table's Markdown in one undo step.
+    fn table_command_at(&mut self, cmd: TableCmd, at: Option<(usize, usize)>) {
+        let Some(cell) = self.cell_at(self.cursor) else {
+            self.say("Put the cursor in a table first");
+            return;
+        };
+        if cmd == TableCmd::DeleteTable {
+            return self.delete_table(cell.start, cell.end);
+        }
+        let lines: Vec<&str> = self.doc.lines[cell.start..cell.end]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let mut g = Grid::parse(&lines, cell.qend);
+        let (mut r, mut c) = at.unwrap_or((cell.row, cell.col));
+        c = c.min(g.cols() - 1);
+        match cmd {
+            TableCmd::RowAbove if r == 0 => {
+                return self.say("Rows can't be added above the header");
+            }
+            TableCmd::RowAbove => g.insert_row(r),
+            TableCmd::RowBelow => {
+                g.insert_row(r + 1);
+                r += 1;
+            }
+            TableCmd::DeleteRow => {
+                if !g.delete_row(r) {
+                    return self.say("The header row can't be deleted");
+                }
+                r = r.min(g.rows.len() - 1);
+            }
+            TableCmd::ColumnLeft => g.insert_col(c),
+            TableCmd::ColumnRight => {
+                g.insert_col(c + 1);
+                c += 1;
+            }
+            TableCmd::DeleteColumn => {
+                if !g.delete_col(c) {
+                    return self.say("A table needs at least one column");
+                }
+                c = c.min(g.cols() - 1);
+            }
+            _ => g.aligns[c] = cmd.align().unwrap_or(Align::Left),
+        }
+        self.begin(EditKind::Other);
+        let last = cell.end - 1;
+        let end = Pos::new(last, self.doc.line_len(last));
+        self.doc
+            .replace(Pos::new(cell.start, 0), end, &g.to_lines().join("\n"));
+        let l = cell.start + table::line_of_row(r);
+        let range = self.cell_range(l, c);
+        self.set_sel(Pos::new(l, range.end), Pos::new(l, range.end));
+        self.commit();
+    }
+
+    fn delete_table(&mut self, start: usize, end: usize) {
+        let len = |d: &Document, l: usize| d.line_len(l);
+        let (a, b) = if end < self.doc.lines.len() {
+            (Pos::new(start, 0), Pos::new(end, 0))
+        } else if start > 0 {
+            (
+                Pos::new(start - 1, len(&self.doc, start - 1)),
+                Pos::new(end - 1, len(&self.doc, end - 1)),
+            )
+        } else {
+            (Pos::new(0, 0), Pos::new(end - 1, len(&self.doc, end - 1)))
+        };
+        self.begin(EditKind::Other);
+        self.doc.replace(a, b, "");
+        self.set_sel(a, a);
+        self.commit();
+    }
+
+    /// Shows the table menu at client pixel (x, y) for the caret's cell.
+    fn table_menu(&mut self, x: i32, y: i32) {
+        let Some(cell) = self.cell_at(self.cursor) else {
+            return;
+        };
+        let lines: Vec<&str> = self.doc.lines[cell.start..cell.end]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let g = Grid::parse(&lines, cell.qend);
+        let align = g.aligns[cell.col.min(g.cols() - 1)];
+        let mut items = Vec::new();
+        for (i, &(cmd, label)) in TableCmd::ALL.iter().enumerate() {
+            if matches!(
+                cmd,
+                TableCmd::RowAbove | TableCmd::ColumnLeft | TableCmd::DeleteTable
+            ) {
+                items.push(platform::MenuItem::Separator);
+            }
+            let enabled = match cmd {
+                TableCmd::RowAbove | TableCmd::DeleteRow => cell.row > 0,
+                TableCmd::DeleteColumn => g.cols() > 1,
+                _ => true,
+            };
+            items.push(platform::MenuItem::Item {
+                id: i as u32 + 1,
+                label,
+                checked: cmd.align() == Some(align),
+                enabled,
+            });
+        }
+        if let Some(id) = platform::popup_menu(self.hwnd, &items, x, y) {
+            self.table_command(TableCmd::ALL[id as usize - 1].0);
+        }
+    }
+
+    /// Moves the caret to column `c` of its table row (used by the column handle).
+    fn focus_column(&mut self, c: usize) {
+        if let Some(cell) = self.cell_at(self.cursor)
+            && cell.col != c
+        {
+            self.goto_cell(cell.start, cell.row, c, Place::End);
+        }
+    }
+
+    /// Clicks on the add-row/add-column buttons and column handles.
+    fn table_ui_click(&mut self, ui: TableUi, x: i32, y: i32) {
+        let Some(cell) = self.cell_at(self.cursor) else {
+            return;
+        };
+        match ui {
+            // New columns start at their header cell, new rows at their first cell.
+            TableUi::AddColumn => {
+                let last = self.table_cols(cell.start) - 1;
+                self.table_command_at(TableCmd::ColumnRight, Some((0, last)));
+            }
+            TableUi::AddRow => {
+                let last = cell.end - cell.start - 2;
+                self.table_command_at(TableCmd::RowBelow, Some((last, 0)));
+            }
+            TableUi::ColumnHandle(c) => {
+                self.focus_column(c);
+                self.table_menu(x, y);
+            }
+        }
+    }
+
+    /// Right-click: in a table, place the caret in the cell and show the table menu.
+    pub fn on_right_click(&mut self, x: i32, y: i32) {
+        if self.palette.is_some() {
+            return;
+        }
+        self.slash = None;
+        let (dx, dy) = self.to_dip(x, y);
+        self.ensure_layout();
+        if let Some(TableUi::ColumnHandle(c)) = self.view.table_ui_at(dx, dy + self.scroll) {
+            self.focus_column(c);
+            return self.table_menu(x, y);
+        }
+        let infos = self.infos.clone();
+        let p = self.doc.clamp(
+            self.view
+                .hit(&self.doc.lines, &infos, dx, dy + self.scroll)
+                .pos,
+        );
+        if self.cell_at(p).is_none() {
+            return;
+        }
+        let (a, b) = self.sel();
+        if a == b || p < a || p > b {
+            self.set_sel(p, p);
+            self.changed(false);
+        }
+        self.ensure_layout();
+        self.table_menu(x, y);
+    }
+
+    /// While dragging from inside a table cell, the selection stays in that cell;
+    /// leaving the table selects across it (and it then shows as Markdown).
+    fn clamp_drag(&mut self, p: Pos) -> Pos {
+        let Some(cell) = self.cell_at(self.anchor) else {
+            return p;
+        };
+        if self.infos[p.line].block != self.infos[self.anchor.line].block {
+            return p;
+        }
+        let l = self.anchor.line;
+        if p.line != l {
+            return Pos::new(
+                l,
+                if p > self.anchor {
+                    cell.range.end
+                } else {
+                    cell.range.start
+                },
+            );
+        }
+        Pos::new(l, p.col.clamp(cell.range.start, cell.range.end))
+    }
+
+    // -----------------------------------------------------------------------
     // Slash menu
 
     /// Opens the menu if the `/` just typed before the cursor can start a command.
@@ -1538,13 +2026,18 @@ impl App {
                     &format!("{} ", "#".repeat(n as usize)),
                 );
             }
-            SlashCmd::CodeBlock => {
+            cmd @ (SlashCmd::CodeBlock | SlashCmd::Table) => {
                 let info = self.info(l);
-                let edit = slash::code_block(&self.doc.lines[l], &info);
+                let line = &self.doc.lines[l];
+                let edit = if cmd == SlashCmd::Table {
+                    slash::table(line, &info)
+                } else {
+                    slash::code_block(line, &info)
+                };
                 self.doc
                     .replace(Pos::new(l, edit.start), Pos::new(l, edit.end), &edit.text);
                 let caret = Pos::new(l + edit.caret.0, edit.caret.1);
-                self.set_sel(caret, caret);
+                self.set_sel(Pos::new(caret.line, caret.col - edit.select), caret);
             }
         }
         self.commit();
@@ -1675,6 +2168,7 @@ impl App {
                 let current = self.view.body_font();
                 self.open_palette(Palette::fonts(self.view.font_families(), &current));
             }
+            Target::Command(Command::Table(cmd)) => self.table_command(cmd),
             Target::Command(Command::RenderingOptions) => {
                 self.open_palette(Palette::options(&self.view.options()));
             }
@@ -1893,6 +2387,7 @@ impl App {
             &status,
             palette.as_ref(),
             popup.as_ref(),
+            self.mouse.filter(|_| self.palette.is_none()),
         );
         self.infos = infos;
     }
@@ -1913,6 +2408,9 @@ impl App {
         }
         if self.slash.is_some() && self.slash_click(dx, dy) {
             return;
+        }
+        if let Some(ui) = self.view.table_ui_at(dx, dy + self.scroll) {
+            return self.table_ui_click(ui, x, y);
         }
         unsafe {
             SetCapture(self.hwnd);
@@ -1999,7 +2497,7 @@ impl App {
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
         let (dx, dy) = self.to_dip(x, y);
         match self.drag {
-            Drag::None => {}
+            Drag::None => self.hover(dx, dy),
             Drag::Scrollbar(_) => self.drag_scrollbar(dy),
             drag => {
                 let vh = self.view_h();
@@ -2015,7 +2513,7 @@ impl App {
                         .hit(&self.doc.lines, &infos, dx, dy.clamp(0.0, vh) + self.scroll);
                 let p = self.doc.clamp(hit.pos);
                 match drag {
-                    Drag::Char => self.cursor = p,
+                    Drag::Char => self.cursor = self.clamp_drag(p),
                     Drag::Word(s, e) => {
                         let (ws, we) = doc::word_at(&self.doc.lines[p.line], p.col);
                         if p < s {
@@ -2046,6 +2544,39 @@ impl App {
                 self.caret_on = true;
                 self.invalidate();
             }
+        }
+    }
+
+    /// Tracks the mouse for the table controls, repainting only when they change.
+    fn hover(&mut self, x: f32, y: f32) {
+        if !self.tracking_leave {
+            let mut tme = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: self.hwnd,
+                dwHoverTime: 0,
+            };
+            self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
+        }
+        self.mouse = Some((x, y));
+        let doc_y = y + self.scroll;
+        let state = (
+            self.view.near_grid(x, doc_y),
+            self.view.table_ui_at(x, doc_y),
+            self.view.grid_column_at(x),
+        );
+        if state != self.table_hover {
+            self.table_hover = state;
+            self.invalidate();
+        }
+    }
+
+    pub fn on_mouse_leave(&mut self) {
+        self.tracking_leave = false;
+        self.mouse = None;
+        if self.table_hover.0 {
+            self.table_hover = (false, None, None);
+            self.invalidate();
         }
     }
 
@@ -2093,7 +2624,8 @@ impl App {
                 .view
                 .palette_geom
                 .is_some_and(|g| dx >= g.left && dx <= g.right && dy >= g.top && dy <= g.bottom);
-        !over_palette && dy < self.view_h() && dx < self.view.w - 12.0
+        let over_table_ui = self.view.table_ui_at(dx, dy + self.scroll).is_some();
+        !over_palette && !over_table_ui && dy < self.view_h() && dx < self.view.w - 12.0
     }
 
     // -----------------------------------------------------------------------

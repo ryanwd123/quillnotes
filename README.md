@@ -58,10 +58,39 @@ replaced, and one `Ctrl+Z` undoes the whole insertion.
 * **Code block** inserts a fenced code block with the cursor inside it. On a line
   that already has text, the block goes below it, inside the same list item or
   quote.
+* **Table** inserts a table with a header row and one empty row, with the first
+  header selected so you can type over it.
 * **Heading 1** to **Heading 5** turn the current line into that heading.
 
 A `/` inside a word (`a/b`, URLs) or inside a code block does not open the menu.
 Items are defined in `src/slash.rs`.
+
+### Tables
+
+With the cursor in a table, the table stays rendered and you edit it cell by cell.
+The cell with the cursor is outlined.
+
+| Key | In a table |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Next / previous cell, selecting its text; `Tab` in the last cell adds a row |
+| `Up` / `Down` | Same column in the row above / below; past the edge, leave the table |
+| `Left` / `Right` | Move within the cell, continuing into the next cell at its edge |
+| `Home` / `End` | Start / end of the cell |
+| `Enter` | Next row (adds one at the bottom) |
+| `Ctrl+Enter` | Insert a row below |
+
+Typing `|` in a cell stores it as `\|`, and pasted text is kept to one line.
+
+With the mouse near the table, a **+** strip on the right adds a column and one along
+the bottom adds a row. A handle above the hovered column, or a right-click on any cell,
+opens a menu to align the column left, center or right, insert or delete rows and
+columns, or delete the table. The same actions are in the command palette as
+`Table: …`. Structural changes rewrite the table's Markdown with padded columns, as
+one undo step.
+
+To work with a table as Markdown text, select from outside it into it (for example,
+drag from the line above): the whole table then shows its source, so you can copy it,
+or delete it with the surrounding text.
 
 ### Command palette
 
@@ -116,6 +145,7 @@ The executable is `target/release/penmark.exe`. To open a file, pass it as an ar
 | `src/app.rs` | Editor state, key and mouse handling, Markdown-aware editing commands, find, files. |
 | `src/palette.rs` | Command palette: commands, term matching, filtering and selection. Unit-tested. |
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
+| `src/table.rs` | Tables: cell lookup, row/column/alignment changes, serialization. Unit-tested. |
 | `src/slash.rs` | The `/` menu: items, filtering, and the edits they make. Unit-tested. |
 | `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard, file dialogs, message boxes, shell, theme detection. |

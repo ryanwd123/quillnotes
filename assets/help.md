@@ -29,7 +29,18 @@ Penmark edits plain Markdown files. The lines you are editing show their Markdow
 
 Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 
-Type `/` at the start of a line or after a space for the slash menu: **Code block** and **Heading 1**–**5**. Keep typing to filter it, `Enter` inserts, `Esc` closes.
+Type `/` at the start of a line or after a space for the slash menu: **Code block**, **Table** and **Heading 1**–**5**. Keep typing to filter it, `Enter` inserts, `Esc` closes.
+
+## Tables
+
+| Shortcut | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Next / previous cell (adds a row at the end) |
+| `Up` / `Down` | Cell above / below |
+| `Enter` / `Ctrl+Enter` | Next row / insert a row below |
+| Right-click a cell | Align column, insert or delete rows and columns, delete table |
+
+Hover a table to get **+** buttons for a new row or column. Select from outside a table into it to see and edit its Markdown.
 
 ## Editing
 

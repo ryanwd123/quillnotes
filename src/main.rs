@@ -9,6 +9,7 @@ mod platform;
 mod render;
 mod settings;
 mod slash;
+mod table;
 
 use std::path::PathBuf;
 
@@ -22,6 +23,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 use app::App;
+
+/// From WinUser.h; windows-rs only exposes it with the Win32_UI_Controls feature.
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 fn app_of(hwnd: HWND) -> Option<&'static mut App> {
     let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut App;
@@ -108,6 +112,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_LBUTTONUP | WM_CAPTURECHANGED => {
                 app.on_mouse_up();
+                LRESULT(0)
+            }
+            WM_RBUTTONUP => {
+                let (x, y) = xy(lparam);
+                app.on_right_click(x, y);
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                app.on_mouse_leave();
                 LRESULT(0)
             }
             WM_MOUSEWHEEL => {

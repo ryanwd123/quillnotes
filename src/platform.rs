@@ -151,6 +151,58 @@ pub fn message_box(
     })
 }
 
+pub enum MenuItem<'a> {
+    Item {
+        id: u32,
+        label: &'a str,
+        checked: bool,
+        enabled: bool,
+    },
+    Separator,
+}
+
+/// Shows a context menu at client pixel (x, y); returns the chosen item's id.
+pub fn popup_menu(hwnd: HWND, items: &[MenuItem], x: i32, y: i32) -> Option<u32> {
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for item in items {
+            let _ = match item {
+                MenuItem::Item {
+                    id,
+                    label,
+                    checked,
+                    enabled,
+                } => {
+                    let mut flags = MF_STRING;
+                    if *checked {
+                        flags |= MF_CHECKED;
+                    }
+                    if !*enabled {
+                        flags |= MF_GRAYED;
+                    }
+                    AppendMenuW(menu, flags, *id as usize, &HSTRING::from(*label))
+                }
+                MenuItem::Separator => AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()),
+            };
+        }
+        let mut pt = POINT { x, y };
+        let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut pt);
+        let chosen = modal(|| {
+            TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                pt.x,
+                pt.y,
+                None,
+                hwnd,
+                None,
+            )
+        });
+        let _ = DestroyMenu(menu);
+        (chosen.0 > 0).then_some(chosen.0 as u32)
+    }
+}
+
 pub fn shell_open(hwnd: HWND, target: &str) {
     unsafe {
         ShellExecuteW(

@@ -304,7 +304,9 @@ pub fn split_cells(line: &str, start: usize) -> Vec<Range<usize>> {
             let lead = s.len() - s.trim_start().len();
             let trail = s.len() - s.trim_end().len();
             if lead + trail >= s.len() {
-                r.start..r.start
+                // Empty cell: an empty range just inside its padding, where typing goes.
+                let at = r.start + s.len().min(1);
+                at..at
             } else {
                 r.start + lead..r.end - trail
             }
@@ -1108,6 +1110,9 @@ mod tests {
         let l = "| a | `x|y` | c |";
         let c: Vec<&str> = split_cells(l, 0).into_iter().map(|r| &l[r]).collect();
         assert_eq!(c, vec!["a", "`x|y`", "c"]);
+        // Empty cells sit after the first padding space.
+        assert_eq!(split_cells("|   | b |", 0), vec![2..2, 6..7]);
+        assert_eq!(split_cells("|| b |", 0), vec![1..1, 3..4]);
         assert_eq!(
             delim_row("|:--|:-:|--:|"),
             Some(vec![Align::Left, Align::Center, Align::Right])
