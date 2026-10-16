@@ -1,7 +1,7 @@
 # Penmark
 
 A small, keyboard-driven, what-you-see-is-what-you-get Markdown editor for Windows.
-It is a single native executable (about 410 KB) built on Win32, Direct2D and
+It is a single native executable (about 700 KB) built on Win32, Direct2D and
 DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs). There is no
 web view or GPU framework, and it needs no runtime.
 
@@ -40,6 +40,8 @@ editors. The full list is [`assets/help.md`](assets/help.md), shown rendered by
 | --- | --- |
 | `F1` / `Ctrl+Shift+P`, `Ctrl+P`, `Ctrl+R` | Command palette, go to file, recent folders |
 | `Ctrl+Shift+E`, `Ctrl+0` | Show / hide the explorer, focus it |
+| `Ctrl+Shift+O` | Show / hide the outline |
+| `Alt+Left/Right`, mouse back/forward | Previous / next file |
 | `Ctrl+B` `Ctrl+I` `Ctrl+E` `Ctrl+K` | Bold, italic, code, link |
 | `Ctrl+1`…`6`, `Ctrl+Shift+7/8/9`, `Ctrl+Shift+.` | Headings, lists, tasks, quote |
 | `Enter`, `Tab`, `Shift+Tab` | Continue, indent and outdent lists |
@@ -69,14 +71,66 @@ folder and the file that was open in it.
   to the Recycle Bin after a confirmation. `F2` renames, and a name like
   `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files
   and folders. Right-click for New File, New Folder, Rename, Delete and Reveal in File
-  Explorer. If the open file is moved or renamed, the editor follows it.
+  Explorer. If the open file is moved or renamed, the editor follows it. With the
+  explorer focused, `A` starts a new file and `Shift+A` a new folder; the header has
+  buttons for both, and a funnel that shows only Markdown files (hiding `data`
+  folders and everything else).
 * **Preferences: Folder Settings** in the palette holds per-folder settings: autosave
   on or off, and the delay in seconds after the last edit. With autosave on, switching
-  files saves instead of asking. Folder settings live in Penmark's settings file, not
-  in the folder.
+  files, closing the window, and signing out save instead of asking. Folder settings
+  live in Penmark's settings file, not in the folder.
+* The window title is the folder's name. A bar above the document shows the open
+  file's name, a dot when it has unsaved changes, and its subfolder.
+* `Alt+Left` / `Alt+Right` and the mouse back / forward buttons move through the files
+  opened in the window, returning to where you were in each.
 
 The zoom level and the window's size, position and maximized state are remembered
 between runs. A saved position on a monitor that is no longer connected is ignored.
+
+### Links, attachments and the outline
+
+* Rendered links are blue on a light blue background and open with a click (the hand
+  cursor shows when a click will open one). On the line being edited, a click places
+  the cursor and `Ctrl+Click` opens the link.
+* Typing `[[` in a folder lists its notes; pick one to complete the link. A
+  `[[name]]` link is looked up next to the note, then from the folder root, then by
+  file name anywhere in the folder.
+* With a folder open, dropping files on a note copies them into a `data` folder next
+  to it and links them with a relative path, at the drop caret that follows the
+  mouse. Images are linked as images on a line of their own, so they render. Files
+  already inside the folder are linked where they are. `Ctrl+V` does the same for
+  files copied in File Explorer, and saves a copied image as
+  `data/pasted-<date-time>.png`. Without a folder, dropping a file opens it.
+* Right-click a code block or inline code to copy it; `Ctrl+C` with nothing selected
+  does the same while the cursor is in code.
+* `Ctrl+Shift+O` shows the document's headings in a panel on the right. The heading
+  the cursor is under is highlighted, and clicking one jumps to it.
+
+### Command links
+
+A link whose target starts with `run:` launches a program, and `shell:` runs its text
+with `cmd /c`:
+
+```markdown
+[run my script](<run:%USERPROFILE%\venv\Scripts\python.exe my_script.py> "cwd=%USERPROFILE%\proj")
+[build & log](<shell:cd /d %USERPROFILE%\proj && make > build.log 2>&1> "wait")
+```
+
+`run:` expands `%VARS%` itself and resolves a relative program against the working
+folder; `shell:` leaves the text to `cmd`. Options go in the title as `key=value`
+pairs separated by `;`: `cwd=` (default: the note's folder), `window=hidden|show|keep`
+(default `show` for `run:`, `hidden` for `shell:`), `wait` (report the exit code) or
+`detach` (the default), and `confirm` (always ask).
+
+The first click shows the full command and asks before running it. Penmark then
+stores a hash of the command and folder as trusted, so a link that changes asks again.
+Errors and, with `wait`, non-zero exit codes show in the status bar. Command links are
+drawn as black text on light green with a ▶ (`run:`) or `$` (`shell:`) glyph, and
+hovering one shows the command as it will run.
+
+CommonMark does not allow `>` inside a `<...>` link target, but commands often need
+it: in a command link the target ends at the first `>` that is followed by an
+optional title and `)`. Other Markdown tools will not render such a link.
 
 ### Slash menu
 
@@ -90,7 +144,13 @@ replaced, and one `Ctrl+Z` undoes the whole insertion.
   quote.
 * **Table** inserts a table with a header row and one empty row, with the first
   header selected so you can type over it.
+* **Task** turns the line into a task.
 * **Heading 1** to **Heading 5** turn the current line into that heading.
+* **Horizontal rule** inserts `---` (after a blank line when under a paragraph, so it
+  is not read as a heading underline).
+* **Today**, **Yesterday** and **Tomorrow** insert the date as `YYYY-MM-DD`.
+* **Run command**, **Shell command** and **Start command** insert command link
+  templates.
 
 A `/` inside a word (`a/b`, URLs) or inside a code block does not open the menu.
 Items are defined in `src/slash.rs`.
@@ -108,6 +168,7 @@ The cell with the cursor is outlined.
 | `Home` / `End` | Start / end of the cell |
 | `Enter` | Next row (adds one at the bottom) |
 | `Ctrl+Enter` | Insert a row below |
+| `Shift+Up` / `Shift+Down` | Select cells down the column; `Delete` empties them, `Ctrl+C` copies them |
 
 Typing `|` in a cell stores it as `\|`, and pasted text is kept to one line.
 
@@ -133,6 +194,11 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
 * **Font: Change Editor Font** lists every installed font, with each name drawn in
   its own typeface. The document previews the highlighted font live. `Enter` keeps
   it and `Esc` reverts. Code blocks and inline code stay monospace.
+* **Font: Change Code Font** does the same for code blocks and inline code, listing
+  monospaced fonts first.
+* **Font: Code Font Size** and **Preferences: UI Font Size** open the rendering
+  options at that setting: code text relative to the text around it, and the size of
+  the status bar, explorer, outline, palette and menus.
 * **View: Rendering Options** lists every option with its current value. Type to
   filter, `Left`/`Right` to adjust (`Shift` for bigger steps), and `Enter` to
   toggle. Changes apply and save immediately. The options are:
@@ -144,7 +210,7 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
     lists, and between list items;
   * list and quote indent, blank-line height, code block padding, table cell
     padding, and horizontal rule spacing;
-  * line height and content width;
+  * line height, content width, code font size and UI font size;
   * reset to defaults.
 
 To add a command, add a variant to `Command` and an entry to `COMMANDS` in
@@ -180,8 +246,11 @@ use `Ctrl+O` / `Ctrl+R`.
 | `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
 | `src/table.rs` | Tables: cell lookup, row/column/alignment changes, serialization. Unit-tested. |
 | `src/slash.rs` | The `/` menu: items, filtering, and the edits they make. Unit-tested. |
+| `src/attach.rs` | Dropped and pasted files: copying into `data`, relative links. Unit-tested. |
+| `src/command.rs` | `run:` / `shell:` links: options, command lines, trust keys. Unit-tested. |
+| `src/dragdrop.rs` | OLE drop target, for the drop caret while files are dragged. |
 | `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
-| `src/platform.rs` | Clipboard, file dialogs, message boxes, shell, theme detection. |
+| `src/platform.rs` | Clipboard (text, files, images), PNG encoding, file dialogs, message boxes, processes, shell, theme detection. |
 | `src/main.rs` | Window class, message loop, message dispatch. |
 
 Every line's layout is cached by its content and state. A keystroke re-lays out only
