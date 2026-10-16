@@ -107,6 +107,10 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 
 The palette also sets the **UI font size**, the **code font** and the **code font size**.
 
+## Changing shortcuts
+
+Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\Penmark\keymap.ini` with every command and its keys and opens it. Edit a line such as `bold = Ctrl+Shift+B` (several keys are separated by commas; an empty value removes the shortcut), save, and switch back to Penmark. Problems in the file show in the status bar. **Preferences: Open Settings Folder** opens the folder; delete `keymap.ini` to go back to the defaults.
+
 ## Command links
 
 A link whose target starts with `run:` runs a program; `shell:` runs the text with `cmd`. Wrap the target in `<...>` so it can hold spaces. Options go in the title, separated by `;`:
