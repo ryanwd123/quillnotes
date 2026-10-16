@@ -1,7 +1,16 @@
 //! The text model: Markdown source as a list of lines, with grouped undo/redo.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Versions are unique across all documents, so caches keyed by version (layout,
+/// word count) never mistake a newly opened document for the previous one.
+static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
+
+fn next_version() -> u64 {
+    NEXT_VERSION.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pos {
@@ -69,7 +78,7 @@ impl Document {
             path: None,
             crlf: false,
             bom: false,
-            version: 0,
+            version: next_version(),
             undo: Vec::new(),
             redo: Vec::new(),
             open: None,
@@ -159,7 +168,7 @@ impl Document {
         new_lines[0].insert_str(0, head);
         new_lines.last_mut().unwrap().push_str(tail);
         self.lines.splice(a.line..=b.line, new_lines);
-        self.version += 1;
+        self.version = next_version();
         end
     }
 
