@@ -63,6 +63,8 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
   filter, `Left`/`Right` to adjust (`Shift` for bigger steps), and `Enter` to
   toggle. Changes apply and save immediately. The options are:
   * bullet style (dot or dash);
+  * always show the `#` markers on headings (dimmed, in the margin), not only
+    while editing the heading;
   * a line under each heading level, set separately for H1 to H6;
   * spacing around paragraphs, above and below headings, before and after
     lists, and between list items;

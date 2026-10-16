@@ -6,6 +6,8 @@ use crate::settings::Settings;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RenderOptions {
     pub dash_bullets: bool,
+    /// Keep the `#` markers visible on rendered headings.
+    pub heading_hashes: bool,
     /// Rule under headings 1–6.
     pub heading_rule: [bool; 6],
     pub nums: [f32; NUM_COUNT],
@@ -115,6 +117,7 @@ pub mod num {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Opt {
     Bullets,
+    HeadingHashes,
     HeadingRule(usize),
     Num(usize),
 }
@@ -123,6 +126,7 @@ impl Default for RenderOptions {
     fn default() -> Self {
         RenderOptions {
             dash_bullets: false,
+            heading_hashes: false,
             heading_rule: [true, true, false, false, false, false],
             nums: NUMS.map(|n| n.2),
         }
@@ -138,6 +142,9 @@ impl RenderOptions {
         let mut o = RenderOptions::default();
         if let Some(v) = s.get("render.bullets") {
             o.dash_bullets = v == "dash";
+        }
+        if let Some(v) = s.get("render.heading_hashes") {
+            o.heading_hashes = v == "on";
         }
         if let Some(v) = s.get("render.heading_rules") {
             o.heading_rule = [false; 6];
@@ -163,6 +170,10 @@ impl RenderOptions {
             "render.bullets",
             if self.dash_bullets { "dash" } else { "dot" },
         );
+        s.set(
+            "render.heading_hashes",
+            if self.heading_hashes { "on" } else { "off" },
+        );
         let levels: Vec<String> = (1..=6)
             .filter(|l| self.heading_rule[l - 1])
             .map(|l| l.to_string())
@@ -174,10 +185,14 @@ impl RenderOptions {
     }
 }
 
+fn on_off(on: bool) -> String {
+    (if on { "☑ On" } else { "☐ Off" }).into()
+}
+
 impl Opt {
     /// Every option in palette order.
     pub fn all() -> Vec<Opt> {
-        let mut v = vec![Opt::Bullets];
+        let mut v = vec![Opt::Bullets, Opt::HeadingHashes];
         v.extend((0..6).map(Opt::HeadingRule));
         v.extend((0..NUM_COUNT).map(Opt::Num));
         v
@@ -186,6 +201,7 @@ impl Opt {
     pub fn label(self) -> String {
         match self {
             Opt::Bullets => "Lists: Bullet style".into(),
+            Opt::HeadingHashes => "Headings: Always show # markers".into(),
             Opt::HeadingRule(l) => format!("Headings: Line under heading {}", l + 1),
             Opt::Num(i) => NUMS[i].1.into(),
         }
@@ -199,12 +215,8 @@ impl Opt {
                 "‹ Dot ›"
             })
             .into(),
-            Opt::HeadingRule(l) => (if o.heading_rule[l] {
-                "☑ On"
-            } else {
-                "☐ Off"
-            })
-            .into(),
+            Opt::HeadingHashes => on_off(o.heading_hashes),
+            Opt::HeadingRule(l) => on_off(o.heading_rule[l]),
             Opt::Num(i) => {
                 let unit = if i == num::LINE_HEIGHT { "%" } else { " px" };
                 format!("‹ {}{unit} ›", o.nums[i])
@@ -216,6 +228,7 @@ impl Opt {
     pub fn adjust(self, o: &mut RenderOptions, steps: i32) {
         match self {
             Opt::Bullets => o.dash_bullets = !o.dash_bullets,
+            Opt::HeadingHashes => o.heading_hashes = steps > 0,
             Opt::HeadingRule(l) => o.heading_rule[l] = steps > 0,
             Opt::Num(i) => {
                 let (_, _, _, min, max, step) = NUMS[i];
@@ -228,6 +241,7 @@ impl Opt {
     pub fn activate(self, o: &mut RenderOptions) {
         match self {
             Opt::Bullets => o.dash_bullets = !o.dash_bullets,
+            Opt::HeadingHashes => o.heading_hashes = !o.heading_hashes,
             Opt::HeadingRule(l) => o.heading_rule[l] = !o.heading_rule[l],
             Opt::Num(_) => {}
         }
@@ -251,13 +265,18 @@ mod tests {
         assert!(o.heading_rule[2]);
         Opt::Bullets.activate(&mut o);
         assert!(o.dash_bullets);
-        assert_eq!(Opt::all().len(), 1 + 6 + NUM_COUNT);
+        Opt::HeadingHashes.activate(&mut o);
+        assert!(o.heading_hashes);
+        Opt::HeadingHashes.adjust(&mut o, -1);
+        assert!(!o.heading_hashes);
+        assert_eq!(Opt::all().len(), 2 + 6 + NUM_COUNT);
     }
 
     #[test]
     fn settings_round_trip() {
         let mut o = RenderOptions::default();
         o.dash_bullets = true;
+        o.heading_hashes = true;
         o.heading_rule = [false, true, true, false, false, true];
         o.nums[num::PARAGRAPH] = 9.0;
         let mut s = Settings::default();

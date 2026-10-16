@@ -751,14 +751,15 @@ impl View {
             for (r, target) in &inl.links {
                 links.push((s2d(r.start), s2d(r.end), target.clone()));
             }
+            let dim = self.brush(Ink::Dim);
             if active {
-                let dim = self.brush(Ink::Dim);
                 for r in &inl.hidden {
                     let _ = layout.SetDrawingEffect(dim, range(s2d(r.start), s2d(r.end)));
                 }
-                if content > from {
-                    let _ = layout.SetDrawingEffect(dim, range(0, s2d(content)));
-                }
+            }
+            // A shown syntax prefix (while editing, or always-visible heading markers).
+            if content > from {
+                let _ = layout.SetDrawingEffect(dim, range(0, s2d(content)));
             }
         }
         let mut tb = TextBox {
@@ -774,7 +775,7 @@ impl View {
             ink: st.ink,
         };
         tb.height.set(layout_height(&tb.layout));
-        if active && content > from {
+        if content > from {
             tb.prefix_x = tb.caret(tb.s2d(content)).0;
         }
         tb.baseline = line_metrics(&tb.layout).first().map_or(0.0, |m| m.baseline);
@@ -1005,6 +1006,7 @@ impl View {
                 callout: false,
             };
             // Lines of one paragraph sit closer together than separate blocks.
+            let heading_hashes = o.heading_hashes && matches!(info.kind, Kind::Heading(_));
             let joins = |j: usize| {
                 infos.get(j).is_some_and(|o| {
                     o.kind == Kind::Para && o.quote == info.quote && o.level == info.level
@@ -1044,8 +1046,16 @@ impl View {
                             inline: bool,
                             pad: (f32, f32),
                             old: &mut HashMap<u64, Rc<TextBox>>| {
-                let from = if act { 0 } else { info.content };
-                let content = if act && !source { info.content } else { from };
+                // Shown range starts at `from`; `[from, content)` is a dimmed syntax prefix.
+                let (from, content) = if source {
+                    (0, 0)
+                } else if act {
+                    (0, info.content)
+                } else if heading_hashes {
+                    (info.marker, info.content)
+                } else {
+                    (info.content, info.content)
+                };
                 let w0 = right - cx - rpad;
                 let tb = this.cached_box(old, key, w0, |this| {
                     let mut tb =
@@ -1068,7 +1078,7 @@ impl View {
                     tb
                 });
                 // While editing, the syntax prefix hangs left so content does not shift.
-                let hang = if act && !source { tb.prefix_x } else { 0.0 };
+                let hang = tb.prefix_x;
                 tb.set_width(w0 + hang);
                 row.x = cx - hang;
                 row.top = pad.0;
