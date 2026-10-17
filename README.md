@@ -1,8 +1,11 @@
 # Penmark
+
 A small, keyboard-driven, what-you-see-is-what-you-get Markdown editor for Windows.
-It is a single native executable (about 700 KB) built on Win32, Direct2D and
+It is a single native executable (about 900 KB) built on Win32, Direct2D and
 DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs). There is no
-web view or GPU framework, and it needs no runtime.
+web view or GPU framework, and it needs no runtime. Direct2D draws in software rather
+than on the GPU: loading the GPU driver took most of the startup time and about 34 MB
+of memory, and a software repaint (about 7 ms) is fast enough for an editor.
 
 Inspired by [Velotype](https://github.com/manyougz/velotype), but rebuilt from scratch for
 Windows only and without the menu bar.
@@ -28,7 +31,10 @@ The file stays plain Markdown; Penmark never converts it to another format.
 * Code blocks are syntax highlighted when the fence names a language Penmark knows:
   Rust, Python, JavaScript/TypeScript, C/C++/C#/Java, Go, shell, PowerShell, JSON,
   TOML/INI/YAML, SQL and HTML/XML (`src/highlight.rs`).
-* `Ctrl+/` switches the whole document to plain source mode.
+* Headings fold: `Ctrl+Shift+[` hides the section under the heading the caret is in
+  and leaves a `⋯` after it; click the `⋯` or press `Ctrl+Shift+]` to unfold, or run
+  **View: Unfold All Headings**.
+* `Ctrl+Shift+V` switches the whole document to plain source mode.
 
 Supported syntax: ATX headings; paragraphs; bold, italic, strikethrough, `==highlight==`
 and inline code; links, autolinks, bare URLs, `[[wiki links]]`; images; bullet, numbered
@@ -37,6 +43,7 @@ front matter; GFM tables; thematic breaks; HTML comments; backslash escapes; and
 entities.
 
 ## Keyboard
+
 Shortcuts follow VS Code's defaults where they don't clash with Markdown formatting:
 `Ctrl+I` and `Ctrl+K` stay italic and link, as in other Markdown editors, and bold is
 `Ctrl+Shift+B` so that `Ctrl+B` can toggle the explorer as in VS Code. The full list
@@ -54,6 +61,7 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 | `Ctrl+Shift+[` / `Ctrl+Shift+]` | Fold / unfold the section the caret is in |
 | `Alt+Left/Right`, mouse back/forward | Previous / next file |
 | `Ctrl+Shift+B` `Ctrl+I` `Ctrl+E` `Ctrl+K` | Bold, italic, code, link |
+| `Ctrl+Shift+X`, `Ctrl+Shift+H` | Strikethrough, highlight |
 | `Ctrl+1`…`6`, `Ctrl+Shift+7/8/9`, `Ctrl+Shift+.` | Headings, lists, tasks, quote |
 | `Enter`, `Tab`, `Shift+Tab` | Continue, indent and outdent lists |
 | `Alt+C` | Toggle a task's checkbox |
@@ -67,6 +75,7 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 | `Ctrl+W`, `Ctrl+Shift+W`, `Ctrl+Q` | Close file, close window, quit (close every window) |
 
 ### Folders
+
 A window can have one folder open, like a VS Code workspace (subfolders included, no
 multi-root). Open one with **File: Open Folder…** in the palette, `Ctrl+R`, or
 `penmark.exe C:\path\to\folder`. Started without arguments, Penmark reopens the last
@@ -311,6 +320,9 @@ use `Ctrl+O` / `Ctrl+R`.
 | `src/attach.rs` | Dropped and pasted files: copying into `data`, relative links. Unit-tested. |
 | `src/command.rs` | `run:` / `shell:` links: options, command lines, trust keys. Unit-tested. |
 | `src/dragdrop.rs` | OLE drop target, for the drop caret while files are dragged. |
+| `src/highlight.rs` | Syntax highlighting for fenced code: a table of languages and a tokenizer with per-line state. Unit-tested. |
+| `src/spell.rs` | Spell check: which parts of a line are prose, mapping the Windows checker's results back to text. Unit-tested. |
+| `src/theme.rs` | Light and dark color palettes, overridden by `theme.ini`. Unit-tested. |
 | `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard (text, files, images), PNG encoding, file dialogs, message boxes, processes, shell, theme detection. |
 | `src/main.rs` | Window class, message loop, message dispatch. |
@@ -320,5 +332,5 @@ the lines that changed, which costs about 0.5 ms of CPU on a 20,000-line documen
 
 ## Not yet supported
 
-Math rendering, footnote rendering, setext headings, reference-style link resolution, remote images, HTML/PDF export, and
-search across all files in a folder.
+Math rendering, footnote rendering, setext headings, reference-style link resolution,
+remote images, and HTML/PDF export.
