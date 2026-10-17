@@ -94,6 +94,11 @@ folder and the file that was open in it.
   on or off, and the delay in seconds after the last edit. With autosave on, switching
   files, closing the window, and signing out save instead of asking. Folder settings
   live in Penmark's settings file, not in the folder.
+* `Alt+D` opens today's daily note, `YYYY-MM-DD.md` in the daily notes folder
+  (`journal` unless changed in Folder Settings), and makes it if needed: from the
+  template note set there, with `{{date}}` and `{{title}}` replaced by the date, or
+  with a `# YYYY-MM-DD` heading. **File: Previous Daily Note** and **File: Next Daily
+  Note** step through the existing ones (unbound; give them keys in `keymap.ini`).
 * The window title is the folder's name. A bar above the document shows the open
   file's name, a dot when it has unsaved changes, and its subfolder.
 * `Alt+Left` / `Alt+Right` and the mouse back / forward buttons move through the files

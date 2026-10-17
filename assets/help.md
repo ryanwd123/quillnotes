@@ -21,6 +21,7 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | `Ctrl+W` | Close the file |
 | `Ctrl+Shift+N` / `Ctrl+Shift+W` | New window / close window |
 | `Ctrl+Q` | Quit: close every Penmark window |
+| `Alt+D` | Today's daily note (`journal/YYYY-MM-DD.md`, made if needed); **File: Previous / Next Daily Note** in the palette step through them |
 
 When the open file changes on disk (a sync, `git pull`, another editor), Penmark reloads it when you come back to the window, keeping your place; `Ctrl+Z` undoes the reload. With unsaved changes it asks first, and saving over a newer file asks before overwriting it.
 
@@ -41,7 +42,7 @@ The buttons at the top of the explorer make a new file or folder, and the funnel
 
 When a renamed or moved note has links to it (`[[name]]` or relative `.md` links), Penmark offers to update them, along with the relative links inside the moved notes.
 
-**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit. With autosave on, Penmark also saves before switching files or closing.
+**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit. It also sets the daily notes folder and a template note for new daily notes, in which `{{date}}` and `{{title}}` become the date. With autosave on, Penmark also saves before switching files or closing.
 
 ## Attachments
 
