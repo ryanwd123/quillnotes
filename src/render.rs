@@ -659,7 +659,13 @@ impl View {
         unsafe {
             let mut rc = RECT::default();
             let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc);
-            let props = D2D1_RENDER_TARGET_PROPERTIES::default();
+            // Software rendering: a hardware target loads the GPU driver, which
+            // blocks startup for ~90 ms and adds ~30 MB of private memory, while
+            // a full repaint in software still takes only a few milliseconds.
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                ..Default::default()
+            };
             let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
                 hwnd,
                 pixelSize: D2D_SIZE_U {
