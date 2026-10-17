@@ -1,8 +1,8 @@
 //! The text model: Markdown source as a list of lines, with grouped undo/redo.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Versions are unique across all documents, so caches keyed by version (layout,
 /// word count) never mistake a newly opened document for the previous one.
@@ -27,6 +27,21 @@ impl Pos {
 
 /// (anchor, cursor)
 pub type Sel = (Pos, Pos);
+
+/// A file's modification time and size, to notice it changing outside Penmark.
+pub type Stamp = (SystemTime, u64);
+
+pub fn stamp(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// How the file on disk differs from when the document last read or wrote it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskChange {
+    Modified,
+    Deleted,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EditKind {
@@ -61,6 +76,8 @@ pub struct Document {
     open: Option<Group>,
     /// Undo depth at which the document matches the file on disk.
     saved_depth: Option<usize>,
+    /// The file's stamp when it was last read or written.
+    pub disk: Option<Stamp>,
 }
 
 /// Position just after `text` inserted at `start`.
@@ -83,6 +100,7 @@ impl Document {
             redo: Vec::new(),
             open: None,
             saved_depth: Some(0),
+            disk: None,
         }
     }
 
@@ -124,6 +142,16 @@ impl Document {
 
     pub fn mark_saved(&mut self) {
         self.saved_depth = Some(self.undo.len());
+    }
+
+    /// Whether the file changed or went away since it was last read or written.
+    pub fn disk_change(&self) -> Option<DiskChange> {
+        let (path, known) = (self.path.as_ref()?, self.disk?);
+        match stamp(path) {
+            Some(s) if s != known => Some(DiskChange::Modified),
+            None if !path.exists() => Some(DiskChange::Deleted),
+            _ => None,
+        }
     }
 
     pub fn line_len(&self, line: usize) -> usize {
@@ -452,6 +480,20 @@ mod tests {
         d.redo();
         assert_eq!(d.text(), "hello big\nnew world");
         assert_eq!(d.to_bytes(), b"hello big\r\nnew world");
+    }
+
+    #[test]
+    fn notices_disk_changes() {
+        let path = std::env::temp_dir().join(format!("penmark-disk-{}.md", std::process::id()));
+        std::fs::write(&path, "one").unwrap();
+        let mut d = Document::from_bytes(b"one", Some(path.clone())).0;
+        assert_eq!(d.disk_change(), None, "never read: nothing to compare");
+        d.disk = stamp(&path);
+        assert_eq!(d.disk_change(), None);
+        std::fs::write(&path, "one two").unwrap();
+        assert_eq!(d.disk_change(), Some(DiskChange::Modified));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(d.disk_change(), Some(DiskChange::Deleted));
     }
 
     #[test]

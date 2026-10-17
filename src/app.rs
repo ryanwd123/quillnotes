@@ -15,7 +15,7 @@ use windows::core::{HSTRING, PCWSTR};
 
 use crate::attach;
 use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
-use crate::doc::{self, Document, EditKind, Pos, find_ci};
+use crate::doc::{self, DiskChange, Document, EditKind, Pos, find_ci};
 use crate::keymap::{self, Action, Chord, Keymap};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
@@ -3029,6 +3029,7 @@ impl App {
             self.rescan();
         }
         if focused {
+            self.check_disk();
             self.reload_keymap();
             self.restart_blink();
             self.update_ime();
@@ -3789,9 +3790,12 @@ impl App {
     }
 
     fn read_path(&mut self, path: &Path) {
+        // Stamped before reading, so a write in between shows up as a change.
+        let stamp = doc::stamp(path);
         match std::fs::read(path) {
             Ok(bytes) => {
-                let (doc, lossy) = Document::from_bytes(&bytes, Some(path.to_path_buf()));
+                let (mut doc, lossy) = Document::from_bytes(&bytes, Some(path.to_path_buf()));
+                doc.disk = stamp;
                 self.doc = doc;
                 self.infos_ver = None;
                 self.set_sel(Pos::default(), Pos::default());
@@ -3818,11 +3822,15 @@ impl App {
     }
 
     fn write_to(&mut self, path: &Path) -> bool {
+        if self.doc.path.as_deref() == Some(path) && !self.confirm_overwrite() {
+            return false;
+        }
         match std::fs::write(path, self.doc.to_bytes()) {
             Ok(()) => {
                 let new_path = self.doc.path.as_deref() != Some(path);
                 self.doc.path = Some(path.to_path_buf());
                 self.doc.mark_saved();
+                self.doc.disk = doc::stamp(path);
                 self.say("Saved");
                 self.update_title();
                 if keymap::path().as_deref() == Some(path) {
@@ -3879,6 +3887,102 @@ impl App {
             Some(p) => self.write_to(&p),
             None => false,
         }
+    }
+
+    /// Whether the open file's text on disk differs from what it was when read or
+    /// last saved (another program, a sync), checking the bytes when the stamp moved.
+    fn disk_differs(&mut self) -> bool {
+        if self.doc.disk_change() != Some(DiskChange::Modified) {
+            return false;
+        }
+        let path = self.doc.path.clone().unwrap();
+        let stamp = doc::stamp(&path);
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes != self.doc.to_bytes() => true,
+            Ok(_) => {
+                // Touched but not changed.
+                self.doc.disk = stamp;
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Before saving over the open file: asks when it changed on disk since it was
+    /// read. Returns false to leave the file alone.
+    fn confirm_overwrite(&mut self) -> bool {
+        if !self.disk_differs() {
+            return true;
+        }
+        let name = self.doc_name();
+        let r = platform::message_box(
+            self.hwnd,
+            &format!("{name} changed on disk since it was opened.
+
+Overwrite it with your version?"),
+            APP_NAME,
+            MB_YESNO | MB_ICONWARNING,
+        );
+        r == IDYES
+    }
+
+    /// Notices the open file changing outside Penmark (on focus): reloads it when
+    /// there are no unsaved changes, and otherwise asks.
+    fn check_disk(&mut self) {
+        if self.search_previewing() {
+            return;
+        }
+        if self.doc.disk_change() == Some(DiskChange::Deleted) {
+            // Report it once; saving recreates the file.
+            self.doc.disk = None;
+            return self.say(format!("{} was deleted on disk", self.doc_name()));
+        }
+        if !self.disk_differs() {
+            return;
+        }
+        let path = self.doc.path.clone().unwrap();
+        let stamp = doc::stamp(&path);
+        if self.doc.is_dirty() {
+            let name = self.doc_name();
+            let r = platform::message_box(
+                self.hwnd,
+                &format!(
+                    "{name} changed on disk.
+
+Reload it and lose your unsaved changes?"
+                ),
+                APP_NAME,
+                MB_YESNO | MB_ICONWARNING,
+            );
+            if r != IDYES {
+                // Keep this text; saving it overwrites the file without asking again.
+                self.doc.disk = stamp;
+                return;
+            }
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        self.reload_text(&bytes);
+        self.doc.disk = stamp;
+        self.say("Reloaded (changed on disk)");
+    }
+
+    /// Replaces the text with the file's as one undo step, keeping the caret and
+    /// scroll, so `Ctrl+Z` brings back what was there.
+    fn reload_text(&mut self, bytes: &[u8]) {
+        let fresh = Document::from_bytes(bytes, None).0;
+        let end = self.doc.end();
+        self.begin(EditKind::Other);
+        self.doc.replace(Pos::default(), end, &fresh.lines.join("
+"));
+        self.set_sel(self.anchor, self.cursor);
+        self.commit();
+        self.doc.crlf = fresh.crlf;
+        self.doc.bom = fresh.bom;
+        self.doc.mark_saved();
+        self.clamp_scroll();
+        self.update_title();
     }
 
     /// Asks to save unsaved changes. Returns false if the user cancelled.
@@ -4256,6 +4360,27 @@ mod tests {
         let mut a = App::new(View::new(false).unwrap());
         a.doc = Document::from_bytes(text.as_bytes(), None).0;
         a
+    }
+
+    #[test]
+    fn reloads_a_clean_file_changed_on_disk() {
+        let path = std::env::temp_dir().join(format!("penmark-reload-{}.md", std::process::id()));
+        std::fs::write(&path, "one\ntwo\nthree").unwrap();
+        let mut a = app("");
+        a.read_path(&path);
+        a.set_sel(Pos::new(1, 2), Pos::new(1, 2));
+        std::fs::write(&path, "one\r\nTWO!\r\nthree\r\nfour").unwrap();
+        a.check_disk();
+        assert_eq!(a.doc.lines, ["one", "TWO!", "three", "four"]);
+        assert!(a.doc.crlf && !a.doc.is_dirty());
+        assert_eq!(a.cursor, Pos::new(1, 2));
+        // Touching the file without changing it is not a change.
+        std::fs::write(&path, "one\r\nTWO!\r\nthree\r\nfour").unwrap();
+        assert!(!a.disk_differs());
+        // The reload is one undo step.
+        a.undo(true);
+        assert_eq!(a.doc.lines, ["one", "two", "three"]);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

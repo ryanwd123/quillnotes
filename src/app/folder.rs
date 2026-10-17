@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{APP_NAME, App, PromptKind};
-use crate::doc::{Document, Pos};
+use crate::doc::{self, Document, Pos};
 use crate::palette::{Mode, Palette, SearchFile, Target};
 use crate::platform::{self, MenuItem};
 use crate::render::{SidebarButton, SidebarRow, SidebarView};
@@ -416,9 +416,18 @@ impl App {
             return;
         }
         let path = self.doc.path.clone().unwrap();
+        if self.disk_differs() {
+            // Leave the newer file alone; focusing the window asks what to do.
+            self.autosave_failed = Some(self.doc.version);
+            return self.say(format!(
+                "Autosave paused: {} changed on disk",
+                self.doc_name()
+            ));
+        }
         match std::fs::write(&path, self.doc.to_bytes()) {
             Ok(()) => {
                 self.doc.mark_saved();
+                self.doc.disk = doc::stamp(&path);
                 self.update_title();
                 self.invalidate();
             }
