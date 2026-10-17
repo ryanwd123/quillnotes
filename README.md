@@ -72,7 +72,8 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 A window can have one folder open, like a VS Code workspace (subfolders included, no
 multi-root). Open one with **File: Open Folder…** in the palette, `Ctrl+R`, or
 `penmark.exe C:\path\to\folder`. Started without arguments, Penmark reopens the last
-folder and the file that was open in it.
+folder and the file that was open in it. A folder opens where it was left: the caret
+and scroll in that file, and the `Alt+Left` history of files before it.
 
 * `Ctrl+P` lists the folder's Markdown and text files by name, with their subfolder
   shown on the right. The search matches the name and the folder, so `2024 jan` finds

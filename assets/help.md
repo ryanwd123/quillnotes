@@ -15,7 +15,7 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | `Ctrl+B` | Show / hide the explorer |
 | `Ctrl+Shift+E` | Move focus between the explorer and the editor |
 | `Ctrl+0` | Focus the explorer (`Esc` returns to the editor) |
-| `Alt+Left` / `Alt+Right`, mouse back / forward | Previous / next file, where you left it |
+| `Alt+Left` / `Alt+Right`, mouse back / forward | Previous / next file, where you left it (kept when the folder is closed and opened again) |
 | `Ctrl+N` | New document |
 | `Ctrl+O` | Open a file (or, without a folder, drop one on the window) |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
