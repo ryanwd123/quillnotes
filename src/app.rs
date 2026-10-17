@@ -15,7 +15,7 @@ use windows::core::{HSTRING, PCWSTR};
 
 use crate::attach;
 use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
-use crate::doc::{self, DiskChange, Document, EditKind, Pos, find_ci};
+use crate::doc::{self, DiskChange, Document, EditKind, Pos, find_all, find_ci};
 use crate::keymap::{self, Action, Chord, Keymap};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::RenderOptions;
@@ -50,6 +50,8 @@ fn clamp_zoom(z: f32) -> f32 {
 #[derive(Clone, Copy, PartialEq)]
 enum PromptKind {
     Find,
+    /// Find with a replacement: `text` is the field being edited, `other` the other.
+    Replace,
     GoTo,
     /// Rename (or move, with a relative path) the explorer entry `Prompt::path`.
     Rename,
@@ -68,6 +70,16 @@ struct Prompt {
     /// False while a find prompt stays open but the keyboard is in the
     /// document or explorer (after a click there).
     focused: bool,
+    /// Replace prompt: the field not being edited, and whether `text` is the
+    /// replacement.
+    other: String,
+    in_replace: bool,
+}
+
+impl PromptKind {
+    fn finds(self) -> bool {
+        matches!(self, PromptKind::Find | PromptKind::Replace)
+    }
 }
 
 /// Everything the layout depends on: doc version, selected lines, table being edited,
@@ -163,6 +175,7 @@ pub struct App {
     message: Option<(String, Instant)>,
     prompt: Option<Prompt>,
     find_query: String,
+    replace_query: String,
     drag: Drag,
     last_click: (u32, i32, i32, u32),
     high_surrogate: Option<u16>,
@@ -289,6 +302,7 @@ impl App {
             message: keymap_errors.first().map(|e| (e.clone(), Instant::now())),
             prompt: None,
             find_query: String::new(),
+            replace_query: String::new(),
             drag: Drag::None,
             last_click: (0, 0, 0, 0),
             high_surrogate: None,
@@ -875,6 +889,7 @@ impl App {
             Action::Cut => self.copy(true),
             Action::Paste => self.paste(),
             Action::Find => self.open_prompt(PromptKind::Find),
+            Action::Replace => self.open_prompt(PromptKind::Replace),
             Action::FindNext => self.find_next(true),
             Action::FindPrevious => self.find_next(false),
             Action::GoToLine => self.open_prompt(PromptKind::GoTo),
@@ -1780,10 +1795,13 @@ impl App {
     fn open_prompt(&mut self, kind: PromptKind) {
         let (a, b) = self.sel();
         let text = match kind {
-            PromptKind::Find if a != b && a.line == b.line => self.doc.text_range(a, b),
-            PromptKind::Find => self.find_query.clone(),
+            k if k.finds() && a != b && a.line == b.line => self.doc.text_range(a, b),
+            k if k.finds() => self.find_query.clone(),
             _ => String::new(),
         };
+        if kind.finds() {
+            self.find_query = text.clone();
+        }
         self.prompt = Some(Prompt {
             kind,
             cur: text.len(),
@@ -1791,6 +1809,8 @@ impl App {
             origin: (self.anchor, self.cursor, self.scroll),
             path: None,
             focused: true,
+            other: self.replace_query.clone(),
+            in_replace: false,
         });
         self.invalidate();
     }
@@ -1805,6 +1825,8 @@ impl App {
             origin: (self.anchor, self.cursor, self.scroll),
             path: Some(path),
             focused: true,
+            other: String::new(),
+            in_replace: false,
         });
         self.invalidate();
     }
@@ -1835,7 +1857,7 @@ impl App {
             }
             return true;
         }
-        if p.kind == PromptKind::Find {
+        if p.kind.finds() {
             p.focused = false;
         } else {
             self.prompt = None;
@@ -1846,7 +1868,9 @@ impl App {
 
     fn prompt_changed(&mut self) {
         let Some(p) = &self.prompt else { return };
-        if p.kind == PromptKind::Find {
+        if p.kind == PromptKind::Replace && p.in_replace {
+            self.replace_query = p.text.clone();
+        } else if p.kind.finds() {
             self.find_query = p.text.clone();
             let (a, c, _) = p.origin;
             let start = a.min(c);
@@ -1886,8 +1910,17 @@ impl App {
                 }
                 self.invalidate();
             }
+            VK_RETURN if p.kind == PromptKind::Replace && ctrl => self.replace_all(),
+            VK_RETURN if p.kind == PromptKind::Replace && p.in_replace && !shift => {
+                self.replace_one()
+            }
+            VK_TAB if p.kind == PromptKind::Replace => {
+                std::mem::swap(&mut p.text, &mut p.other);
+                p.in_replace = !p.in_replace;
+                p.cur = p.text.len();
+            }
             VK_RETURN => match p.kind {
-                PromptKind::Find => self.find_next(!shift),
+                PromptKind::Find | PromptKind::Replace => self.find_next(!shift),
                 PromptKind::GoTo => {
                     let n: usize = p.text.trim().parse().unwrap_or(0);
                     self.prompt = None;
@@ -1930,6 +1963,19 @@ impl App {
                     p.cur += t.len();
                     self.prompt_changed();
                 }
+            }
+            VK_F | VK_H if ctrl && p.kind.finds() => {
+                // Ctrl+F / Ctrl+H switch between find and replace, keeping the query.
+                if p.in_replace {
+                    std::mem::swap(&mut p.text, &mut p.other);
+                    p.in_replace = false;
+                    p.cur = p.text.len();
+                }
+                p.kind = if key == VK_F {
+                    PromptKind::Find
+                } else {
+                    PromptKind::Replace
+                };
             }
             VK_F | VK_G if ctrl => {}
             _ => return ctrl && !matches!(key, VK_F3),
@@ -1991,22 +2037,54 @@ impl App {
         match found {
             Some(p) => {
                 self.set_sel(p, Pos::new(p.line, p.col + q.len()));
-                let (mut total, mut index) = (0, 0);
-                for (l, line) in self.doc.lines.iter().enumerate() {
-                    let mut from = 0;
-                    while let Some(i) = find_ci(line, &q, from) {
-                        total += 1;
-                        if Pos::new(l, i) == p {
-                            index = total;
-                        }
-                        from = i + q.len().max(1);
-                    }
-                }
-                self.message = Some((format!("{index} of {total}"), Instant::now()));
+                let all = find_all(&self.doc.lines, &q);
+                let index = all.iter().position(|&m| m == p).map_or(0, |i| i + 1);
+                self.message = Some((format!("{index} of {}", all.len()), Instant::now()));
             }
             None => self.message = Some(("No matches".into(), Instant::now())),
         }
         self.changed(false);
+    }
+
+    /// Whether the selection is a match of the find query.
+    fn selection_matches(&self) -> bool {
+        let (a, b) = self.sel();
+        a.line == b.line
+            && !self.find_query.is_empty()
+            && self.doc.text_range(a, b).eq_ignore_ascii_case(&self.find_query)
+    }
+
+    /// Replaces the selected match, then selects the next one.
+    fn replace_one(&mut self) {
+        if self.find_query.is_empty() {
+            return;
+        }
+        if self.selection_matches() {
+            let text = self.replace_query.clone();
+            self.begin(EditKind::Other);
+            self.insert(&text);
+            self.commit();
+        }
+        self.find(true);
+    }
+
+    /// Replaces every match as one undo step.
+    fn replace_all(&mut self) {
+        let q = self.find_query.clone();
+        let all = find_all(&self.doc.lines, &q);
+        if all.is_empty() {
+            return self.say("No matches");
+        }
+        let text = self.replace_query.clone();
+        self.begin(EditKind::Other);
+        // Last first, so earlier positions stay valid.
+        for &p in all.iter().rev() {
+            self.doc.replace(p, Pos::new(p.line, p.col + q.len()), &text);
+        }
+        self.set_sel(self.cursor, self.cursor);
+        self.commit();
+        let n = all.len();
+        self.say(format!("Replaced {n} {}", if n == 1 { "match" } else { "matches" }));
     }
 
     // -----------------------------------------------------------------------
@@ -3097,14 +3175,33 @@ impl App {
                 self.cursor.line + 1
             );
             prompt_text = self.prompt.as_ref().map(|p| {
+                if p.kind == PromptKind::Replace {
+                    let (find, repl) = if p.in_replace {
+                        (&p.other, &p.text)
+                    } else {
+                        (&p.text, &p.other)
+                    };
+                    let head = format!("Find: {find}      Replace: ");
+                    let cur = p.focused.then_some(if p.in_replace {
+                        head.len() + p.cur
+                    } else {
+                        "Find: ".len() + p.cur
+                    });
+                    let extra = self
+                        .message
+                        .as_ref()
+                        .map(|m| format!("      {}", m.0))
+                        .unwrap_or_default();
+                    return (format!("{head}{repl}{extra}"), cur);
+                }
                 let label = match p.kind {
-                    PromptKind::Find => "Find: ",
+                    PromptKind::Find | PromptKind::Replace => "Find: ",
                     PromptKind::GoTo => "Go to line: ",
                     PromptKind::Rename => "Rename to (a/b.md moves it): ",
                     PromptKind::NewFile => "New file: ",
                     PromptKind::NewFolder => "New folder: ",
                 };
-                let extra = if p.kind == PromptKind::Find {
+                let extra = if p.kind.finds() {
                     self.message
                         .as_ref()
                         .map(|m| format!("      {}", m.0))
@@ -4381,6 +4478,29 @@ mod tests {
         a.undo(true);
         assert_eq!(a.doc.lines, ["one", "two", "three"]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn replace_one_and_all() {
+        let mut a = app("cat Cat\ndog cat");
+        a.open_prompt(PromptKind::Replace);
+        for c in "cat".chars() {
+            a.on_char(c as u16);
+        }
+        assert_eq!(a.sel(), (Pos::new(0, 0), Pos::new(0, 3)));
+        // Tab moves to the replacement field; Enter there replaces and moves on.
+        a.prompt_key(VK_TAB.0, false, false);
+        for c in "cow".chars() {
+            a.on_char(c as u16);
+        }
+        a.prompt_key(VK_RETURN.0, false, false);
+        assert_eq!(a.doc.lines, ["cow Cat", "dog cat"]);
+        assert_eq!(a.sel(), (Pos::new(0, 4), Pos::new(0, 7)));
+        // Ctrl+Enter replaces the rest as one undo step.
+        a.prompt_key(VK_RETURN.0, true, false);
+        assert_eq!(a.doc.lines, ["cow cow", "dog cow"]);
+        a.undo(true);
+        assert_eq!(a.doc.lines, ["cow Cat", "dog cat"]);
     }
 
     #[test]

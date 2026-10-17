@@ -339,6 +339,19 @@ pub fn next_boundary(s: &str, i: usize) -> usize {
 }
 
 /// Case-insensitive (ASCII) search for `needle` in `hay` starting at `from`.
+/// Every non-overlapping match of `needle` in `lines` (ASCII case-insensitive).
+pub fn find_all(lines: &[String], needle: &str) -> Vec<Pos> {
+    let mut out = Vec::new();
+    for (l, line) in lines.iter().enumerate() {
+        let mut from = 0;
+        while let Some(i) = find_ci(line, needle, from) {
+            out.push(Pos::new(l, i));
+            from = i + needle.len();
+        }
+    }
+    out
+}
+
 pub fn find_ci(hay: &str, needle: &str, from: usize) -> Option<usize> {
     let (h, n) = (hay.as_bytes(), needle.as_bytes());
     if n.is_empty() || h.len() < n.len() {
@@ -480,6 +493,17 @@ mod tests {
         d.redo();
         assert_eq!(d.text(), "hello big\nnew world");
         assert_eq!(d.to_bytes(), b"hello big\r\nnew world");
+    }
+
+    #[test]
+    fn finds_all_matches() {
+        let lines: Vec<String> = ["aAa", "", "xa"].map(String::from).into();
+        assert_eq!(
+            find_all(&lines, "a"),
+            [Pos::new(0, 0), Pos::new(0, 1), Pos::new(0, 2), Pos::new(2, 1)]
+        );
+        assert_eq!(find_all(&lines, "aa"), [Pos::new(0, 0)]);
+        assert!(find_all(&lines, "").is_empty());
     }
 
     #[test]
