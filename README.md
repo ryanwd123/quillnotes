@@ -96,6 +96,11 @@ folder and the file that was open in it.
 * `Alt+Left` / `Alt+Right` and the mouse back / forward buttons move through the files
   opened in the window, returning to where you were in each.
 
+When the open file changes on disk (a sync, `git pull`, another editor), Penmark
+reloads it when the window gets focus, keeping the caret and scroll; the reload is one
+undo step. With unsaved changes it asks first. Saving over a file that changed since it
+was read asks before overwriting it, and autosave pauses instead.
+
 The zoom level and the window's size, position and maximized state are remembered
 between runs. A saved position on a monitor that is no longer connected is ignored.
 

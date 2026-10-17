@@ -22,6 +22,8 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | `Ctrl+Shift+N` / `Ctrl+Shift+W` | New window / close window |
 | `Ctrl+Q` | Quit: close every Penmark window |
 
+When the open file changes on disk (a sync, `git pull`, another editor), Penmark reloads it when you come back to the window, keeping your place; `Ctrl+Z` undoes the reload. With unsaved changes it asks first, and saving over a newer file asks before overwriting it.
+
 ## Explorer
 
 | Key | Action |
