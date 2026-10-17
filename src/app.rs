@@ -224,6 +224,12 @@ pub struct App {
     outline_hover: Option<usize>,
     /// The heading last shown as current, to scroll it into view when it changes.
     outline_current: Option<usize>,
+    /// Notes linking to the open one, for the outline panel, and the (path, folder
+    /// scan) they were found for; each note's links are cached by its stamp.
+    backlinks: (Option<(PathBuf, u64)>, Vec<workspace::Backlink>),
+    link_cache: workspace::LinkCache,
+    /// Bumped on each folder scan, so backlinks are looked for again.
+    scan_gen: u64,
     /// Commands run with `wait` that have not ended: (id, label).
     running: Vec<(isize, String)>,
     next_command: isize,
@@ -338,6 +344,9 @@ impl App {
             outline_scroll: 0.0,
             outline_hover: None,
             outline_current: None,
+            backlinks: (None, Vec::new()),
+            link_cache: workspace::LinkCache::new(),
+            scan_gen: 0,
             pending_drop: (Vec::new(), None),
             running: Vec::new(),
             next_command: 0,
@@ -3306,12 +3315,32 @@ impl App {
             folder: &folder,
             dirty: self.doc.is_dirty(),
         };
+        // Up to date: outline_state() sized the panel with them.
+        let backlink_names: Vec<String> = if outline_current.is_some() {
+            self.backlinks
+                .1
+                .iter()
+                .map(|b| {
+                    b.path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let outline = outline_current.map(|current| OutlineView {
             items: self
                 .outline_items
                 .1
                 .iter()
                 .map(|(_, n, t)| (*n, t.as_str()))
+                .collect(),
+            backlinks: backlink_names
+                .iter()
+                .zip(&self.backlinks.1)
+                .map(|(n, b)| (n.as_str(), b.text.as_str()))
                 .collect(),
             current,
             hover: self.outline_hover,
@@ -3718,27 +3747,66 @@ impl App {
         &self.outline_items.1
     }
 
+    /// The other notes' lines that link to the open note, while the outline shows.
+    fn backlinks(&mut self) -> &[workspace::Backlink] {
+        let key = match (&self.folder, &self.doc.path) {
+            (Some(dir), Some(p)) if self.outline && workspace::contains(dir, p) => {
+                Some((p.clone(), self.scan_gen))
+            }
+            _ => None,
+        };
+        if key != self.backlinks.0 {
+            self.backlinks.1 = match (&key, &self.folder) {
+                (Some((path, _)), Some(dir)) => {
+                    workspace::backlinks(dir, &self.entries, path, &mut self.link_cache)
+                }
+                _ => Vec::new(),
+            };
+            self.backlinks.0 = key;
+        }
+        &self.backlinks.1
+    }
+
+    /// Rows in the outline panel: the headings (or "No headings"), then, when other
+    /// notes link here, a title row and one row per backlink.
+    fn outline_rows(&mut self) -> usize {
+        let headings = self.outline_items().len().max(1);
+        match self.backlinks().len() {
+            0 => headings,
+            n => headings + 1 + n,
+        }
+    }
+
     fn outline_row_at(&mut self, y: f32) -> Option<usize> {
         let header_h = self.view.sidebar_header_h();
         if y < header_h {
             return None;
         }
         let i = ((y - header_h + self.outline_scroll) / self.view.sidebar_row_h()) as usize;
-        (i < self.outline_items().len()).then_some(i)
+        (i < self.outline_rows()).then_some(i)
     }
 
     fn clamp_outline_scroll(&mut self) {
-        let n = self.outline_items().len() as f32;
+        let n = self.outline_rows() as f32;
         let h = self.view.h - self.view.status_h() - self.view.sidebar_header_h();
         let max = (n * self.view.sidebar_row_h() - h).max(0.0);
         self.outline_scroll = self.outline_scroll.clamp(0.0, max);
     }
 
-    /// Click on a heading: move the caret there and scroll it to the top.
+    /// Click on a heading: move the caret there and scroll it to the top. Click on a
+    /// backlink: open that note at the linking line.
     fn outline_click(&mut self, y: f32) {
         let Some(i) = self.outline_row_at(y) else {
             return;
         };
+        let first = self.outline_items().len().max(1);
+        if i > first {
+            let b = self.backlinks()[i - first - 1].clone();
+            return self.open_at(&b.path, b.line);
+        }
+        if i >= self.outline_items().len() {
+            return;
+        }
         let l = self.outline_items()[i].0;
         let p = Pos::new(l, self.infos[l].content);
         self.set_sel(p, p);
@@ -3869,6 +3937,22 @@ impl App {
         self.clamp_scroll();
         self.reveal_in_tree(&entry.path);
         self.changed(true);
+    }
+
+    /// Opens `path` with the caret at the start of `line`, centered.
+    fn open_at(&mut self, path: &Path, line: usize) {
+        if !self.confirm_discard() {
+            return;
+        }
+        self.open_path(path);
+        if self.doc.path.as_deref() != Some(path) {
+            return;
+        }
+        let p = self.doc.clamp(Pos::new(line, 0));
+        self.set_sel(p, p);
+        self.changed(false);
+        self.center_caret();
+        self.reveal_in_tree(path);
     }
 
     /// Opens `path`, recording the file being left in the back history.
@@ -4179,10 +4263,7 @@ Reload it and lose your unsaved changes?"
             }
             return;
         }
-        let has_scheme = target.split_once(':').is_some_and(|(s, _)| {
-            s.len() > 1 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+')
-        });
-        if has_scheme {
+        if workspace::has_scheme(target) {
             platform::shell_open(self.hwnd, target);
             return;
         }

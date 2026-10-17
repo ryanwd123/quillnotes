@@ -1,11 +1,16 @@
 //! Folders (workspaces): scanning the file tree, recent folders, and per-folder
 //! settings such as autosave.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 
+use crate::doc::{self, Document, Stamp};
+use crate::markdown::{self, Kind};
 use crate::palette::term_match;
 use crate::settings::Settings;
+
+/// Notes larger than this are not read when searching or collecting links.
+pub const READ_MAX_BYTES: u64 = 4 << 20;
 
 /// One file or folder under the open folder, in tree order.
 #[derive(Clone, Debug, PartialEq)]
@@ -193,6 +198,161 @@ pub fn resolve_note(
         .iter()
         .find(|e| !e.is_dir && e.name.to_lowercase() == want)
         .map(|e| e.path.clone())
+}
+
+/// Whether a link target starts with a URL scheme (`https:`, `mailto:`, `run:`).
+pub fn has_scheme(target: &str) -> bool {
+    target.split_once(':').is_some_and(|(s, _)| {
+        s.len() > 1 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+')
+    })
+}
+
+/// `p` with `.` and `..` resolved, without touching the disk.
+fn clean(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether two paths name the same file (case-insensitive, as on Windows).
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    normalize(&clean(a)) == normalize(&clean(b))
+}
+
+/// The links in `lines` outside code: (line, target), `[[name]]` links in that form.
+pub fn links_in(lines: &[String]) -> Vec<(usize, String)> {
+    let infos = markdown::classify(lines);
+    let mut out = Vec::new();
+    for (l, (line, info)) in lines.iter().zip(&infos).enumerate() {
+        if matches!(info.kind, Kind::Code | Kind::Fence | Kind::Comment)
+            || !(line.contains("[[") || line.contains("]("))
+        {
+            continue;
+        }
+        let inline = markdown::parse_inline(line, info.content, line.len());
+        out.extend(inline.links.into_iter().map(|(_, target, _)| (l, target)));
+    }
+    out
+}
+
+/// The note a link `target` in a note in `dir` points to, when it is a link to a
+/// Markdown file (whether or not it exists).
+pub fn link_dest(root: &Path, entries: &[Entry], dir: &Path, target: &str) -> Option<PathBuf> {
+    if let Some(name) = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
+        let name = name.split('#').next().unwrap_or(name).trim();
+        return resolve_note(Some(root), entries, dir, name).map(|p| clean(&p));
+    }
+    if has_scheme(target) || target.starts_with('#') {
+        return None;
+    }
+    let rel = crate::attach::decode(target.split('#').next().unwrap_or(""));
+    let p = clean(&dir.join(rel));
+    is_markdown(&p).then_some(p)
+}
+
+/// Whether a link `target` could point to a note with this lower-case file stem;
+/// a cheap test before resolving it.
+fn may_link_to(target: &str, stem: &str) -> bool {
+    let t = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]"));
+    let name = match t {
+        Some(t) => t.split(['#', '|']).next().unwrap_or(t),
+        None => target.split('#').next().unwrap_or(target),
+    };
+    let last = name.rsplit(['/', '\\']).next().unwrap_or(name).trim().to_lowercase();
+    let last = crate::attach::decode(&last);
+    last == stem || Path::new(&last).file_stem().is_some_and(|s| s.to_string_lossy() == stem)
+}
+
+/// A line in another note that links to the open one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Backlink {
+    pub path: PathBuf,
+    pub line: usize,
+    /// The linking line as plain text.
+    pub text: String,
+}
+
+/// Each note's links, (line, target, the line as plain text), with the file's stamp
+/// when they were read, so unchanged files are not read again.
+pub type LinkCache = HashMap<PathBuf, (Stamp, Vec<(usize, String, String)>)>;
+
+/// The folder's notes' links, from `cache` for files that have not changed.
+pub fn note_links_cached<'a>(
+    entries: &[Entry],
+    cache: &'a mut LinkCache,
+) -> &'a LinkCache {
+    let mut seen = HashSet::new();
+    for e in entries.iter().filter(|e| !e.is_dir && is_markdown(&e.path)) {
+        seen.insert(e.path.clone());
+        let Some(stamp) = doc::stamp(&e.path) else {
+            continue;
+        };
+        if cache.get(&e.path).is_some_and(|c| c.0 == stamp) {
+            continue;
+        }
+        let links = if stamp.1 > READ_MAX_BYTES {
+            Vec::new()
+        } else {
+            let bytes = std::fs::read(&e.path).unwrap_or_default();
+            let lines = Document::from_bytes(&bytes, None).0.lines;
+            links_in(&lines)
+                .into_iter()
+                .map(|(l, t)| {
+                    let text = markdown::plain_text(&lines[l], 0);
+                    (l, t, text)
+                })
+                .collect()
+        };
+        cache.insert(e.path.clone(), (stamp, links));
+    }
+    cache.retain(|p, _| seen.contains(p));
+    cache
+}
+
+/// The lines in the folder's other notes that link to `target`.
+pub fn backlinks(
+    root: &Path,
+    entries: &[Entry],
+    target: &Path,
+    cache: &mut LinkCache,
+) -> Vec<Backlink> {
+    let stem = stem(target).to_lowercase();
+    let mut out = Vec::new();
+    for (path, (_, links)) in note_links_cached(entries, cache) {
+        if same_path(path, target) {
+            continue;
+        }
+        let dir = path.parent().unwrap_or(root);
+        let mut last = None;
+        for (l, t, text) in links {
+            if last == Some(*l) || !may_link_to(t, &stem) {
+                continue;
+            }
+            if link_dest(root, entries, dir, t).is_some_and(|d| same_path(&d, target)) {
+                last = Some(*l);
+                out.push(Backlink {
+                    path: path.clone(),
+                    line: *l,
+                    text: text.trim().to_string(),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        relative(root, &a.path)
+            .to_lowercase()
+            .cmp(&relative(root, &b.path).to_lowercase())
+            .then(a.line.cmp(&b.line))
+    });
+    out
 }
 
 /// Indices of the entries visible in the tree: those whose parent folders are all
@@ -465,6 +625,40 @@ mod tests {
         );
         assert!(contains(&root, &root.join("notes")));
         assert!(!contains(&root.join("notes"), &root.join("notes2")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finds_backlinks() {
+        let root = std::env::temp_dir().join(format!("penmark-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        let files = [
+            ("plan.md", "# Plan"),
+            ("a/one.md", "See [[plan]] and [[Plan|the plan]].\n\n```\n[[plan]]\n```"),
+            ("a/two.md", "x\n[the plan](../plan.md#goals)\n[web](https://plan.md)"),
+            ("three.md", "[[a/one]] and [[nothing]]"),
+        ];
+        for (f, text) in files {
+            std::fs::write(root.join(f), text).unwrap();
+        }
+        let entries = scan(&root);
+        let mut cache = LinkCache::new();
+        let found = |cache: &mut LinkCache, f: &str| -> Vec<(String, usize)> {
+            backlinks(&root, &entries, &root.join(f), cache)
+                .into_iter()
+                .map(|b| (relative(&root, &b.path), b.line))
+                .collect()
+        };
+        // One row per line; links in code are skipped.
+        assert_eq!(found(&mut cache, "plan.md"), [("a/one.md".into(), 0), ("a/two.md".into(), 1)]);
+        assert_eq!(found(&mut cache, "a/one.md"), [("three.md".into(), 0)]);
+        assert!(found(&mut cache, "a/two.md").is_empty());
+        let b = backlinks(&root, &entries, &root.join("plan.md"), &mut cache);
+        assert_eq!(b[0].text, "See plan and the plan.");
+        // Changed files (here, a new size) are read again.
+        std::fs::write(root.join("a/two.md"), "nothing").unwrap();
+        assert_eq!(found(&mut cache, "plan.md"), [("a/one.md".into(), 0)]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

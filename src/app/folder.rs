@@ -15,9 +15,6 @@ use crate::render::{SidebarButton, SidebarRow, SidebarView};
 use crate::settings::Settings;
 use crate::workspace::{self, Entry, FolderSettings};
 
-/// Markdown files larger than this are left out of Search in Files.
-const SEARCH_MAX_BYTES: u64 = 4 << 20;
-
 /// An explorer entry being dragged; it becomes a move once the mouse travels.
 pub(super) struct TreeDrag {
     path: PathBuf,
@@ -137,6 +134,7 @@ impl App {
         if let Some(dir) = &self.folder {
             self.entries = workspace::scan(dir);
         }
+        self.scan_gen += 1;
         self.invalidate();
     }
 
@@ -185,7 +183,7 @@ impl App {
                 let lines = if self.doc.path.as_deref() == Some(e.path.as_path()) {
                     self.doc.lines.clone()
                 } else {
-                    if std::fs::metadata(&e.path).ok()?.len() > SEARCH_MAX_BYTES {
+                    if std::fs::metadata(&e.path).ok()?.len() > workspace::READ_MAX_BYTES {
                         return None;
                     }
                     let bytes = std::fs::read(&e.path).ok()?;
@@ -301,7 +299,7 @@ impl App {
     }
 
     /// Scrolls so the caret is in the middle of the view, where the document allows.
-    fn center_caret(&mut self) {
+    pub(super) fn center_caret(&mut self) {
         self.ensure_layout();
         if let Some((_, y, h)) = self.view.caret_rect(self.cursor) {
             self.scroll = y + h / 2.0 - self.view_h() / 2.0;

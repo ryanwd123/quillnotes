@@ -123,8 +123,11 @@ pub struct HeaderView<'a> {
 pub struct OutlineView<'a> {
     /// (level, text) of each heading.
     pub items: Vec<(u8, &'a str)>,
+    /// (note name, linking line) of each note linking here, listed below the headings.
+    pub backlinks: Vec<(&'a str, &'a str)>,
     /// The heading the caret is under.
     pub current: Option<usize>,
+    /// Row under the mouse: headings (or "No headings"), the backlinks title, backlinks.
     pub hover: Option<usize>,
     pub scroll: f32,
 }
@@ -2838,21 +2841,20 @@ impl View {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                 );
             }
-            if o.items.is_empty() {
-                if let Some(l) = self.panel_text("No headings", &row_f, w - 28.0 * k, row_h) {
-                    rt.DrawTextLayout(
-                        v2(x0 + 14.0 * k, header_h),
-                        &l,
-                        self.brush(Ink::Dim),
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    );
-                }
-                return;
-            }
             rt.PushAxisAlignedClip(
                 &rect(x0 + 1.0, header_h, self.w, bottom),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
+            if o.items.is_empty()
+                && let Some(l) = self.panel_text("No headings", &row_f, w - 28.0 * k, row_h)
+            {
+                rt.DrawTextLayout(
+                    v2(x0 + 14.0 * k, header_h - o.scroll),
+                    &l,
+                    self.brush(Ink::Dim),
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
             let min_level = o.items.iter().map(|i| i.0).min().unwrap_or(1);
             for (i, &(level, text)) in o.items.iter().enumerate() {
                 let y = header_h + i as f32 * row_h - o.scroll;
@@ -2877,6 +2879,52 @@ impl View {
                         self.brush(ink),
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                     );
+                }
+            }
+            if !o.backlinks.is_empty() {
+                let first = o.items.len().max(1);
+                let y = header_h + first as f32 * row_h - o.scroll;
+                rt.FillRectangle(&rect(x0 + 1.0, y, self.w, y + 1.0), self.brush(Ink::Rule));
+                let title = format!("BACKLINKS ({})", o.backlinks.len());
+                if let Some(l) = self.panel_text(&title, &title_f, w - 28.0 * k, row_h) {
+                    rt.DrawTextLayout(
+                        v2(x0 + 14.0 * k, y),
+                        &l,
+                        self.brush(Ink::StatusText),
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+                for (j, &(name, line)) in o.backlinks.iter().enumerate() {
+                    let row = first + 1 + j;
+                    let y = header_h + row as f32 * row_h - o.scroll;
+                    if y + row_h < header_h || y > bottom {
+                        continue;
+                    }
+                    if o.hover == Some(row) {
+                        rt.FillRectangle(
+                            &rect(x0 + 1.0, y, self.w, y + row_h),
+                            self.brush(Ink::TableHeader),
+                        );
+                    }
+                    let tx = x0 + 14.0 * k;
+                    let Some(l) = self.panel_text(name, &current_f, self.w - tx - 8.0 * k, row_h)
+                    else {
+                        continue;
+                    };
+                    rt.DrawTextLayout(v2(tx, y), &l, self.brush(Ink::Link), D2D1_DRAW_TEXT_OPTIONS_NONE);
+                    let mut m = DWRITE_TEXT_METRICS::default();
+                    let _ = l.GetMetrics(&mut m);
+                    let lx = tx + m.width + 8.0 * k;
+                    if lx < self.w - 16.0 * k
+                        && let Some(l) = self.panel_text(line, &row_f, self.w - lx - 8.0 * k, row_h)
+                    {
+                        rt.DrawTextLayout(
+                            v2(lx, y),
+                            &l,
+                            self.brush(Ink::Dim),
+                            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                        );
+                    }
                 }
             }
             rt.PopAxisAlignedClip();
