@@ -50,6 +50,7 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 | `Enter`, `Tab`, `Shift+Tab` | Continue, indent and outdent lists |
 | `Alt+C` | Toggle a task's checkbox |
 | `Ctrl+F`, `F3`, `Ctrl+G` | Find, find next, go to line (in the status bar) |
+| `Ctrl+H` | Replace: `Tab` to the replacement, `Enter` replaces one, `Ctrl+Enter` all |
 | `Ctrl+D`, `Ctrl+L` | Select word / next occurrence, select line |
 | `Alt+Up/Down`, `Shift+Alt+Up/Down`, `Ctrl+Shift+K` | Move, copy, delete lines |
 | `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |

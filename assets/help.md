@@ -101,6 +101,7 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | --- | --- |
 | `F1` or `Ctrl+Shift+P` | Command palette (fonts, rendering options, folder settings, table actions, …) |
 | `Ctrl+F` | Find (`Enter`/`F3` next, `Shift+Enter`/`Shift+F3` previous; click the document to edit with find left open, `Ctrl+F` or a status bar click to return, `Esc` to close) |
+| `Ctrl+H` | Replace: `Tab` switches between find and replace, `Enter` in the replacement replaces the match and goes to the next, `Ctrl+Enter` replaces all (one undo step) |
 | `Ctrl+G` | Go to line |
 | Click a link | Open it (`Ctrl+Click` on the line you are editing; `[[Note]]` opens the note) |
 | `Ctrl+Shift+O` | Show / hide the outline of headings |
