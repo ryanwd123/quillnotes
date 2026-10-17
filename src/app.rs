@@ -65,6 +65,9 @@ struct Prompt {
     origin: (Pos, Pos, f32),
     /// The file or folder a rename / new-item prompt acts on.
     path: Option<PathBuf>,
+    /// False while a find prompt stays open but the keyboard is in the
+    /// document or explorer (after a click there).
+    focused: bool,
 }
 
 /// Everything the layout depends on: doc version, selected lines, table being edited,
@@ -677,7 +680,9 @@ impl App {
             self.palette_changed();
             return;
         }
-        if let Some(p) = &mut self.prompt {
+        if let Some(p) = &mut self.prompt
+            && p.focused
+        {
             p.text.insert_str(p.cur, &s);
             p.cur += s.len();
             self.prompt_changed();
@@ -722,7 +727,7 @@ impl App {
             self.palette_key(VIRTUAL_KEY(vk), ctrl, shift);
             return true;
         }
-        if self.prompt.is_some() {
+        if self.prompt_focused() {
             if self.prompt_key(vk, ctrl, shift) {
                 return true;
             }
@@ -736,7 +741,13 @@ impl App {
                 return true;
             }
         }
-        if self.tree_focus && self.prompt.is_none() && !alt && self.tree_key(key, ctrl) {
+        if self.tree_focus && !self.prompt_focused() && !alt && self.tree_key(key, ctrl) {
+            return true;
+        }
+        // Escape closes a find prompt left open behind the document.
+        if key == VK_ESCAPE && !ctrl && !alt && self.slash.is_none() && self.prompt.is_some() {
+            self.prompt = None;
+            self.invalidate();
             return true;
         }
         // The slash menu takes selection keys; everything else edits as usual.
@@ -1774,6 +1785,7 @@ impl App {
             text,
             origin: (self.anchor, self.cursor, self.scroll),
             path: None,
+            focused: true,
         });
         self.invalidate();
     }
@@ -1787,8 +1799,44 @@ impl App {
             text,
             origin: (self.anchor, self.cursor, self.scroll),
             path: Some(path),
+            focused: true,
         });
         self.invalidate();
+    }
+
+    /// Whether the prompt has the keyboard.
+    fn prompt_focused(&self) -> bool {
+        self.prompt.as_ref().is_some_and(|p| p.focused)
+    }
+
+    /// A click in the status bar focuses an open find prompt; a click anywhere
+    /// else leaves it open but hands the keyboard back, and closes a go-to-line
+    /// prompt. Returns true when the click was on the status bar prompt.
+    fn prompt_click(&mut self, y: f32) -> bool {
+        let on_status = y >= self.view.h - self.view.status_h();
+        let Some(p) = &mut self.prompt else {
+            return false;
+        };
+        if p.path.is_some() {
+            return false;
+        }
+        if on_status {
+            if !p.focused {
+                // Searching resumes from wherever the caret is now.
+                p.focused = true;
+                p.cur = p.text.len();
+                p.origin = (self.anchor, self.cursor, self.scroll);
+                self.invalidate();
+            }
+            return true;
+        }
+        if p.kind == PromptKind::Find {
+            p.focused = false;
+        } else {
+            self.prompt = None;
+        }
+        self.invalidate();
+        false
     }
 
     fn prompt_changed(&mut self) {
@@ -3032,7 +3080,8 @@ impl App {
                 } else {
                     String::new()
                 };
-                (format!("{label}{}{extra}", p.text), label.len() + p.cur)
+                let cur = p.focused.then_some(label.len() + p.cur);
+                (format!("{label}{}{extra}", p.text), cur)
             });
         }
         let status = Status {
@@ -3042,7 +3091,7 @@ impl App {
         };
         let caret = self.caret_on
             && self.focused
-            && self.prompt.is_none()
+            && !self.prompt_focused()
             && self.palette.is_none()
             && !self.tree_focus;
         let sidebar = self.sidebar_view();
@@ -3174,6 +3223,9 @@ impl App {
             return;
         }
         if self.slash.is_some() && self.slash_click(dx, dy) {
+            return;
+        }
+        if self.prompt_click(dy) {
             return;
         }
         if self.over_explorer(dx, dy) {
@@ -4195,6 +4247,37 @@ mod tests {
         assert!(a.cells.is_none());
         a.undo(true);
         assert_eq!(a.doc.lines[3], "| 1 | 2 |");
+    }
+
+    #[test]
+    fn clicking_the_document_takes_keys_from_find() {
+        let mut a = app("one two\nthree");
+        a.open_prompt(PromptKind::Find);
+        a.on_char('t' as u16);
+        assert_eq!(a.find_query, "t");
+        // A click in the document (the hit test needs a window, so call the
+        // part of on_mouse_down under test) keeps the prompt but types there.
+        a.prompt_click(100.0);
+        assert!(a.prompt.is_some() && !a.prompt_focused());
+        a.set_sel(Pos::new(1, 0), Pos::new(1, 0));
+        a.on_char('x' as u16);
+        assert_eq!(a.doc.lines[1], "xthree");
+        assert_eq!(a.find_query, "t");
+        // A click on the status bar hands the keyboard back to the prompt.
+        let y = (a.view.h - a.view.status_h() / 2.0) as i32;
+        a.on_mouse_down(20, y);
+        assert!(a.prompt_focused());
+        a.on_char('h' as u16);
+        assert_eq!(a.find_query, "th");
+        assert_eq!(a.doc.lines[1], "xthree");
+        // Escape in the document closes it.
+        a.prompt_click(100.0);
+        assert!(a.on_key(VK_ESCAPE.0));
+        assert!(a.prompt.is_none());
+        // A go-to-line prompt closes on a click instead.
+        a.open_prompt(PromptKind::GoTo);
+        a.prompt_click(100.0);
+        assert!(a.prompt.is_none());
     }
 
     #[test]

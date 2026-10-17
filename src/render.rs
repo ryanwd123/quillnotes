@@ -477,8 +477,8 @@ pub const PALETTE_ROWS: usize = 10;
 pub struct Status<'a> {
     pub left: &'a str,
     pub right: &'a str,
-    /// Prompt text and its caret byte offset.
-    pub prompt: Option<(&'a str, usize)>,
+    /// Prompt text and its caret byte offset, `None` while it lacks the keyboard.
+    pub prompt: Option<(&'a str, Option<usize>)>,
 }
 
 pub struct View {
@@ -2920,7 +2920,7 @@ impl View {
             if let Ok(ll) = self.dw.CreateTextLayout(&left, &f, w / 2.0, status_h) {
                 let _ = ll.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 let _ = ll.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                let ink = if status.prompt.is_some() {
+                let ink = if status.prompt.is_some_and(|p| p.1.is_some()) {
                     Ink::Text
                 } else {
                     Ink::StatusText
@@ -2931,7 +2931,7 @@ impl View {
                     self.brush(ink),
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                 );
-                if let Some((text, cur)) = status.prompt {
+                if let Some((text, Some(cur))) = status.prompt {
                     let i = text[..cur].encode_utf16().count() as u32;
                     let (mut x, mut y) = (0.0, 0.0);
                     let mut m = DWRITE_HIT_TEST_METRICS::default();
