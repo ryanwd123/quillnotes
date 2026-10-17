@@ -39,6 +39,8 @@ When the open file changes on disk (a sync, `git pull`, another editor), Penmark
 
 The buttons at the top of the explorer make a new file or folder, and the funnel shows only Markdown files (hiding `data` folders and other files).
 
+When a renamed or moved note has links to it (`[[name]]` or relative `.md` links), Penmark offers to update them, along with the relative links inside the moved notes.
+
 **Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit. With autosave on, Penmark also saves before switching files or closing.
 
 ## Attachments

@@ -84,7 +84,9 @@ folder and the file that was open in it.
   to the Recycle Bin after a confirmation. `F2` renames, and a name like
   `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files
   and folders. Right-click for New File, New Folder, Rename, Delete and Reveal in File
-  Explorer. If the open file is moved or renamed, the editor follows it. With the
+  Explorer. If the open file is moved or renamed, the editor follows it, and when other
+  notes link to a moved note (`[[name]]` or relative `.md` links) Penmark offers to update
+  those links and the relative links inside it. With the
   explorer focused, `A` starts a new file and `Shift+A` a new folder; the header has
   buttons for both, and a funnel that shows only Markdown files (hiding `data`
   folders and everything else).
