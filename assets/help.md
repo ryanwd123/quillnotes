@@ -98,6 +98,8 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | `Enter` | New line, continuing lists and quotes |
 | `Shift+Enter` | New line without continuing the list |
 
+Code blocks are syntax highlighted when the fence names the language (```` ```rust ````, `python`, `js`, `ts`, `c`, `cs`, `go`, `sh`, `ps1`, `json`, `toml`, `yaml`, `sql`, `html`, …).
+
 ## Navigation and view
 
 | Shortcut | Action |

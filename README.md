@@ -21,6 +21,9 @@ The file stays plain Markdown; Penmark never converts it to another format.
 * All other lines are rendered: hidden delimiters, real bullets and checkboxes,
   numbered lists, quote bars, callouts, code blocks, tables, rules, and local images.
 * Code blocks and tables switch to source as a whole when the cursor enters them.
+* Code blocks are syntax highlighted when the fence names a language Penmark knows:
+  Rust, Python, JavaScript/TypeScript, C/C++/C#/Java, Go, shell, PowerShell, JSON,
+  TOML/INI/YAML, SQL and HTML/XML (`src/highlight.rs`).
 * `Ctrl+/` switches the whole document to plain source mode.
 
 Supported syntax: ATX headings; paragraphs; bold, italic, strikethrough, `==highlight==`
@@ -303,6 +306,5 @@ the lines that changed, which costs about 0.5 ms of CPU on a 20,000-line documen
 
 ## Not yet supported
 
-Syntax highlighting inside code blocks, math rendering, footnote rendering, setext
-headings, reference-style link resolution, remote images, HTML/PDF export, and
+Math rendering, footnote rendering, setext headings, reference-style link resolution, remote images, HTML/PDF export, and
 search across all files in a folder.
