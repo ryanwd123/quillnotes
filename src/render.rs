@@ -441,6 +441,67 @@ pub struct Row {
     hidden: bool,
 }
 
+impl Row {
+    /// Keeps the row `h` tall with its text centered, overflowing when it is taller.
+    fn fit(&mut self, h: f32) {
+        self.top += (h - self.h) / 2.0;
+        self.h = h;
+    }
+}
+
+/// How the document is shown.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum ViewMode {
+    /// Lines being edited show their Markdown source.
+    #[default]
+    Live,
+    /// Like Live, but rows keep their rendered height while edited, so the
+    /// document shifts less as the caret moves.
+    Live2,
+    /// Everything rendered and read-only.
+    View,
+    /// Plain Markdown source.
+    Source,
+}
+
+impl ViewMode {
+    pub const ALL: [ViewMode; 4] = [
+        ViewMode::Live,
+        ViewMode::Live2,
+        ViewMode::View,
+        ViewMode::Source,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewMode::Live => "Live",
+            ViewMode::Live2 => "Live 2",
+            ViewMode::View => "View",
+            ViewMode::Source => "Source",
+        }
+    }
+
+    /// Name in settings.ini.
+    pub fn key(self) -> &'static str {
+        match self {
+            ViewMode::Live => "live",
+            ViewMode::Live2 => "live2",
+            ViewMode::View => "view",
+            ViewMode::Source => "source",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == k)
+    }
+
+    /// The mode after this one in the status bar's cycle.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
 /// Table editing controls shown while the mouse is near the table being edited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableUi {
@@ -539,6 +600,8 @@ pub const PALETTE_ROWS: usize = 10;
 pub struct Status<'a> {
     pub left: &'a str,
     pub right: &'a str,
+    /// The view mode, shown last on the right; a click on it changes the mode.
+    pub mode: &'a str,
     /// Prompt text and its caret byte offset, `None` while it lacks the keyboard.
     pub prompt: Option<(&'a str, Option<usize>)>,
 }
@@ -557,6 +620,10 @@ pub struct View {
     pub grid_geom: Option<TableGeom>,
     /// Where dragged files would be inserted.
     pub drop_caret: Option<Pos>,
+    /// x range of the view mode in the status bar, as last painted.
+    mode_geom: Option<(f32, f32)>,
+    /// The mouse is over the view mode in the status bar.
+    pub mode_hover: bool,
     /// The command link under the mouse: its line and layout start.
     pub hover_link: Option<(usize, u32)>,
     /// A tooltip at a client point (DIPs).
@@ -640,6 +707,8 @@ impl View {
                 grid_geom: None,
                 cell_sel: None,
                 drop_caret: None,
+                mode_geom: None,
+                mode_hover: false,
                 hover_link: None,
                 tooltip: None,
                 explorer: false,
@@ -675,6 +744,11 @@ impl View {
     /// Scale of the window chrome: the UI font size option.
     pub fn ui(&self) -> f32 {
         self.opts.num(num::UI_SIZE) / 100.0
+    }
+
+    /// Whether (x, y), window coordinates, is on the view mode in the status bar.
+    pub fn over_mode(&self, x: f32, y: f32) -> bool {
+        y >= self.h - self.status_h() && self.mode_geom.is_some_and(|(x0, x1)| x >= x0 && x <= x1)
     }
 
     pub fn status_h(&self) -> f32 {
@@ -1359,7 +1433,8 @@ impl View {
 
     /// Lays out every line. `active` is the inclusive line range being edited; `grid`
     /// is the block id of a table whose cells are being edited (0 for none), which
-    /// stays rendered as a table.
+    /// stays rendered as a table. In Live 2, `reveal` is an image line shown as
+    /// source although the caret is not editing it as text.
     #[allow(clippy::too_many_arguments)]
     pub fn layout(
         &mut self,
@@ -1368,9 +1443,13 @@ impl View {
         infos: &[LineInfo],
         active: (usize, usize),
         grid: u32,
-        source: bool,
+        mode: ViewMode,
+        reveal: Option<usize>,
         doc_dir: Option<&Path>,
     ) {
+        let source = mode == ViewMode::Source;
+        // Live 2 keeps rows the height they have when rendered.
+        let steady = mode == ViewMode::Live2;
         if self.ensure_target(hwnd).is_err() {
             return;
         }
@@ -1398,13 +1477,16 @@ impl View {
         let mut rows = Vec::with_capacity(lines.len());
         self.decor.clear();
 
-        // Code blocks and tables become active as a whole.
+        // Code blocks and tables become active as a whole; in Live 2 only tables,
+        // so a code block's fences open one at a time.
+        let whole = |j: usize| {
+            infos[j].block != 0 && !(steady && matches!(infos[j].kind, Kind::Fence | Kind::Code))
+        };
         let (mut lo, mut hi) = (active.0.min(lines.len() - 1), active.1.min(lines.len() - 1));
-        while lo > 0 && infos[lo].block != 0 && infos[lo - 1].block == infos[lo].block {
+        while lo > 0 && whole(lo) && infos[lo - 1].block == infos[lo].block {
             lo -= 1;
         }
-        while hi + 1 < lines.len() && infos[hi].block != 0 && infos[hi + 1].block == infos[hi].block
-        {
+        while hi + 1 < lines.len() && whole(hi) && infos[hi + 1].block == infos[hi].block {
             hi += 1;
         }
 
@@ -1415,7 +1497,7 @@ impl View {
         for (i, line) in lines.iter().enumerate() {
             let info = infos[i];
             let in_grid = !source && grid != 0 && info.block == grid;
-            let act = source || ((lo..=hi).contains(&i) && !in_grid);
+            let act = source || (mode != ViewMode::View && (lo..=hi).contains(&i) && !in_grid);
             let qx = x0 + info.quote as f32 * qw;
             let lx = qx + info.level as f32 * lw;
             let mut row = Row {
@@ -1481,16 +1563,7 @@ impl View {
                 0
             };
             let hl_key = code_hl.map(|(l, s)| (highlight::id(l), s));
-            (
-                line,
-                info,
-                act,
-                source,
-                (z * 100.0) as u32,
-                links_gen,
-                hl_key,
-            )
-                .hash(&mut hasher);
+            (line, info, act, mode, (z * 100.0) as u32, links_gen, hl_key).hash(&mut hasher);
             let key = hasher.finish();
 
             let body = BoxStyle {
@@ -1509,11 +1582,15 @@ impl View {
                 callout: false,
                 code: None,
             };
-            // Lines of one paragraph sit closer together than separate blocks.
+            // Lines of one paragraph sit closer together than separate blocks. In
+            // Live 2 blank lines count as paragraph lines, so typing on one does not
+            // change the spacing around it.
             let heading_hashes = o.heading_hashes && matches!(info.kind, Kind::Heading(_));
             let joins = |j: usize| {
                 infos.get(j).is_some_and(|o| {
-                    o.kind == Kind::Para && o.quote == info.quote && o.level == info.level
+                    (o.kind == Kind::Para || (steady && o.kind == Kind::Blank))
+                        && o.quote == info.quote
+                        && o.level == info.level
                 })
             };
             let para = opt(num::PARAGRAPH);
@@ -1604,6 +1681,17 @@ impl View {
                 row.x = x0;
             } else {
                 match info.kind {
+                    // An empty paragraph line: exactly as tall as a line of text.
+                    Kind::Blank if steady => text_row(
+                        self,
+                        &mut row,
+                        body,
+                        qx,
+                        0.0,
+                        false,
+                        para_pad,
+                        &mut old_boxes,
+                    ),
                     Kind::Blank => {
                         text_row(
                             self,
@@ -1621,7 +1709,8 @@ impl View {
                     }
                     Kind::Para => {
                         let mut done = false;
-                        if !act {
+                        // Live 2 keeps an image rendered while the caret is on it.
+                        if !act || (steady && reveal != Some(i)) {
                             let inl = markdown::parse_inline(line, info.content, line.len());
                             if let [(r, src)] = inl.images.as_slice()
                                 && line[info.content..r.start].trim().is_empty()
@@ -1702,16 +1791,21 @@ impl View {
                         row.vis = Vis::Rule;
                         row.h = opt(num::RULE_SPACING);
                     }
-                    Kind::Rule => text_row(
-                        self,
-                        &mut row,
-                        body,
-                        lx,
-                        0.0,
-                        false,
-                        (3.0 * z, 3.0 * z),
-                        &mut old_boxes,
-                    ),
+                    Kind::Rule => {
+                        text_row(
+                            self,
+                            &mut row,
+                            body,
+                            lx,
+                            0.0,
+                            false,
+                            (3.0 * z, 3.0 * z),
+                            &mut old_boxes,
+                        );
+                        if steady {
+                            row.fit(opt(num::RULE_SPACING));
+                        }
+                    }
                     Kind::Fence if !act => row.h = opt(num::CODE_PADDING),
                     Kind::Fence | Kind::Code => {
                         let st = BoxStyle {
@@ -1733,6 +1827,13 @@ impl View {
                             (0.0, 0.0),
                             &mut old_boxes,
                         );
+                        if steady && info.kind == Kind::Fence {
+                            // The fence text spills out of the block, away from the code.
+                            let pad = opt(num::CODE_PADDING);
+                            let opening = i == 0 || infos[i - 1].block != info.block;
+                            row.top = if opening { pad - row.h } else { 0.0 };
+                            row.h = pad;
+                        }
                     }
                     Kind::Table { row: r } if !act => {
                         if r == 0 || table.is_none() {
@@ -2002,8 +2103,18 @@ impl View {
                 let top = row.y + (row.h - tb.height.get()) / 2.0;
                 Some((row.x + t.col_x[c] + 10.0 * self.zoom + x, top + y, h))
             }
+            // Before or after the whole image, as tall as it.
+            Vis::Image(_, w, h) => {
+                let x = if p.col == 0 { row.x } else { row.x + w };
+                Some((x, row.y + row.top, *h))
+            }
             _ => Some((row.x, row.y, row.h.max(self.base()))),
         }
+    }
+
+    /// Whether line `i` is shown as an image.
+    pub fn is_image(&self, i: usize) -> bool {
+        matches!(self.rows.get(i).map(|r| &r.vis), Some(Vis::Image(..)))
     }
 
     /// For vertical movement within a wrapped row: a y (document coordinates) on the
@@ -2189,8 +2300,10 @@ impl View {
 
             if caret_on && let Some((x, y, h)) = self.caret_rect(cursor) {
                 let h = h.max(self.base());
+                // Beside an image the caret is bold, so the image reads as one unit.
+                let w = if self.is_image(cursor.line) { 3.0 } else { 1.6 };
                 rt.FillRectangle(
-                    &rect(x, y, x + 1.6 * z.max(1.0), y + h),
+                    &rect(x, y, x + w * z.max(1.0), y + h),
                     self.brush(Ink::Caret),
                 );
             }
@@ -2292,7 +2405,7 @@ impl View {
                 Vis::Text(tb) => {
                     let (ox, oy) = (row.x, row.y + row.top);
                     // Selection.
-                    if row.active && sel.0 != sel.1 && i >= sel.0.line && i <= sel.1.line {
+                    if sel.0 != sel.1 && i >= sel.0.line && i <= sel.1.line {
                         let a = if i == sel.0.line { sel.0.col } else { 0 };
                         let b = if i == sel.1.line {
                             sel.1.col
@@ -2563,6 +2676,15 @@ impl View {
                         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
                         None,
                     );
+                    // A selection covering the whole image tints it.
+                    if sel.0 != sel.1 && sel.0 <= Pos::new(i, 0) && sel.1 >= Pos::new(i, line.len())
+                    {
+                        let b = self.brush(Ink::Selection);
+                        b.SetOpacity(0.5);
+                        rt.FillRectangle(&r, b);
+                        b.SetOpacity(1.0);
+                        rt.DrawRectangle(&r, self.brush(Ink::Accent), 2.0 * z, None);
+                    }
                 }
                 Vis::None => {}
             }
@@ -3284,11 +3406,29 @@ impl View {
                 .unwrap_or(status.left)
                 .encode_utf16()
                 .collect();
-            let right: Vec<u16> = status.right.encode_utf16().collect();
+            let right: Vec<u16> = format!("{}     {}", status.right, status.mode)
+                .encode_utf16()
+                .collect();
+            self.mode_geom = None;
             if let Ok(rl) = self.dw.CreateTextLayout(&right, &f, w / 2.0, status_h) {
                 let _ = rl.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
                 let _ = rl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 let _ = rl.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                // The mode is a button: find where it was laid out.
+                let n = status.mode.encode_utf16().count() as u32;
+                let (mut mx, mut my) = (0.0, 0.0);
+                let mut m = DWRITE_HIT_TEST_METRICS::default();
+                if rl
+                    .HitTestTextPosition(right.len() as u32 - n, false, &mut mx, &mut my, &mut m)
+                    .is_ok()
+                {
+                    let ox = w / 2.0 - pad;
+                    let (x0, x1) = (ox + mx - 6.0, w - pad + 6.0);
+                    self.mode_geom = Some((x0, x1));
+                    if self.mode_hover {
+                        rt.FillRectangle(&rect(x0, y0 + 1.0, x1, h), self.brush(Ink::Rule));
+                    }
+                }
                 rt.DrawTextLayout(
                     v2(w / 2.0 - pad, y0),
                     &rl,

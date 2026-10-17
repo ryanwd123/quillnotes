@@ -23,7 +23,7 @@ use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
     HeaderView, OutlineView, PaletteItem, PaletteView, PopupView, SidebarButton, Status, TableUi,
-    View,
+    View, ViewMode,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
@@ -89,7 +89,19 @@ impl PromptKind {
 
 /// Everything the layout depends on: doc version, selected lines, table being edited,
 /// source mode, width, zoom, DPI, missing wiki links, folds.
-type LayoutKey = (u64, usize, usize, u32, bool, u32, u32, u32, u64, u64);
+type LayoutKey = (
+    u64,
+    usize,
+    usize,
+    u32,
+    ViewMode,
+    Option<usize>,
+    u32,
+    u32,
+    u32,
+    u64,
+    u64,
+);
 
 /// Where the caret goes when moving to a table cell.
 #[derive(Clone, Copy)]
@@ -196,7 +208,11 @@ pub struct App {
     cursor: Pos,
     goal_x: Option<f32>,
     scroll: f32,
-    source: bool,
+    mode: ViewMode,
+    /// The mode Toggle Source Mode returns to.
+    prev_mode: ViewMode,
+    /// In Live 2, the image line double-clicked to show its source.
+    reveal: Option<usize>,
     caret_on: bool,
     focused: bool,
     layout_key: Option<LayoutKey>,
@@ -334,6 +350,10 @@ impl App {
             view.zoom = clamp_zoom(pct / 100.0);
         }
         view.outline = settings.get("outline") == Some("on");
+        let mode = settings
+            .get("view_mode")
+            .and_then(ViewMode::from_key)
+            .unwrap_or_default();
         let (keymap, keymap_errors) = Keymap::load();
         let (theme, theme_errors) = Theme::load();
         view.set_colors(theme.light, theme.dark);
@@ -347,7 +367,13 @@ impl App {
             cursor: Pos::default(),
             goal_x: None,
             scroll: 0.0,
-            source: false,
+            mode,
+            prev_mode: if mode == ViewMode::Source {
+                ViewMode::Live
+            } else {
+                mode
+            },
+            reveal: None,
             caret_on: true,
             focused: true,
             layout_key: None,
@@ -451,12 +477,19 @@ impl App {
         self.update_folds();
         let (a, b) = self.sel();
         let grid = self.grid_block();
+        if self
+            .reveal
+            .is_some_and(|l| l != self.cursor.line || self.mode != ViewMode::Live2)
+        {
+            self.reveal = None;
+        }
         let key = (
             self.doc.version,
             a.line,
             b.line,
             grid,
-            self.source,
+            self.mode,
+            self.reveal,
             self.view.w.to_bits(),
             self.view.zoom.to_bits(),
             self.view.dpi.to_bits(),
@@ -471,7 +504,8 @@ impl App {
                 &self.infos,
                 (a.line, b.line),
                 grid,
-                self.source,
+                self.mode,
+                self.reveal,
                 dir.as_deref(),
             );
             self.layout_key = Some(key);
@@ -892,7 +926,7 @@ impl App {
             self.prompt_changed();
             return;
         }
-        if self.tree_focus {
+        if self.tree_focus || self.read_only() {
             return;
         }
         // A pipe typed in a table cell must not split the cell.
@@ -1015,6 +1049,7 @@ impl App {
                     self.changed(false);
                 }
             }
+            VK_RETURN | VK_TAB if self.read_only() => {}
             VK_RETURN if shift => {
                 self.begin(EditKind::Other);
                 self.insert("\n");
@@ -1047,6 +1082,38 @@ impl App {
 
     /// Runs a command bound in the keymap.
     fn run_action(&mut self, action: Action) {
+        let edits = matches!(
+            action,
+            Action::Undo
+                | Action::Redo
+                | Action::Cut
+                | Action::Paste
+                | Action::Bold
+                | Action::Italic
+                | Action::Code
+                | Action::Strikethrough
+                | Action::Highlight
+                | Action::Link
+                | Action::Heading(_)
+                | Action::BulletList
+                | Action::NumberedList
+                | Action::TaskList
+                | Action::Quote
+                | Action::ToggleTask
+                | Action::ToggleComment
+                | Action::Indent
+                | Action::Outdent
+                | Action::InsertLineBelow
+                | Action::InsertLineAbove
+                | Action::MoveLinesUp
+                | Action::MoveLinesDown
+                | Action::CopyLinesUp
+                | Action::CopyLinesDown
+                | Action::DeleteLines
+        );
+        if edits && self.read_only() {
+            return;
+        }
         match action {
             Action::Palette => self.open_palette(Palette::commands(&self.keymap)),
             Action::QuickOpen => self.quick_open(),
@@ -1145,7 +1212,7 @@ impl App {
         let mut spelling = HashMap::new();
         // The checker is made by the timer, after the window first shows.
         let ready = matches!(self.speller, Some(Some(_)));
-        if self.spell_on && !self.source && ready {
+        if self.spell_on && !self.source() && ready {
             let (top, bottom) = (self.scroll, self.scroll + self.view.view_h());
             let first = self.view.rows.partition_point(|r| r.y + r.h < top);
             let caret_line = self.cursor.line;
@@ -1378,6 +1445,8 @@ impl App {
             VK_LEFT => {
                 let p = if !shift && a != b {
                     a
+                } else if c.col > 0 && self.image_unit(c.line) {
+                    Pos::new(c.line, 0)
                 } else if c.col == 0 {
                     if c.line == 0 {
                         c
@@ -1394,6 +1463,8 @@ impl App {
             VK_RIGHT => {
                 let p = if !shift && a != b {
                     b
+                } else if c.col < line.len() && self.image_unit(c.line) {
+                    Pos::new(c.line, line.len())
                 } else if c.col >= line.len() {
                     if c.line + 1 >= self.doc.lines.len() {
                         c
@@ -1446,11 +1517,15 @@ impl App {
                 self.move_to(p, shift);
             }
             VK_BACK => {
-                self.backspace(ctrl);
+                if !self.read_only() {
+                    self.backspace(ctrl);
+                }
                 return;
             }
             VK_DELETE => {
-                self.delete_forward(ctrl);
+                if !self.read_only() {
+                    self.delete_forward(ctrl);
+                }
                 return;
             }
             _ => {}
@@ -1507,6 +1582,7 @@ impl App {
 
     fn backspace(&mut self, word: bool) {
         let (a, b) = self.sel();
+        let unit = a == b && a.col > 0 && self.image_unit(a.line);
         self.begin(EditKind::Delete);
         if a != b {
             self.insert("");
@@ -1519,15 +1595,17 @@ impl App {
         } else {
             let info = self.info(a.line);
             let line = &self.doc.lines[a.line];
-            let start = if word {
+            let start = if unit {
+                0
+            } else if word {
                 doc::prev_word(line, a.col)
             } else if a.col == info.content
                 && matches!(info.kind, Kind::List { .. } | Kind::Heading(_))
-                && !self.source
+                && !self.source()
             {
                 // Remove the list marker / heading hashes in one go.
                 info.qend
-            } else if a.col == info.qend && info.quote > 0 && !self.source {
+            } else if a.col == info.qend && info.quote > 0 && !self.source() {
                 markdown::strip_quotes(line, info.quote - 1).1
             } else {
                 doc::prev_boundary(line, a.col)
@@ -1541,6 +1619,7 @@ impl App {
 
     fn delete_forward(&mut self, word: bool) {
         let (a, b) = self.sel();
+        let unit = a == b && a.col == 0 && self.image_unit(a.line);
         self.begin(EditKind::Delete);
         if a != b {
             self.insert("");
@@ -1552,6 +1631,8 @@ impl App {
                 } else {
                     a
                 }
+            } else if unit {
+                Pos::new(a.line, line.len())
             } else if word {
                 Pos::new(a.line, doc::next_word(line, a.col))
             } else {
@@ -1572,7 +1653,7 @@ impl App {
         let info = self.info(c.line);
         let line = self.doc.lines[c.line].clone();
         let quote_prefix = line[..info.qend].to_string();
-        if self.source {
+        if self.source() {
             self.insert("\n");
         } else {
             match info.kind {
@@ -1872,6 +1953,9 @@ impl App {
     }
 
     fn toggle_task(&mut self, l: usize) {
+        if self.read_only() {
+            return;
+        }
         let info = self.info(l);
         let line = self.doc.lines[l].clone();
         self.begin(EditKind::Other);
@@ -2035,14 +2119,54 @@ impl App {
         self.commit();
     }
 
+    fn source(&self) -> bool {
+        self.mode == ViewMode::Source
+    }
+
     fn toggle_source(&mut self) {
-        self.source = !self.source;
-        self.say(if self.source {
-            "Source mode"
+        self.set_mode(if self.source() {
+            self.prev_mode
         } else {
-            "Live preview"
+            ViewMode::Source
         });
+    }
+
+    fn set_mode(&mut self, mode: ViewMode) {
+        if self.mode != ViewMode::Source {
+            self.prev_mode = self.mode;
+        }
+        self.mode = mode;
+        let saved = Settings::update(|s| s.set("view_mode", mode.key()));
+        let what = match mode {
+            ViewMode::Live => "Live preview",
+            ViewMode::Live2 => "Live 2: rows keep their height while you edit",
+            ViewMode::View => "View: read-only",
+            ViewMode::Source => "Source mode",
+        };
+        match saved {
+            Ok(()) => self.say(what),
+            Err(e) => self.say(format!("{what} (setting not saved: {e})")),
+        }
         self.changed(false);
+    }
+
+    /// In View mode, says so and returns true: the edit must not happen.
+    fn read_only(&mut self) -> bool {
+        if self.mode == ViewMode::View {
+            self.say("View mode is read-only (click View in the status bar to edit)");
+            self.invalidate();
+        }
+        self.mode == ViewMode::View
+    }
+
+    /// In Live 2, an image line under the caret is one unit: the caret sits before or
+    /// after it and Backspace/Delete remove it whole.
+    fn image_unit(&mut self, line: usize) -> bool {
+        if self.mode != ViewMode::Live2 {
+            return false;
+        }
+        self.ensure_layout();
+        self.view.is_image(line)
     }
 
     fn delete_lines(&mut self) {
@@ -2522,7 +2646,7 @@ impl App {
     /// table or lies within one cell. Any other selection touching a table shows the
     /// table as Markdown text instead (returns 0).
     fn grid_block(&mut self) -> u32 {
-        if self.source {
+        if matches!(self.mode, ViewMode::Source | ViewMode::View) {
             return 0;
         }
         let (a, b) = self.sel();
@@ -2805,6 +2929,9 @@ impl App {
     /// Applies a table action at the caret's cell, or at (`row`, `col`) when given,
     /// rewriting the table's Markdown in one undo step.
     fn table_command_at(&mut self, cmd: TableCmd, at: Option<(usize, usize)>) {
+        if self.read_only() {
+            return;
+        }
         let Some(cell) = self.cell_at(self.cursor) else {
             self.say("Put the cursor in a table first");
             return;
@@ -3013,7 +3140,7 @@ impl App {
     /// Opens the menu if the `/` just typed before the cursor can start a command.
     fn open_slash(&mut self) {
         let c = self.cursor;
-        if self.source || c.col == 0 || self.anchor != c {
+        if self.source() || c.col == 0 || self.anchor != c {
             return;
         }
         let info = self.info(c.line);
@@ -3040,7 +3167,7 @@ impl App {
         let Some(root) = self.folder.clone() else {
             return;
         };
-        if self.source || self.anchor != c || c.col < 2 {
+        if self.source() || self.anchor != c || c.col < 2 {
             return;
         }
         let info = self.info(c.line);
@@ -3084,7 +3211,7 @@ impl App {
     /// headings, or the open note's for `[[#`.
     fn open_heading_menu(&mut self) {
         let c = self.cursor;
-        if self.source || self.anchor != c {
+        if self.source() || self.anchor != c {
             return;
         }
         let line = &self.doc.lines[c.line];
@@ -3583,6 +3710,7 @@ impl App {
             Command::ToggleOutline => self.toggle_outline(),
             Command::FolderSettings => self.folder_settings_palette(),
             Command::ToggleSource => self.toggle_source(),
+            Command::CycleViewMode => self.set_mode(self.mode.next()),
             Command::ToggleTheme => self.toggle_theme(),
             Command::OpenSettingsFolder => self.open_settings_folder(),
             Command::WriteKeymap => self.write_keymap(),
@@ -3753,10 +3881,9 @@ impl App {
             } else {
                 format!("{} words", self.words.1)
             };
-            let mode = if self.source { "Source" } else { "Live" };
             let eol = if self.doc.crlf { "CRLF" } else { "LF" };
             status_right = format!(
-                "Ln {}, Col {col}     {words}     {eol}     {mode}",
+                "Ln {}, Col {col}     {words}     {eol}",
                 self.cursor.line + 1
             );
             prompt_text = self.prompt.as_ref().map(|p| {
@@ -3805,6 +3932,7 @@ impl App {
         let status = Status {
             left: &status_left,
             right: &status_right,
+            mode: self.mode.label(),
             prompt: prompt_text.as_ref().map(|(t, c)| (t.as_str(), *c)),
         };
         let caret = self.caret_on
@@ -3972,6 +4100,9 @@ impl App {
         if self.slash.is_some() && self.slash_click(dx, dy) {
             return;
         }
+        if self.view.over_mode(dx, dy) {
+            return self.set_mode(self.mode.next());
+        }
         if self.prompt_click(dy) {
             return;
         }
@@ -4062,6 +4193,12 @@ impl App {
             1 => {
                 self.move_to(p, shift_down());
                 self.drag = Drag::Char;
+            }
+            // Live 2: double-clicking an image shows its source.
+            2 if self.image_unit(p.line) => {
+                self.reveal = Some(p.line);
+                self.set_sel(p, p);
+                self.drag = Drag::None;
             }
             2 => {
                 let (s, e) = doc::word_at(&self.doc.lines[p.line], p.col);
@@ -4196,6 +4333,11 @@ impl App {
             self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
         }
         self.mouse = Some((x, y));
+        let over = self.view.over_mode(x, y);
+        if over != self.view.mode_hover {
+            self.view.mode_hover = over;
+            self.invalidate();
+        }
         self.command_hover(x, y);
         let doc_y = y - self.view.header_h() + self.scroll;
         let state = (
@@ -4212,6 +4354,9 @@ impl App {
     pub fn on_mouse_leave(&mut self) {
         self.tracking_leave = false;
         self.mouse = None;
+        if std::mem::take(&mut self.view.mode_hover) {
+            self.invalidate();
+        }
         if self.tree_button.take().is_some() || self.outline_hover.take().is_some() {
             self.invalidate();
         }
@@ -4275,10 +4420,13 @@ impl App {
     /// The mouse cursor for a client point (pixels): a hand over a link that a click
     /// would open, the I-beam over text, else the arrow.
     pub fn cursor_at(&mut self, x: i32, y: i32) -> PCWSTR {
+        let (dx, dy) = self.to_dip(x, y);
+        if self.view.over_mode(dx, dy) {
+            return IDC_HAND;
+        }
         if !self.is_text_area(x, y) {
             return IDC_ARROW;
         }
-        let (dx, dy) = self.to_dip(x, y);
         self.ensure_layout();
         let infos = std::mem::take(&mut self.infos);
         let doc_y = dy - self.view.header_h() + self.scroll;
@@ -5083,6 +5231,9 @@ Reload it and lose your unsaved changes?"
     /// Links `files` into the note at `at` (else the selection), copying those from
     /// outside the folder into the note's `data` folder.
     fn attach_files(&mut self, files: &[PathBuf], at: Option<Pos>) {
+        if self.read_only() {
+            return;
+        }
         let (Some(root), Some(note)) = (self.folder.clone(), self.doc.path.clone()) else {
             return self.say("Open a folder and save this note to attach files");
         };
@@ -5098,6 +5249,9 @@ Reload it and lose your unsaved changes?"
 
     /// Ctrl+V with an image on the clipboard: saved as a PNG in the `data` folder.
     fn paste_image(&mut self, image: &platform::ClipImage) {
+        if self.read_only() {
+            return;
+        }
         let (Some(_), Some(note)) = (&self.folder, self.doc.path.clone()) else {
             return self.say("Open a folder and save this note to paste images");
         };
@@ -5425,5 +5579,39 @@ italic =",
         assert_eq!(a.doc.lines[0], "word");
         // Moving by word stays fixed.
         assert!(a.editor_key(VK_RIGHT, true, false, false));
+    }
+
+    #[test]
+    fn view_modes_cycle_and_source_toggles_back() {
+        assert_eq!(ViewMode::Live.next(), ViewMode::Live2);
+        assert_eq!(ViewMode::Source.next(), ViewMode::Live);
+        for m in ViewMode::ALL {
+            assert_eq!(ViewMode::from_key(m.key()), Some(m));
+        }
+        let mut a = app("text");
+        a.set_mode(ViewMode::Live2);
+        a.toggle_source();
+        assert_eq!(a.mode, ViewMode::Source);
+        a.toggle_source();
+        assert_eq!(a.mode, ViewMode::Live2);
+    }
+
+    #[test]
+    fn view_mode_is_read_only() {
+        let mut a = app("- [ ] task");
+        a.set_mode(ViewMode::View);
+        a.set_sel(Pos::new(0, 10), Pos::new(0, 10));
+        a.on_char(b'x' as u16);
+        a.editor_key(VK_BACK, false, false, false);
+        a.editor_key(VK_RETURN, false, false, false);
+        a.run_action(Action::Bold);
+        a.toggle_task(0);
+        assert_eq!(a.doc.lines, ["- [ ] task"]);
+        // Moving and selecting still work.
+        a.editor_key(VK_HOME, false, false, false);
+        assert_eq!(a.cursor, Pos::new(0, 6));
+        a.set_mode(ViewMode::Live);
+        a.on_char(b'x' as u16);
+        assert_eq!(a.doc.lines, ["- [ ] xtask"]);
     }
 }

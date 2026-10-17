@@ -305,6 +305,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
         Action::ToggleSource,
         "Ctrl+Shift+V",
     ),
+    (
+        "View",
+        "cycle_view_mode",
+        Action::Run(Command::CycleViewMode),
+        "",
+    ),
     ("View", "toggle_theme", Action::ToggleTheme, "Ctrl+Shift+T"),
     (
         "View",

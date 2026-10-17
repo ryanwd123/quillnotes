@@ -36,7 +36,16 @@ The file stays plain Markdown; Penmark never converts it to another format.
 * Headings fold: `Ctrl+Shift+[` hides the section under the heading the caret is in
   and leaves a `⋯` after it; click the `⋯` or press `Ctrl+Shift+]` to unfold, or run
   **View: Unfold All Headings**.
-* `Ctrl+Shift+V` switches the whole document to plain source mode.
+* Click the view mode at the right of the status bar to cycle through the modes
+  (or run **View: Cycle View Mode**); the mode is remembered:
+  * **Live**: the lines being edited show their Markdown source.
+  * **Live 2**: like Live, but rows keep their rendered height while edited, so the
+    page shifts less as the caret moves. Blank lines are one text line tall, code
+    fences and rules keep their rendered height while their source shows, and an
+    image stays an image under the caret (a bold caret before or after it;
+    Backspace/Delete remove it whole; double-click shows its source).
+  * **View**: everything rendered and read-only.
+  * **Source**: plain Markdown. `Ctrl+Shift+V` toggles it.
 
 Supported syntax: ATX headings; paragraphs; bold, italic, strikethrough, `==highlight==`
 and inline code; links, autolinks, bare URLs, `[[wiki links]]`; images; bullet, numbered

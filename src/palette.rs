@@ -36,6 +36,7 @@ pub enum Command {
     UiFontSize,
     RenderingOptions,
     ToggleSource,
+    CycleViewMode,
     ToggleTheme,
     Help,
     OpenSettingsFolder,
@@ -128,6 +129,11 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         "View: Toggle Source Mode",
         Some(Action::ToggleSource),
         Command::ToggleSource,
+    ),
+    (
+        "View: Cycle View Mode (Live, Live 2, View, Source)",
+        None,
+        Command::CycleViewMode,
     ),
     (
         "Preferences: Toggle Light/Dark Theme",
