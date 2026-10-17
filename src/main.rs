@@ -14,6 +14,7 @@ mod platform;
 mod render;
 mod settings;
 mod slash;
+mod spell;
 mod table;
 mod theme;
 mod workspace;

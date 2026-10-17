@@ -423,6 +423,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
     ),
     (
         "Preferences",
+        "toggle_spell_check",
+        Action::Run(Command::ToggleSpellCheck),
+        "",
+    ),
+    (
+        "Preferences",
         "write_theme",
         Action::Run(Command::WriteTheme),
         "",

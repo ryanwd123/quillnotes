@@ -5,6 +5,9 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::*;
+use windows::Win32::Globalization::{
+    GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory,
+};
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
@@ -516,5 +519,80 @@ pub fn set_dark_titlebar(hwnd: HWND, dark: bool) {
             &v as *const BOOL as _,
             4,
         );
+    }
+}
+
+/// Windows' spell checker for the user's language (or US English).
+pub struct SpellChecker(ISpellChecker);
+
+impl SpellChecker {
+    /// None when Windows has no checker for the language.
+    pub fn new() -> Option<Self> {
+        unsafe {
+            let factory: ISpellCheckerFactory =
+                CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+            let mut buf = [0u16; 85];
+            let n = GetUserDefaultLocaleName(&mut buf);
+            let user = (n > 1).then(|| String::from_utf16_lossy(&buf[..n as usize - 1]));
+            for tag in user.into_iter().chain(["en-US".to_string()]) {
+                let tag = HSTRING::from(tag);
+                if factory.IsSupported(&tag).is_ok_and(|b| b.as_bool()) {
+                    return factory.CreateSpellChecker(&tag).ok().map(SpellChecker);
+                }
+            }
+            None
+        }
+    }
+
+    /// Misspellings in `text` (UTF-16 ending with a NUL), as (start, length) in
+    /// UTF-16 units.
+    pub fn check(&self, text: &[u16]) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        unsafe {
+            let Ok(errors) = self.0.Check(PCWSTR(text.as_ptr())) else {
+                return out;
+            };
+            loop {
+                let mut e = None;
+                if errors.Next(&mut e) != S_OK {
+                    break;
+                }
+                let Some(e) = e else { break };
+                if let (Ok(start), Ok(len)) = (e.StartIndex(), e.Length()) {
+                    out.push((start, len));
+                }
+            }
+        }
+        out
+    }
+
+    /// Up to `max` suggested spellings for `word`.
+    pub fn suggest(&self, word: &str, max: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        unsafe {
+            let Ok(list) = self.0.Suggest(&HSTRING::from(word)) else {
+                return out;
+            };
+            while out.len() < max {
+                let mut s = [PWSTR::null()];
+                let mut got = 0;
+                if list.Next(&mut s, Some(&mut got)) != S_OK || got == 0 {
+                    break;
+                }
+                out.push(s[0].to_string().unwrap_or_default());
+                CoTaskMemFree(Some(s[0].0 as _));
+            }
+        }
+        out
+    }
+
+    /// Adds `word` to the user's dictionary (shared with other Windows apps).
+    pub fn add(&self, word: &str) {
+        let _ = unsafe { self.0.Add(&HSTRING::from(word)) };
+    }
+
+    /// Stops flagging `word` until Penmark closes.
+    pub fn ignore(&self, word: &str) {
+        let _ = unsafe { self.0.Ignore(&HSTRING::from(word)) };
     }
 }

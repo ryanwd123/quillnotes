@@ -27,6 +27,7 @@ use crate::render::{
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
+use crate::spell;
 use crate::table::{self, Grid, TableCmd};
 use crate::theme::{self, Theme};
 use crate::workspace::{self, Entry, FolderSettings, NoteLink};
@@ -248,6 +249,12 @@ pub struct App {
     forward: Vec<NavEntry>,
     keymap: Keymap,
     theme: Theme,
+    /// Spell checking: on or off, Windows' checker (made when first needed; None
+    /// inside when there is none for the language), and each line's misspellings by
+    /// a hash of its text.
+    spell_on: bool,
+    speller: Option<Option<platform::SpellChecker>>,
+    spell_cache: HashMap<u64, Vec<std::ops::Range<usize>>>,
 }
 
 fn ctrl_down() -> bool {
@@ -370,6 +377,9 @@ impl App {
             forward: Vec::new(),
             keymap,
             theme,
+            spell_on: settings.get("spellcheck") != Some("off"),
+            speller: None,
+            spell_cache: HashMap::new(),
             restoring_placement: false,
         }
     }
@@ -998,6 +1008,156 @@ impl App {
     }
 
     /// Picks up changes to keymap.ini, reporting the first problem in it.
+    // -----------------------------------------------------------------------
+    // Spell checking
+
+    fn toggle_spell_check(&mut self) {
+        self.spell_on = !self.spell_on;
+        let on = self.spell_on;
+        let _ = Settings::update(|s| s.set("spellcheck", if on { "on" } else { "off" }));
+        self.say(if on {
+            "Spell check on"
+        } else {
+            "Spell check off"
+        });
+        self.invalidate();
+    }
+
+    /// The checker, made the first time it is needed.
+    fn speller(&mut self) -> Option<&platform::SpellChecker> {
+        self.speller
+            .get_or_insert_with(platform::SpellChecker::new)
+            .as_ref()
+    }
+
+    /// Checks the lines in view (each line's result is cached by its text), for the
+    /// view to underline. The word being typed is not flagged.
+    fn update_spelling(&mut self) {
+        let mut spelling = HashMap::new();
+        // The checker is made by the timer, after the window first shows.
+        let ready = matches!(self.speller, Some(Some(_)));
+        if self.spell_on && !self.source && ready {
+            let (top, bottom) = (self.scroll, self.scroll + self.view.view_h());
+            let first = self.view.rows.partition_point(|r| r.y + r.h < top);
+            let caret_line = self.cursor.line;
+            for l in first..self.view.rows.len() {
+                if self.view.rows[l].y > bottom {
+                    break;
+                }
+                let line = &self.doc.lines[l];
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&(line, self.infos[l].kind), &mut h);
+                let key = std::hash::Hasher::finish(&h);
+                if !self.spell_cache.contains_key(&key) {
+                    let errors = self.check_line(l);
+                    if self.spell_cache.len() > 20_000 {
+                        self.spell_cache.clear();
+                    }
+                    self.spell_cache.insert(key, errors);
+                }
+                let errors = &self.spell_cache[&key];
+                let typing = (l == caret_line && self.focused).then_some(self.cursor.col);
+                let errors = spell::without_caret_word(errors, typing);
+                if !errors.is_empty() {
+                    spelling.insert(l, errors);
+                }
+            }
+        }
+        self.view.spelling = spelling;
+    }
+
+    fn check_line(&mut self, l: usize) -> Vec<std::ops::Range<usize>> {
+        let Some(text) = spell::prose(&self.doc.lines[l], &self.infos[l]) else {
+            return Vec::new();
+        };
+        let (wide, map) = spell::utf16(&text);
+        let Some(checker) = self.speller() else {
+            return Vec::new();
+        };
+        checker
+            .check(&wide)
+            .into_iter()
+            .filter_map(|(s, n)| Some(*map.get(s as usize)?..*map.get((s + n) as usize)?))
+            .collect()
+    }
+
+    /// Right-click on an underlined word: suggestions, Add to Dictionary, Ignore.
+    /// Returns false when `p` is not on one.
+    fn spell_menu(&mut self, p: Pos, x: i32, y: i32) -> bool {
+        let Some(r) = self
+            .view
+            .spelling
+            .get(&p.line)
+            .and_then(|e| e.iter().find(|r| r.start <= p.col && p.col <= r.end))
+            .cloned()
+        else {
+            return false;
+        };
+        let word = self.doc.lines[p.line][r.clone()].to_string();
+        let suggestions = self
+            .speller()
+            .map(|c| c.suggest(&word, 6))
+            .unwrap_or_default();
+        let mut items: Vec<platform::MenuItem> = suggestions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| platform::MenuItem::Item {
+                id: i as u32 + 1,
+                label: s,
+                checked: false,
+                enabled: true,
+            })
+            .collect();
+        if items.is_empty() {
+            items.push(platform::MenuItem::Item {
+                id: 0,
+                label: "(no suggestions)",
+                checked: false,
+                enabled: false,
+            });
+        }
+        items.push(platform::MenuItem::Separator);
+        items.push(platform::MenuItem::Item {
+            id: 100,
+            label: "Add to Dictionary",
+            checked: false,
+            enabled: true,
+        });
+        items.push(platform::MenuItem::Item {
+            id: 101,
+            label: "Ignore",
+            checked: false,
+            enabled: true,
+        });
+        match platform::popup_menu(self.hwnd, &items, x, y) {
+            Some(100) => {
+                if let Some(c) = self.speller() {
+                    c.add(&word);
+                }
+                self.spell_cache.clear();
+                self.say(format!("Added \"{word}\" to the dictionary"));
+            }
+            Some(101) => {
+                if let Some(c) = self.speller() {
+                    c.ignore(&word);
+                }
+                self.spell_cache.clear();
+            }
+            Some(i) if i >= 1 && (i as usize) <= suggestions.len() => {
+                let fix = suggestions[i as usize - 1].clone();
+                self.begin(EditKind::Other);
+                self.doc
+                    .replace(Pos::new(p.line, r.start), Pos::new(p.line, r.end), &fix);
+                let end = Pos::new(p.line, r.start + fix.len());
+                self.set_sel(end, end);
+                self.commit();
+            }
+            _ => {}
+        }
+        self.invalidate();
+        true
+    }
+
     fn reload_theme(&mut self) {
         if let Some(errors) = self.theme.reload_if_changed() {
             self.view.set_colors(self.theme.light, self.theme.dark);
@@ -2698,7 +2858,7 @@ impl App {
                 .hit(&self.doc.lines, &infos, dx, dy + self.scroll)
                 .pos,
         );
-        if self.copy_code(p) {
+        if self.spell_menu(p, x, y) || self.copy_code(p) {
             return;
         }
         if self.cell_at(p).is_none() {
@@ -3141,6 +3301,7 @@ impl App {
             Command::OpenSettingsFolder => self.open_settings_folder(),
             Command::WriteKeymap => self.write_keymap(),
             Command::WriteTheme => self.write_theme(),
+            Command::ToggleSpellCheck => self.toggle_spell_check(),
             Command::Quit => platform::close_all_windows(),
             Command::Help => {
                 if let Ok(exe) = std::env::current_exe() {
@@ -3207,6 +3368,10 @@ impl App {
 
     pub fn on_timer(&mut self) {
         let mut repaint = self.focused;
+        if self.spell_on && self.speller.is_none() {
+            self.speller();
+            repaint = true;
+        }
         if self.focused {
             self.caret_on = !self.caret_on;
         }
@@ -3256,6 +3421,7 @@ impl App {
 
     pub fn paint(&mut self) {
         self.ensure_layout();
+        self.update_spelling();
         let outline_current = self.outline_state();
         let (a, b) = self.sel();
         let status_left;

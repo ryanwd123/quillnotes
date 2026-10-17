@@ -573,6 +573,8 @@ pub struct View {
     pub links_gen: u64,
     /// The light and dark palettes, in `Ink` order.
     colors: ([u32; INK_COUNT], [u32; INK_COUNT]),
+    /// Misspelled byte ranges by line, underlined when painted.
+    pub spelling: HashMap<usize, Vec<std::ops::Range<usize>>>,
     /// The highlighting state after each code line, by line, language and state
     /// before it, so unchanged code is not tokenized again.
     code_states: HashMap<u64, highlight::State>,
@@ -641,6 +643,7 @@ impl View {
                 missing_links: HashSet::new(),
                 links_gen: 0,
                 colors: (LIGHT, DARK),
+                spelling: HashMap::new(),
                 code_states: HashMap::new(),
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
@@ -2197,6 +2200,32 @@ impl View {
         }
     }
 
+    /// A wavy red underline from `x0` to `x1` at `y`.
+    fn squiggle(&self, rt: &ID2D1HwndRenderTarget, x0: f32, x1: f32, y: f32) {
+        let (step, amp) = (2.0 * self.zoom, 1.2 * self.zoom);
+        let mut x = x0;
+        let mut up = true;
+        while x < x1 {
+            let nx = (x + step).min(x1);
+            let (y0, y1) = if up {
+                (y + amp, y - amp)
+            } else {
+                (y - amp, y + amp)
+            };
+            unsafe {
+                rt.DrawLine(
+                    v2(x, y0),
+                    v2(nx, y1),
+                    self.brush(Ink::Danger),
+                    self.zoom,
+                    None,
+                );
+            }
+            x = nx;
+            up = !up;
+        }
+    }
+
     unsafe fn paint_row(
         &self,
         rt: &ID2D1HwndRenderTarget,
@@ -2270,6 +2299,15 @@ impl View {
                         self.brush(tb.ink),
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                     );
+                    for r in self.spelling.get(&i).into_iter().flatten() {
+                        let (a, b) = (tb.s2d(r.start), tb.s2d(r.end));
+                        if b > a {
+                            for m in tb.rects(a, b) {
+                                let y = oy + m.top + m.height - 1.5 * z;
+                                self.squiggle(rt, ox + m.left, ox + m.left + m.width, y);
+                            }
+                        }
+                    }
 
                     if !row.active
                         && let Kind::List { ordered, task } = info.kind

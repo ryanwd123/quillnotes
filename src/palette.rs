@@ -24,6 +24,7 @@ pub enum Command {
     NextDailyNote,
     ToggleExplorer,
     ToggleOutline,
+    ToggleSpellCheck,
     FolderSettings,
     ChangeFont,
     ChangeCodeFont,
@@ -87,6 +88,11 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         "View: Toggle Outline",
         Some(Action::ToggleOutline),
         Command::ToggleOutline,
+    ),
+    (
+        "View: Toggle Spell Check",
+        Some(Action::Run(Command::ToggleSpellCheck)),
+        Command::ToggleSpellCheck,
     ),
     (
         "Preferences: Folder Settings",
