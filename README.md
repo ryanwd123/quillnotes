@@ -119,7 +119,8 @@ between runs. A saved position on a monitor that is no longer connected is ignor
   the cursor and `Ctrl+Click` opens the link.
 * Typing `[[` in a folder lists its notes; pick one to complete the link. A
   `[[name]]` link is looked up next to the note, then from the folder root, then by
-  file name anywhere in the folder.
+  file name anywhere in the folder. A link to a note that doesn't exist is drawn grey
+  and underlined; clicking it starts that note.
 * With a folder open, dropping files on a note copies them into a `data` folder next
   to it and links them with a relative path, at the drop caret that follows the
   mouse. Images are linked as images on a line of their own, so they render. Files
