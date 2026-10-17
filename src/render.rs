@@ -2911,7 +2911,12 @@ impl View {
                     else {
                         continue;
                     };
-                    rt.DrawTextLayout(v2(tx, y), &l, self.brush(Ink::Link), D2D1_DRAW_TEXT_OPTIONS_NONE);
+                    rt.DrawTextLayout(
+                        v2(tx, y),
+                        &l,
+                        self.brush(Ink::Link),
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
                     let mut m = DWRITE_TEXT_METRICS::default();
                     let _ = l.GetMetrics(&mut m);
                     let lx = tx + m.width + 8.0 * k;

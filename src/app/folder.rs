@@ -415,7 +415,8 @@ impl App {
                 }
                 None => format!("# {date}\n\n"),
             };
-            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text)) {
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text))
+            {
                 return self.say(format!("Could not make {}: {e}", path.display()));
             }
             self.rescan();
@@ -436,7 +437,9 @@ impl App {
             .filter(|e| {
                 !e.is_dir
                     && workspace::is_markdown(&e.path)
-                    && e.path.parent().is_some_and(|p| workspace::same_path(p, &dir))
+                    && e.path
+                        .parent()
+                        .is_some_and(|p| workspace::same_path(p, &dir))
             })
             .filter_map(|e| stem(&e.path))
             .collect();
@@ -903,7 +906,8 @@ impl App {
             return String::new();
         }
         let n: usize = edits.iter().map(|e| e.1.len()).sum();
-        let plural = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+        let plural =
+            |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
         let what = format!(
             "{} in {}",
             plural(n, "link", "links"),
@@ -1021,7 +1025,11 @@ impl App {
     pub(super) fn path_prompt_done(&mut self, kind: PromptKind, path: PathBuf, text: &str) {
         if let PromptKind::FolderText(opt) = kind {
             self.change_folder_settings(|f| opt.set_text(f, text));
-            return self.say(format!("{}: {}", opt.label(), opt.value_text(&self.folder_settings)));
+            return self.say(format!(
+                "{}: {}",
+                opt.label(),
+                opt.value_text(&self.folder_settings)
+            ));
         }
         let name = text.trim().replace('/', "\\");
         if name.is_empty() {

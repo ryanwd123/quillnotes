@@ -500,7 +500,12 @@ mod tests {
         let lines: Vec<String> = ["aAa", "", "xa"].map(String::from).into();
         assert_eq!(
             find_all(&lines, "a"),
-            [Pos::new(0, 0), Pos::new(0, 1), Pos::new(0, 2), Pos::new(2, 1)]
+            [
+                Pos::new(0, 0),
+                Pos::new(0, 1),
+                Pos::new(0, 2),
+                Pos::new(2, 1)
+            ]
         );
         assert_eq!(find_all(&lines, "aa"), [Pos::new(0, 0)]);
         assert!(find_all(&lines, "").is_empty());

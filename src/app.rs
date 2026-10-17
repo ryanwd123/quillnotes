@@ -2063,7 +2063,10 @@ impl App {
         let (a, b) = self.sel();
         a.line == b.line
             && !self.find_query.is_empty()
-            && self.doc.text_range(a, b).eq_ignore_ascii_case(&self.find_query)
+            && self
+                .doc
+                .text_range(a, b)
+                .eq_ignore_ascii_case(&self.find_query)
     }
 
     /// Replaces the selected match, then selects the next one.
@@ -2091,12 +2094,16 @@ impl App {
         self.begin(EditKind::Other);
         // Last first, so earlier positions stay valid.
         for &p in all.iter().rev() {
-            self.doc.replace(p, Pos::new(p.line, p.col + q.len()), &text);
+            self.doc
+                .replace(p, Pos::new(p.line, p.col + q.len()), &text);
         }
         self.set_sel(self.cursor, self.cursor);
         self.commit();
         let n = all.len();
-        self.say(format!("Replaced {n} {}", if n == 1 { "match" } else { "matches" }));
+        self.say(format!(
+            "Replaced {n} {}",
+            if n == 1 { "match" } else { "matches" }
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -4112,9 +4119,11 @@ impl App {
         let name = self.doc_name();
         let r = platform::message_box(
             self.hwnd,
-            &format!("{name} changed on disk since it was opened.
+            &format!(
+                "{name} changed on disk since it was opened.
 
-Overwrite it with your version?"),
+Overwrite it with your version?"
+            ),
             APP_NAME,
             MB_YESNO | MB_ICONWARNING,
         );
@@ -4169,8 +4178,14 @@ Reload it and lose your unsaved changes?"
         let fresh = Document::from_bytes(bytes, None).0;
         let end = self.doc.end();
         self.begin(EditKind::Other);
-        self.doc.replace(Pos::default(), end, &fresh.lines.join("
-"));
+        self.doc.replace(
+            Pos::default(),
+            end,
+            &fresh.lines.join(
+                "
+",
+            ),
+        );
         self.set_sel(self.anchor, self.cursor);
         self.commit();
         self.doc.crlf = fresh.crlf;

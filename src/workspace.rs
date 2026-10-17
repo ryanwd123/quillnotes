@@ -266,9 +266,17 @@ fn may_link_to(target: &str, stem: &str) -> bool {
         Some(t) => t.split(['#', '|']).next().unwrap_or(t),
         None => target.split('#').next().unwrap_or(target),
     };
-    let last = name.rsplit(['/', '\\']).next().unwrap_or(name).trim().to_lowercase();
+    let last = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_lowercase();
     let last = crate::attach::decode(&last);
-    last == stem || Path::new(&last).file_stem().is_some_and(|s| s.to_string_lossy() == stem)
+    last == stem
+        || Path::new(&last)
+            .file_stem()
+            .is_some_and(|s| s.to_string_lossy() == stem)
 }
 
 /// A line in another note that links to the open one.
@@ -285,10 +293,7 @@ pub struct Backlink {
 pub type LinkCache = HashMap<PathBuf, (Stamp, Vec<(usize, String, String)>)>;
 
 /// The folder's notes' links, from `cache` for files that have not changed.
-pub fn note_links_cached<'a>(
-    entries: &[Entry],
-    cache: &'a mut LinkCache,
-) -> &'a LinkCache {
+pub fn note_links_cached<'a>(entries: &[Entry], cache: &'a mut LinkCache) -> &'a LinkCache {
     let mut seen = HashSet::new();
     for e in entries.iter().filter(|e| !e.is_dir && is_markdown(&e.path)) {
         seen.insert(e.path.clone());
@@ -378,7 +383,12 @@ pub fn links_to_move(
     let mut notes: Vec<(PathBuf, Vec<(usize, String)>)> = note_links_cached(entries, cache)
         .iter()
         .filter(|(p, _)| !open.is_some_and(|(o, _)| same_path(o, p)))
-        .map(|(p, (_, links))| (p.clone(), links.iter().map(|(l, t, _)| (*l, t.clone())).collect()))
+        .map(|(p, (_, links))| {
+            (
+                p.clone(),
+                links.iter().map(|(l, t, _)| (*l, t.clone())).collect(),
+            )
+        })
         .collect();
     if let Some((p, lines)) = open {
         notes.push((p.to_path_buf(), links_in(lines)));
@@ -437,12 +447,20 @@ pub fn new_target(
 /// `line` with the link written as `old` (a target from [`links_in`]) changed to
 /// `new`, or None when it is not there.
 pub fn retarget(line: &str, old: &str, new: &str) -> Option<String> {
-    let inner = |t: &str| t.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")).map(String::from);
+    let inner = |t: &str| {
+        t.strip_prefix("[[")
+            .and_then(|t| t.strip_suffix("]]"))
+            .map(String::from)
+    };
     if let (Some(o), Some(n)) = (inner(old), inner(new)) {
         for end in ["]]", "|"] {
             let pat = format!("[[{o}{end}");
             if let Some(i) = line.find(&pat) {
-                return Some(format!("{}[[{n}{end}{}", &line[..i], &line[i + pat.len()..]));
+                return Some(format!(
+                    "{}[[{n}{end}{}",
+                    &line[..i],
+                    &line[i + pat.len()..]
+                ));
             }
         }
         return None;
@@ -722,9 +740,13 @@ impl FolderOpt {
 pub fn is_date_name(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 10
-        && b.iter()
-            .enumerate()
-            .all(|(i, &c)| if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() })
+        && b.iter().enumerate().all(|(i, &c)| {
+            if i == 4 || i == 7 {
+                c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
 }
 
 /// The daily note before or after `current` (a `YYYY-MM-DD` name) among `names`.
@@ -739,7 +761,9 @@ pub fn daily_neighbor(names: &[String], current: &str, forward: bool) -> Option<
 
 /// A daily note's text from a template: `{{date}}` and `{{title}}` become the date.
 pub fn fill_template(template: &str, date: &str) -> String {
-    template.replace("{{date}}", date).replace("{{title}}", date)
+    template
+        .replace("{{date}}", date)
+        .replace("{{title}}", date)
 }
 
 #[cfg(test)]
@@ -823,8 +847,14 @@ mod tests {
         std::fs::create_dir_all(root.join("a")).unwrap();
         let files = [
             ("plan.md", "# Plan"),
-            ("a/one.md", "See [[plan]] and [[Plan|the plan]].\n\n```\n[[plan]]\n```"),
-            ("a/two.md", "x\n[the plan](../plan.md#goals)\n[web](https://plan.md)"),
+            (
+                "a/one.md",
+                "See [[plan]] and [[Plan|the plan]].\n\n```\n[[plan]]\n```",
+            ),
+            (
+                "a/two.md",
+                "x\n[the plan](../plan.md#goals)\n[web](https://plan.md)",
+            ),
             ("three.md", "[[a/one]] and [[nothing]]"),
         ];
         for (f, text) in files {
@@ -839,7 +869,10 @@ mod tests {
                 .collect()
         };
         // One row per line; links in code are skipped.
-        assert_eq!(found(&mut cache, "plan.md"), [("a/one.md".into(), 0), ("a/two.md".into(), 1)]);
+        assert_eq!(
+            found(&mut cache, "plan.md"),
+            [("a/one.md".into(), 0), ("a/two.md".into(), 1)]
+        );
         assert_eq!(found(&mut cache, "a/one.md"), [("three.md".into(), 0)]);
         assert!(found(&mut cache, "a/two.md").is_empty());
         let b = backlinks(&root, &entries, &root.join("plan.md"), &mut cache);
@@ -853,15 +886,21 @@ mod tests {
     #[test]
     fn daily_notes() {
         assert!(is_date_name("2026-10-17"));
-        assert!(!is_date_name("2026-10-1") && !is_date_name("2026_10_17") && !is_date_name("notes"));
-        let names: Vec<String> =
-            ["2026-10-01", "notes", "2026-10-20", "2026-09-30"].map(String::from).into();
+        assert!(
+            !is_date_name("2026-10-1") && !is_date_name("2026_10_17") && !is_date_name("notes")
+        );
+        let names: Vec<String> = ["2026-10-01", "notes", "2026-10-20", "2026-09-30"]
+            .map(String::from)
+            .into();
         let n = |c: &str, f: bool| daily_neighbor(&names, c, f);
         assert_eq!(n("2026-10-17", true).as_deref(), Some("2026-10-20"));
         assert_eq!(n("2026-10-17", false).as_deref(), Some("2026-10-01"));
         assert_eq!(n("2026-10-01", false).as_deref(), Some("2026-09-30"));
         assert_eq!(n("2026-10-20", true), None);
-        assert_eq!(fill_template("# {{title}}\n{{date}}", "2026-10-17"), "# 2026-10-17\n2026-10-17");
+        assert_eq!(
+            fill_template("# {{title}}\n{{date}}", "2026-10-17"),
+            "# 2026-10-17\n2026-10-17"
+        );
         let mut f = FolderSettings::default();
         FolderOpt::DailyFolder.set_text(&mut f, " notes\\daily/ ");
         assert_eq!(f.daily_folder, "notes/daily");
@@ -876,12 +915,23 @@ mod tests {
             r("a [[old#h|x]] b", "[[old#h]]", "[[new#h]]").as_deref(),
             Some("a [[new#h|x]] b")
         );
-        assert_eq!(r("[[old]] [[old]]", "[[old]]", "[[n]]").as_deref(), Some("[[n]] [[old]]"));
         assert_eq!(
-            r("[x](old.md#y \"t\") [z](old.md.bak)", "old.md#y", "d/new.md#y").as_deref(),
+            r("[[old]] [[old]]", "[[old]]", "[[n]]").as_deref(),
+            Some("[[n]] [[old]]")
+        );
+        assert_eq!(
+            r(
+                "[x](old.md#y \"t\") [z](old.md.bak)",
+                "old.md#y",
+                "d/new.md#y"
+            )
+            .as_deref(),
             Some("[x](d/new.md#y \"t\") [z](old.md.bak)")
         );
-        assert_eq!(r("[x](<my old.md>)", "my old.md", "my%20new.md").as_deref(), Some("[x](<my%20new.md>)"));
+        assert_eq!(
+            r("[x](<my old.md>)", "my old.md", "my%20new.md").as_deref(),
+            Some("[x](<my%20new.md>)")
+        );
         assert_eq!(r("[x](old.md.bak)", "old.md", "new.md"), None);
     }
 
@@ -903,15 +953,29 @@ mod tests {
         let entries = scan(&root);
         let (old, new) = (root.join("a/todo.md"), root.join("b/sub/tasks.md"));
         let mut cache = LinkCache::new();
-        let refs = links_to_move(&root, &entries, std::slice::from_ref(&old), &mut cache, None);
+        let refs = links_to_move(
+            &root,
+            &entries,
+            std::slice::from_ref(&old),
+            &mut cache,
+            None,
+        );
         std::fs::create_dir_all(root.join("b/sub")).unwrap();
         std::fs::rename(&old, &new).unwrap();
         let entries = scan(&root);
         let mut got: Vec<(String, String, String)> = refs
             .iter()
             .filter_map(|r| {
-                let note = if same_path(&r.note, &old) { new.clone() } else { r.note.clone() };
-                let dest = if same_path(&r.dest, &old) { new.clone() } else { r.dest.clone() };
+                let note = if same_path(&r.note, &old) {
+                    new.clone()
+                } else {
+                    r.note.clone()
+                };
+                let dest = if same_path(&r.dest, &old) {
+                    new.clone()
+                } else {
+                    r.dest.clone()
+                };
                 let t = new_target(&root, &entries, &note, &r.target, &dest)?;
                 Some((relative(&root, &note), r.target.clone(), t))
             })
