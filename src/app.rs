@@ -1107,7 +1107,6 @@ impl App {
         }
     }
 
-    /// Picks up changes to keymap.ini, reporting the first problem in it.
     // -----------------------------------------------------------------------
     // Spell checking
 
@@ -1258,6 +1257,7 @@ impl App {
         true
     }
 
+    /// Picks up changes to theme.ini, reporting the first problem in it.
     fn reload_theme(&mut self) {
         if let Some(errors) = self.theme.reload_if_changed() {
             self.view.set_colors(self.theme.light, self.theme.dark);
@@ -1304,6 +1304,7 @@ impl App {
         }
     }
 
+    /// Picks up changes to keymap.ini, reporting the first problem in it.
     fn reload_keymap(&mut self) {
         if let Some(errors) = self.keymap.reload_if_changed() {
             match errors.first() {

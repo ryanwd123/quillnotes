@@ -15,6 +15,9 @@ use crate::render::{SidebarButton, SidebarRow, SidebarView};
 use crate::settings::Settings;
 use crate::workspace::{self, Entry, FolderSettings};
 
+/// A link to rewrite on a line: (line, old target, new target).
+type LinkEdit = (usize, String, String);
+
 /// An explorer entry being dragged; it becomes a move once the mouse travels.
 pub(super) struct TreeDrag {
     path: PathBuf,
@@ -938,7 +941,8 @@ impl App {
                 .find(|(o, _)| workspace::same_path(o, p))
                 .map_or_else(|| p.to_path_buf(), |(_, n)| n.clone())
         };
-        let mut edits: Vec<(PathBuf, Vec<(usize, String, String)>)> = Vec::new();
+        // Each note to change, with its (line, old target, new target) edits.
+        let mut edits: Vec<(PathBuf, Vec<LinkEdit>)> = Vec::new();
         for r in refs {
             let (note, dest) = (now(&r.note), now(&r.dest));
             let Some(new) = workspace::new_target(&root, &self.entries, &note, &r.target, &dest)
