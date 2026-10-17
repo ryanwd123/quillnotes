@@ -122,7 +122,7 @@ Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\Pen
 
 ## Changing colors
 
-Run **Preferences: Write theme.ini** from the palette. It writes `%APPDATA%\Penmark	heme.ini` with every color of the light and dark themes and opens it. Change a line such as `bg = #FFF8E7` under `[light]` or `[dark]` (`#AARRGGBB` adds transparency), save, and switch back to Penmark. Problems show in the status bar; delete `theme.ini` to go back to the default colors.
+Run **Preferences: Write theme.ini** from the palette. It writes `%APPDATA%\Penmark\theme.ini` with every color of the light and dark themes and opens it. Change a line such as `bg = #FFF8E7` under `[light]` or `[dark]` (`#AARRGGBB` adds transparency), save, and switch back to Penmark. Problems show in the status bar; delete `theme.ini` to go back to the default colors.
 
 ## Command links
 

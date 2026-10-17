@@ -257,6 +257,11 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
   in the status bar. Caret movement, Enter, Tab, Backspace, Delete, and keys inside
   the palette, explorer and tables stay fixed. Writing it again keeps changed keys
   but not comments, so Penmark asks first.
+* **Preferences: Write theme.ini** does the same for colors: it writes
+  `%APPDATA%\Penmark\theme.ini` with every color of the `[light]` and `[dark]`
+  themes as `name = #RRGGBB` (or `#AARRGGBB` with transparency) and opens it. Colors
+  left out keep their defaults; the file is reloaded on focus or when saved in
+  Penmark, and problems show in the status bar.
 
 To add a command, add a variant to `Command` and an entry to `COMMANDS` in
 `src/palette.rs`, then handle it in `App::palette_accept`. To give it a shortcut, add
