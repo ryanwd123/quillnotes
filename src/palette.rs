@@ -13,6 +13,7 @@ use crate::workspace::{self, Entry, FolderOpt, FolderSettings};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     QuickOpen,
+    GoToHeading,
     SearchFiles,
     OpenFolder,
     OpenRecent,
@@ -48,6 +49,11 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         "Go to File\u{2026}",
         Some(Action::QuickOpen),
         Command::QuickOpen,
+    ),
+    (
+        "Go to Heading\u{2026}",
+        Some(Action::Run(Command::GoToHeading)),
+        Command::GoToHeading,
     ),
     (
         "Search: Find in Files",
@@ -149,6 +155,8 @@ pub enum Target {
     SwitchFolder(PathBuf),
     OpenFolderDialog,
     FolderOpt(FolderOpt),
+    /// A heading in the open note, by line.
+    Heading(usize),
 }
 
 pub struct Item {
@@ -183,6 +191,7 @@ pub enum Mode {
     Folders,
     FolderSettings,
     Search,
+    Headings,
 }
 
 /// A Markdown file searched by "Search in Files".
@@ -433,6 +442,29 @@ impl Palette {
     }
 
     /// Recent folders, with "Open Folder..." first.
+    /// The open note's headings, (line, level, text), indented by level; starting on
+    /// `current` (an index into `headings`).
+    pub fn headings(headings: &[(usize, u8, String)], current: Option<usize>) -> Self {
+        let min = headings.iter().map(|h| h.1).min().unwrap_or(1);
+        let items = headings
+            .iter()
+            .map(|(line, level, text)| {
+                let indent = "    ".repeat((level - min) as usize);
+                let text = if text.is_empty() { "(untitled)" } else { text };
+                Item::new(
+                    format!("{indent}{text}"),
+                    format!("H{level}  \u{b7}  line {}", line + 1),
+                    Target::Heading(*line),
+                )
+            })
+            .collect();
+        let mut p = Palette::new(Mode::Headings, items);
+        if let Some(i) = current {
+            p.select(i.min(p.filtered.len().saturating_sub(1)));
+        }
+        p
+    }
+
     pub fn folders(recent: &[PathBuf], current: Option<&Path>) -> Self {
         let same = |a: &Path, b: &Path| workspace::contains(a, b) && workspace::contains(b, a);
         let mut items = vec![Item::new(
@@ -506,6 +538,7 @@ impl Palette {
             Mode::Folders => "Open a recent folder",
             Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles or edits",
             Mode::Search => "Search in Markdown files",
+            Mode::Headings => "Go to a heading in this note",
         }
     }
 
@@ -519,6 +552,7 @@ impl Palette {
             Mode::FolderSettings => "No matching settings",
             Mode::Search if self.query.trim().is_empty() => "Type to search the folder's notes",
             Mode::Search => "No results",
+            Mode::Headings => "No matching headings",
         }
     }
 
@@ -717,6 +751,19 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headings_filter_and_start_on_current() {
+        let h = |l: usize, n: u8, t: &str| (l, n, t.to_string());
+        let mut p = Palette::headings(
+            &[h(0, 1, "Plan"), h(3, 2, "Goals"), h(9, 2, "Risks")],
+            Some(1),
+        );
+        assert_eq!(p.selected().map(|i| &i.target), Some(&Target::Heading(3)));
+        assert_eq!(p.selected().map(|i| i.label.as_str()), Some("    Goals"));
+        p.insert("ri");
+        assert_eq!(p.selected().map(|i| &i.target), Some(&Target::Heading(9)));
+    }
 
     #[test]
     fn shortens_paths() {

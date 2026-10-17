@@ -193,6 +193,8 @@ pub struct App {
     /// True while the saved placement is applied, so a DPI change keeps the saved size.
     pub restoring_placement: bool,
     palette: Option<Palette>,
+    /// Where the caret was when Go to Heading opened, to go back to on Escape.
+    heading_origin: Option<(Pos, Pos, f32)>,
     /// Set while Search in Files is open (see app/folder.rs).
     search_origin: Option<folder::SearchOrigin>,
     slash: Option<SlashMenu>,
@@ -338,6 +340,7 @@ impl App {
             last_title: String::new(),
             untitled_name: "Untitled",
             palette: None,
+            heading_origin: None,
             search_origin: None,
             slash: None,
             cells: None,
@@ -3103,6 +3106,13 @@ impl App {
         {
             self.preview_font(&font, p.mode == Mode::CodeFonts);
         }
+        if let Some((a, c, scroll)) = self.heading_origin.take()
+            && cancel
+        {
+            self.set_sel(a, c);
+            self.scroll = scroll;
+            self.clamp_scroll();
+        }
         self.end_search();
         self.invalidate();
     }
@@ -3125,7 +3135,57 @@ impl App {
     }
 
     /// Called after the palette query or selection changed.
+    /// Go to Heading (or `@` typed first in Go to File): the open note's headings,
+    /// filtered by `query`; moving through them shows each one.
+    fn go_to_heading(&mut self, query: &str) {
+        let origin = (self.anchor, self.cursor, self.scroll);
+        let line = self.cursor.line;
+        let current = self.outline_items().iter().rposition(|h| h.0 <= line);
+        let mut p = Palette::headings(self.outline_items(), current);
+        if !query.is_empty() {
+            p.insert(query);
+        }
+        self.open_palette(p);
+        self.heading_origin = Some(origin);
+    }
+
+    /// Shows the highlighted heading.
+    fn preview_heading(&mut self) {
+        if let Some(Target::Heading(l)) = self
+            .palette
+            .as_ref()
+            .and_then(|p| p.selected())
+            .map(|i| i.target.clone())
+        {
+            self.show_heading(l);
+        }
+    }
+
+    /// Puts the caret on the heading on line `l`, at the top of the view.
+    fn show_heading(&mut self, l: usize) {
+        self.infos();
+        let p = Pos::new(l, self.infos[l].content);
+        self.set_sel(p, p);
+        self.ensure_layout();
+        if let Some(row) = self.view.rows.get(l) {
+            self.scroll = row.y - 8.0 * self.view.zoom;
+            self.clamp_scroll();
+        }
+    }
+
     fn palette_changed(&mut self) {
+        if let Some(p) = &self.palette
+            && p.mode == Mode::Files
+            && let Some(rest) = p.query.strip_prefix('@')
+        {
+            let rest = rest.to_string();
+            self.palette = None;
+            return self.go_to_heading(&rest);
+        }
+        let Some(p) = &self.palette else { return };
+        if p.mode == Mode::Headings {
+            self.preview_heading();
+        }
         let Some(p) = &self.palette else { return };
         if matches!(p.mode, Mode::Fonts | Mode::CodeFonts) {
             // Live preview: the document shows the highlighted font.
@@ -3238,6 +3298,11 @@ impl App {
             Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
             Target::OpenFolderDialog => self.open_folder_dialog(),
             Target::OpenFile(path) => self.open_file_in_folder(&path),
+            Target::Heading(l) => {
+                self.heading_origin = None;
+                self.show_heading(l);
+                self.changed(false);
+            }
             Target::OpenMatch {
                 path,
                 line,
@@ -3284,6 +3349,7 @@ impl App {
                 self.open_palette(Palette::options(&self.view.options(), ""));
             }
             Command::QuickOpen => self.quick_open(),
+            Command::GoToHeading => self.go_to_heading(""),
             Command::SearchFiles => self.search_files(),
             Command::OpenFolder => self.open_folder_dialog(),
             Command::OpenRecent => self.recent_folders(),
@@ -4864,6 +4930,37 @@ mod tests {
         a.undo(true);
         assert_eq!(a.doc.lines, ["one", "two", "three"]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn go_to_heading_previews_and_escape_returns() {
+        let mut a = app("# A\ntext\n## B\nmore\n## C\nend");
+        a.set_sel(Pos::new(3, 2), Pos::new(3, 2));
+        a.go_to_heading("");
+        // Starts on the heading the caret is under.
+        let selected = |a: &App| {
+            a.palette
+                .as_ref()
+                .unwrap()
+                .selected()
+                .unwrap()
+                .target
+                .clone()
+        };
+        assert_eq!(selected(&a), Target::Heading(2));
+        a.palette_key(VK_DOWN, false, false);
+        assert_eq!(a.cursor, Pos::new(4, 3));
+        a.palette_key(VK_ESCAPE, false, false);
+        assert!(a.palette.is_none());
+        assert_eq!(a.cursor, Pos::new(3, 2));
+        // Enter keeps the heading; `@` in Go to File switches to headings.
+        a.go_to_heading("c");
+        a.palette_key(VK_RETURN, false, false);
+        assert_eq!(a.cursor, Pos::new(4, 3));
+        a.open_palette(Palette::files(Path::new("."), &[], None));
+        a.on_char('@' as u16);
+        a.on_char('a' as u16);
+        assert_eq!(selected(&a), Target::Heading(0));
     }
 
     #[test]

@@ -92,6 +92,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
     ),
     (
         "Files and folders",
+        "go_to_heading",
+        Action::Run(Command::GoToHeading),
+        "Ctrl+Shift+2",
+    ),
+    (
+        "Files and folders",
         "search_files",
         Action::SearchFiles,
         "Ctrl+Shift+F",
