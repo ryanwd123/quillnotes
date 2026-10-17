@@ -7,7 +7,7 @@ use std::time::Duration;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use super::{APP_NAME, App, PromptKind};
+use super::{APP_NAME, App, NavEntry, PromptKind};
 use crate::doc::{self, Document, EditKind, Pos};
 use crate::palette::{Mode, Palette, SearchFile, Target};
 use crate::platform::{self, MenuItem};
@@ -60,8 +60,35 @@ impl App {
             return self.say(format!("{} is no longer available", dir.display()));
         }
         if self.confirm_discard() {
+            self.save_session();
             self.open_folder(dir);
         }
+    }
+
+    /// Saves where the folder was left (the open file's caret and scroll, and the
+    /// back history) for the next time it opens.
+    pub fn save_session(&mut self) {
+        let Some(dir) = self.folder.clone() else {
+            return;
+        };
+        let spot = |e: &NavEntry| {
+            workspace::contains(&dir, &e.path).then(|| workspace::Spot {
+                file: workspace::relative(&dir, &e.path),
+                line: e.cursor.line,
+                col: e.cursor.col,
+                scroll: e.scroll,
+            })
+        };
+        let last_spot = self.nav_entry().as_ref().and_then(spot);
+        let history: Vec<workspace::Spot> = self.back.iter().filter_map(spot).collect();
+        self.folder_settings.last_spot = last_spot.clone();
+        self.folder_settings.history = history.clone();
+        let _ = Settings::update(|s| {
+            let mut f = FolderSettings::load(s, &dir);
+            f.last_spot = last_spot;
+            f.history = history;
+            f.store(s, &dir);
+        });
     }
 
     /// Opens `dir` and the file that was last open in it.
@@ -85,12 +112,32 @@ impl App {
             Some(p) => {
                 self.open_path(&p);
                 self.reveal_in_tree(&p);
+                // Back where it was left.
+                if let Some(s) = self.folder_settings.last_spot.clone()
+                    && self.folder_settings.last_file.as_ref() == Some(&s.file)
+                {
+                    let c = self.doc.clamp(Pos::new(s.line, s.col));
+                    self.set_sel(c, c);
+                    self.ensure_layout();
+                    self.scroll = s.scroll;
+                    self.clamp_scroll();
+                }
             }
             None => self.blank_doc(),
         }
-        // History is per folder.
-        self.back.clear();
+        // History is per folder: the files opened before, as the folder was left.
         self.forward.clear();
+        self.back = self
+            .folder_settings
+            .history
+            .iter()
+            .map(|s| NavEntry {
+                path: dir.join(&s.file),
+                cursor: Pos::new(s.line, s.col),
+                scroll: s.scroll,
+            })
+            .filter(|e| e.path.is_file())
+            .collect();
         self.say(format!("Opened folder {}", name_of(dir)));
         self.update_title();
     }
@@ -111,6 +158,7 @@ impl App {
         if !self.confirm_discard() {
             return;
         }
+        self.save_session();
         self.folder = None;
         self.entries.clear();
         self.tree_focus = false;

@@ -586,6 +586,47 @@ pub struct FolderSettings {
     pub daily_folder: String,
     /// Note copied into each new daily note (relative path), if any.
     pub daily_template: Option<String>,
+    /// Where the last file was left, and the files before it (oldest first), to
+    /// pick up where the folder was left.
+    pub last_spot: Option<Spot>,
+    pub history: Vec<Spot>,
+}
+
+/// A place in a file of the folder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spot {
+    /// Relative to the folder, with `/` separators.
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    pub scroll: f32,
+}
+
+impl Spot {
+    fn text(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.file,
+            self.line,
+            self.col,
+            self.scroll.round()
+        )
+    }
+
+    /// Reads `file:line:col:scroll` (file names on Windows can't hold `:` or `|`).
+    fn parse(s: &str) -> Option<Spot> {
+        let mut it = s.rsplitn(4, ':');
+        let scroll = it.next()?.parse().ok()?;
+        let col = it.next()?.parse().ok()?;
+        let line = it.next()?.parse().ok()?;
+        let file = it.next().filter(|f| !f.is_empty())?.to_string();
+        Some(Spot {
+            file,
+            line,
+            col,
+            scroll,
+        })
+    }
 }
 
 impl Default for FolderSettings {
@@ -596,6 +637,8 @@ impl Default for FolderSettings {
             last_file: None,
             daily_folder: "journal".into(),
             daily_template: None,
+            last_spot: None,
+            history: Vec::new(),
         }
     }
 }
@@ -627,6 +670,13 @@ impl FolderSettings {
             .get(&key(folder, "daily_template"))
             .filter(|v| !v.is_empty())
             .map(String::from);
+        f.last_spot = s.get(&key(folder, "last_spot")).and_then(Spot::parse);
+        f.history = s
+            .get(&key(folder, "history"))
+            .unwrap_or("")
+            .split('|')
+            .filter_map(Spot::parse)
+            .collect();
         f
     }
 
@@ -644,6 +694,12 @@ impl FolderSettings {
             self.last_file.as_deref().unwrap_or(""),
         );
         s.set(&key(folder, "daily_folder"), &self.daily_folder);
+        s.set(
+            &key(folder, "last_spot"),
+            &self.last_spot.as_ref().map(Spot::text).unwrap_or_default(),
+        );
+        let history: Vec<String> = self.history.iter().map(Spot::text).collect();
+        s.set(&key(folder, "history"), &history.join("|"));
         s.set(
             &key(folder, "daily_template"),
             self.daily_template.as_deref().unwrap_or(""),
@@ -1051,6 +1107,14 @@ mod tests {
         FolderOpt::Autosave.activate(&mut f);
         FolderOpt::AutosaveDelay.adjust(&mut f, -10);
         f.last_file = Some("notes/todo.md".into());
+        let spot = |file: &str, line| Spot {
+            file: file.into(),
+            line,
+            col: 2,
+            scroll: 120.0,
+        };
+        f.last_spot = Some(spot("notes/todo.md", 9));
+        f.history = vec![spot("a b.md", 1), spot("x/y.md", 30)];
         f.store(&mut s, folder);
         assert_eq!(FolderSettings::load(&s, Path::new(r"c:\notes\")), f);
         assert_eq!(f.autosave_secs, 1);

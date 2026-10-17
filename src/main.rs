@@ -183,6 +183,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_CLOSE => {
                 if app.confirm_discard() {
                     app.save_placement();
+                    app.save_session();
                     let _ = DestroyWindow(hwnd);
                 }
                 LRESULT(0)
@@ -192,6 +193,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_ENDSESSION => {
                 if wparam.0 != 0 {
                     app.save_placement();
+                    app.save_session();
                 }
                 LRESULT(0)
             }
