@@ -5,8 +5,8 @@
 //! with delimiters hidden and block syntax drawn as decorations.
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -120,6 +120,12 @@ pub struct HeaderView<'a> {
 }
 
 /// The outline panel: the document's headings.
+/// The note name in a `[[name#heading]]` link target.
+pub fn wiki_name(target: &str) -> Option<&str> {
+    let inner = target.strip_prefix("[[")?.strip_suffix("]]")?;
+    Some(inner.split('#').next().unwrap_or(inner).trim())
+}
+
 pub struct OutlineView<'a> {
     /// (level, text) of each heading.
     pub items: Vec<(u8, &'a str)>,
@@ -513,6 +519,10 @@ pub struct View {
     pub outline: bool,
     /// Whether the Search in Files panel is shown above the document.
     pub search: bool,
+    /// `[[wiki]]` link names (lower case) with no note, drawn dimmed; `links_gen`
+    /// changes with them, so lines with wiki links are laid out again.
+    pub missing_links: HashSet<String>,
+    pub links_gen: u64,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -575,6 +585,8 @@ impl View {
                 explorer: false,
                 outline: false,
                 search: false,
+                missing_links: HashSet::new(),
+                links_gen: 0,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -1020,6 +1032,10 @@ impl View {
                             Ink::InlineCodeBg,
                         ));
                     }
+                    Style::Link if self.is_missing(r, &inl.links) => {
+                        let _ = layout.SetDrawingEffect(self.brush(Ink::Dim), rr);
+                        let _ = layout.SetUnderline(true, rr);
+                    }
                     Style::Link => {
                         let _ = layout.SetDrawingEffect(self.brush(Ink::Link), rr);
                         bgs.push((rr.startPosition, rr.startPosition + rr.length, Ink::LinkBg));
@@ -1078,6 +1094,20 @@ impl View {
         }
         tb.baseline = line_metrics(&tb.layout).first().map_or(0.0, |m| m.baseline);
         tb
+    }
+
+    /// Whether the link shown at `label` is a `[[wiki]]` link to a missing note.
+    fn is_missing(
+        &self,
+        label: &std::ops::Range<usize>,
+        links: &[(std::ops::Range<usize>, String, String)],
+    ) -> bool {
+        !self.missing_links.is_empty()
+            && links.iter().any(|(r, target, _)| {
+                r == label
+                    && wiki_name(target)
+                        .is_some_and(|n| self.missing_links.contains(&n.to_lowercase()))
+            })
     }
 
     fn cached_box<F: FnOnce(&mut Self) -> TextBox>(
@@ -1304,7 +1334,12 @@ impl View {
             };
 
             let mut hasher = DefaultHasher::new();
-            (line, info, act, source, (z * 100.0) as u32).hash(&mut hasher);
+            let links_gen = if line.contains("[[") {
+                self.links_gen
+            } else {
+                0
+            };
+            (line, info, act, source, (z * 100.0) as u32, links_gen).hash(&mut hasher);
             let key = hasher.finish();
 
             let body = BoxStyle {
@@ -1555,6 +1590,7 @@ impl View {
                                 (cw * 10.0) as u32,
                                 info.quote,
                                 (z * 100.0) as u32,
+                                self.links_gen,
                             )
                                 .hash(&mut h);
                             let tkey = h.finish();

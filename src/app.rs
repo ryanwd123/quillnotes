@@ -2,7 +2,7 @@
 
 mod folder;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -86,8 +86,8 @@ impl PromptKind {
 }
 
 /// Everything the layout depends on: doc version, selected lines, table being edited,
-/// source mode, width, zoom, DPI.
-type LayoutKey = (u64, usize, usize, u32, bool, u32, u32, u32);
+/// source mode, width, zoom, DPI, missing wiki links.
+type LayoutKey = (u64, usize, usize, u32, bool, u32, u32, u32, u64);
 
 /// Where the caret goes when moving to a table cell.
 #[derive(Clone, Copy)]
@@ -233,6 +233,10 @@ pub struct App {
     link_cache: workspace::LinkCache,
     /// Bumped on each folder scan, so backlinks are looked for again.
     scan_gen: u64,
+    /// For dimming `[[links]]` to missing notes: the (doc version, scan) last
+    /// checked, and whether each name (lower case) resolved, for a (scan, folder).
+    missing_key: Option<(u64, u64)>,
+    resolved: ((u64, PathBuf), HashMap<String, bool>),
     /// Commands run with `wait` that have not ended: (id, label).
     running: Vec<(isize, String)>,
     next_command: isize,
@@ -350,6 +354,8 @@ impl App {
             backlinks: (None, Vec::new()),
             link_cache: workspace::LinkCache::new(),
             scan_gen: 0,
+            missing_key: None,
+            resolved: ((0, PathBuf::new()), HashMap::new()),
             pending_drop: (Vec::new(), None),
             running: Vec::new(),
             next_command: 0,
@@ -393,6 +399,7 @@ impl App {
 
     pub fn ensure_layout(&mut self) {
         self.infos();
+        self.update_missing_links();
         let (a, b) = self.sel();
         let grid = self.grid_block();
         let key = (
@@ -404,6 +411,7 @@ impl App {
             self.view.w.to_bits(),
             self.view.zoom.to_bits(),
             self.view.dpi.to_bits(),
+            self.view.links_gen,
         );
         if self.layout_key != Some(key) {
             let dir = self.doc_dir();
@@ -417,6 +425,49 @@ impl App {
                 dir.as_deref(),
             );
             self.layout_key = Some(key);
+        }
+    }
+
+    /// Finds the document's `[[links]]` to notes that don't exist, for the view to
+    /// dim. Each name is resolved once per folder scan.
+    fn update_missing_links(&mut self) {
+        let key = (self.doc.version, self.scan_gen);
+        if self.missing_key == Some(key) {
+            return;
+        }
+        self.missing_key = Some(key);
+        let mut missing = HashSet::new();
+        if let Some(root) = self.folder.clone() {
+            let dir = self.doc_dir().unwrap_or_else(|| root.clone());
+            let ((scan, cached_dir), resolved) = &mut self.resolved;
+            if *scan != self.scan_gen || *cached_dir != dir {
+                *scan = self.scan_gen;
+                *cached_dir = dir.clone();
+                resolved.clear();
+            }
+            for (line, info) in self.doc.lines.iter().zip(&self.infos) {
+                if !line.contains("[[") || matches!(info.kind, Kind::Code | Kind::Fence) {
+                    continue;
+                }
+                let inline = markdown::parse_inline(line, info.content, line.len());
+                for name in inline
+                    .links
+                    .iter()
+                    .filter_map(|l| crate::render::wiki_name(&l.1))
+                {
+                    let k = name.to_lowercase();
+                    let found = *resolved.entry(k.clone()).or_insert_with(|| {
+                        workspace::resolve_note(Some(&root), &self.entries, &dir, name).is_some()
+                    });
+                    if !found {
+                        missing.insert(k);
+                    }
+                }
+            }
+        }
+        if missing != self.view.missing_links {
+            self.view.missing_links = missing;
+            self.view.links_gen += 1;
         }
     }
 
