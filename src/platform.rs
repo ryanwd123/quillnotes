@@ -510,6 +510,63 @@ pub fn system_prefers_dark() -> bool {
     r == ERROR_SUCCESS && value == 0
 }
 
+/// Files of the fonts installed for the current user only. DirectWrite's system font
+/// collection can miss these (GDI apps still see them), so the renderer adds them itself.
+pub fn user_font_files() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("Microsoft\\Windows\\Fonts"));
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts"),
+            None,
+            KEY_READ,
+            &mut key,
+        ) != ERROR_SUCCESS
+        {
+            return out;
+        }
+        let mut name = [0u16; 512];
+        let mut data = [0u16; 1024];
+        for i in 0.. {
+            let mut name_len = name.len() as u32;
+            let mut data_len = (data.len() * 2) as u32;
+            let mut kind = 0u32;
+            let r = RegEnumValueW(
+                key,
+                i,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                None,
+                Some(&mut kind),
+                Some(data.as_mut_ptr() as *mut u8),
+                Some(&mut data_len),
+            );
+            if r == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if r != ERROR_SUCCESS || REG_VALUE_TYPE(kind) != REG_SZ {
+                continue;
+            }
+            let chars = &data[..data_len as usize / 2];
+            let end = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
+            let path = PathBuf::from(String::from_utf16_lossy(&chars[..end]));
+            // Bare file names live in the per-user fonts folder.
+            let path = match &dir {
+                Some(d) if path.is_relative() => d.join(path),
+                _ => path,
+            };
+            if path.is_file() {
+                out.push(path);
+            }
+        }
+        let _ = RegCloseKey(key);
+    }
+    out
+}
+
 pub fn set_dark_titlebar(hwnd: HWND, dark: bool) {
     let v = BOOL::from(dark);
     unsafe {

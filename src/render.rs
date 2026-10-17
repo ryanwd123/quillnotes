@@ -4,7 +4,7 @@
 //! their Markdown source with delimiters dimmed; all other lines are rendered
 //! with delimiters hidden and block syntax drawn as decorations.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -24,6 +24,7 @@ use crate::doc::Pos;
 use crate::highlight::{self, Tok};
 use crate::markdown::{self, Align, Kind, LineInfo, Style};
 use crate::options::{RenderOptions, num};
+use crate::platform;
 use crate::table;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -609,6 +610,9 @@ pub struct Status<'a> {
 pub struct View {
     d2d: ID2D1Factory,
     dw: IDWriteFactory,
+    /// System fonts plus the per-user ones DirectWrite leaves out, built when first
+    /// needed; `None` when there are no per-user fonts.
+    all_fonts: OnceCell<Option<IDWriteFontCollection>>,
     wic: Option<IWICImagingFactory>,
     rt: Option<ID2D1HwndRenderTarget>,
     brushes: Vec<ID2D1SolidColorBrush>,
@@ -669,18 +673,41 @@ pub struct View {
     cw: f32,
 }
 
+fn system_fonts(dw: &IDWriteFactory) -> Option<IDWriteFontCollection> {
+    let mut coll = None;
+    unsafe { dw.GetSystemFontCollection(&mut coll, false).ok()? };
+    coll
+}
+
+fn has_family(coll: &IDWriteFontCollection, name: &str) -> bool {
+    let mut idx = 0;
+    let mut exists = BOOL(0);
+    unsafe { coll.FindFamilyName(&HSTRING::from(name), &mut idx, &mut exists) }.is_ok()
+        && exists.as_bool()
+}
+
 fn font_exists(dw: &IDWriteFactory, name: &str) -> bool {
+    system_fonts(dw).is_some_and(|c| has_family(&c, name))
+}
+
+/// The system font set plus the fonts installed for this user only.
+fn merged_fonts(dw: &IDWriteFactory) -> Option<IDWriteFontCollection> {
+    let files = platform::user_font_files();
+    if files.is_empty() {
+        return None;
+    }
     unsafe {
-        let mut coll = None;
-        if dw.GetSystemFontCollection(&mut coll, false).is_err() {
-            return false;
+        let f6: IDWriteFactory6 = dw.cast().ok()?;
+        let builder = f6.CreateFontSetBuilder().ok()?;
+        builder.AddFontSet(&f6.GetSystemFontSet(false).ok()?).ok()?;
+        for path in files {
+            let _ = builder.AddFontFile(&HSTRING::from(path.as_os_str()));
         }
-        let Some(coll) = coll else { return false };
-        let mut idx = 0;
-        let mut exists = BOOL(0);
-        coll.FindFamilyName(&HSTRING::from(name), &mut idx, &mut exists)
-            .is_ok()
-            && exists.as_bool()
+        let set = builder.CreateFontSet().ok()?;
+        IDWriteFactory3::CreateFontCollectionFromFontSet(&f6, &set)
+            .ok()?
+            .cast()
+            .ok()
     }
 }
 
@@ -697,6 +724,7 @@ impl View {
             Ok(View {
                 d2d,
                 dw,
+                all_fonts: OnceCell::new(),
                 wic,
                 rt: None,
                 brushes: Vec::new(),
@@ -953,7 +981,21 @@ impl View {
     }
 
     pub fn has_font(&self, name: &str) -> bool {
-        font_exists(&self.dw, name)
+        font_exists(&self.dw, name) || self.all_fonts().is_some_and(|c| has_family(c, name))
+    }
+
+    fn all_fonts(&self) -> Option<&IDWriteFontCollection> {
+        self.all_fonts.get_or_init(|| merged_fonts(&self.dw)).as_ref()
+    }
+
+    /// The collection to find `family` in: the system one (`None`) unless only the
+    /// per-user fonts have it, so those are not loaded at startup without need.
+    fn collection_for(&self, family: &str) -> Option<&IDWriteFontCollection> {
+        if font_exists(&self.dw, family) {
+            None
+        } else {
+            self.all_fonts()
+        }
     }
 
     /// Switches the document font; every cached layout is rebuilt.
@@ -973,11 +1015,9 @@ impl View {
     pub fn font_families(&self) -> Vec<(String, bool, bool)> {
         let mut out = Vec::new();
         unsafe {
-            let mut coll = None;
-            if self.dw.GetSystemFontCollection(&mut coll, false).is_err() {
+            let Some(coll) = self.all_fonts().cloned().or_else(|| system_fonts(&self.dw)) else {
                 return out;
-            }
-            let Some(coll) = coll else { return out };
+            };
             for i in 0..coll.GetFontFamilyCount() {
                 let Ok(family) = coll.GetFontFamily(i) else {
                     continue;
@@ -1045,7 +1085,7 @@ impl View {
                 .dw
                 .CreateTextFormat(
                     family,
-                    None,
+                    self.collection_for(&family.to_string()),
                     DWRITE_FONT_WEIGHT(weight),
                     DWRITE_FONT_STYLE_NORMAL,
                     DWRITE_FONT_STRETCH_NORMAL,
@@ -2699,7 +2739,7 @@ impl View {
         let f = unsafe {
             self.dw.CreateTextFormat(
                 &HSTRING::from(family),
-                None,
+                self.collection_for(family),
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
