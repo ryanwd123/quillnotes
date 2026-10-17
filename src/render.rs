@@ -21,6 +21,7 @@ use windows::core::*;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::doc::Pos;
+use crate::highlight::{self, Tok};
 use crate::markdown::{self, Align, Kind, LineInfo, Style};
 use crate::options::{RenderOptions, num};
 use crate::table;
@@ -56,20 +57,27 @@ pub enum Ink {
     CommandText,
     CommandBg,
     CommandHover,
+    CodeKeyword,
+    CodeString,
+    CodeComment,
+    CodeNumber,
+    CodeType,
 }
-const INK_COUNT: usize = 29;
+const INK_COUNT: usize = 34;
 
 const DARK: [u32; INK_COUNT] = [
     0xFF1B1B1B, 0xFFD4D4D4, 0xFFEDEDED, 0xFF6E6E6E, 0xFF5AA9FF, 0xFF24272D, 0xFF2D3036, 0xFF4E5664,
     0x80264F78, 0xFFE6E6E6, 0xFF161616, 0xFF8E8E8E, 0xFF3C3C3C, 0xFF232528, 0x70857000, 0xFF5AA9FF,
     0x40FFFFFF, 0xFF4F8EF7, 0xFF3FB950, 0xFFD29922, 0xFFF85149, 0xFFA371F7, 0xFF252629, 0xFF2F4058,
-    0x24000000, 0xFF1E3550, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8,
+    0x24000000, 0xFF1E3550, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8, 0xFF569CD6, 0xFFCE9178, 0xFF6A9955,
+    0xFFB5CEA8, 0xFF4EC9B0,
 ];
 const LIGHT: [u32; INK_COUNT] = [
     0xFFFFFFFF, 0xFF24292F, 0xFF101418, 0xFF9AA0A6, 0xFF0969DA, 0xFFF4F5F7, 0xFFEEF0F2, 0xFFD0D7DE,
     0x6699C8FF, 0xFF111111, 0xFFF3F3F3, 0xFF6A6A6A, 0xFFE1E4E8, 0xFFF6F8FA, 0x80FFE066, 0xFF0969DA,
     0x40000000, 0xFF0969DA, 0xFF1A7F37, 0xFF9A6700, 0xFFCF222E, 0xFF8250DF, 0xFFFFFFFF, 0xFFE3ECF8,
-    0x0C000000, 0xFFDDEEFF, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8,
+    0x0C000000, 0xFFDDEEFF, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8, 0xFF0000FF, 0xFFA31515, 0xFF008000,
+    0xFF098658, 0xFF267F99,
 ];
 
 fn color(argb: u32) -> D2D1_COLOR_F {
@@ -206,6 +214,8 @@ struct BoxStyle {
     ink: Ink,
     /// Render a leading `[!TYPE]` as a callout title.
     callout: bool,
+    /// Highlight as code in this language, starting in this state.
+    code: Option<(&'static highlight::Lang, highlight::State)>,
 }
 
 /// A laid-out run of text (one line, or one table cell) with its mapping back to source.
@@ -523,6 +533,9 @@ pub struct View {
     /// changes with them, so lines with wiki links are laid out again.
     pub missing_links: HashSet<String>,
     pub links_gen: u64,
+    /// The highlighting state after each code line, by line, language and state
+    /// before it, so unchanged code is not tokenized again.
+    code_states: HashMap<u64, highlight::State>,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -587,6 +600,7 @@ impl View {
                 search: false,
                 missing_links: HashSet::new(),
                 links_gen: 0,
+                code_states: HashMap::new(),
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -1057,6 +1071,19 @@ impl View {
                     }
                 }
             }
+            if let Some((lang, mut state)) = st.code {
+                for (r, tok) in highlight::spans(lang, &line[content..to], &mut state) {
+                    let ink = match tok {
+                        Tok::Keyword => Ink::CodeKeyword,
+                        Tok::Str => Ink::CodeString,
+                        Tok::Comment => Ink::CodeComment,
+                        Tok::Number => Ink::CodeNumber,
+                        Tok::Type => Ink::CodeType,
+                    };
+                    let rr = range(s2d(content + r.start), s2d(content + r.end));
+                    let _ = layout.SetDrawingEffect(self.brush(ink), rr);
+                }
+            }
             if let Some((r, ink)) = &callout {
                 let rr = range(s2d(r.start), s2d(r.end));
                 let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rr);
@@ -1205,6 +1232,7 @@ impl View {
                 weight: if r == 0 { 600 } else { 400 },
                 ink: if r == 0 { Ink::Heading } else { Ink::Text },
                 callout: false,
+                code: None,
             };
             let mut row = Vec::new();
             for (c, nat) in natural.iter_mut().enumerate() {
@@ -1302,6 +1330,10 @@ impl View {
 
         let mut old_boxes = std::mem::take(&mut self.boxes);
         let mut old_tables = std::mem::take(&mut self.tables);
+        let mut old_states = std::mem::take(&mut self.code_states);
+        // The code block being highlighted: its block id, language, and the state
+        // its next line starts in.
+        let mut fence: Option<(u32, &'static highlight::Lang, highlight::State)> = None;
         let mut rows = Vec::with_capacity(lines.len());
         self.decor.clear();
 
@@ -1333,13 +1365,51 @@ impl View {
                 grid: in_grid,
             };
 
+            let code_hl = match info.kind {
+                Kind::Fence if fence.is_none_or(|f| f.0 != info.block) => {
+                    fence = highlight::lang(&line[info.content..])
+                        .map(|l| (info.block, l, highlight::State::Code));
+                    None
+                }
+                Kind::Code => match &mut fence {
+                    Some((block, lang, state)) if *block == info.block => {
+                        let start = *state;
+                        let mut h = DefaultHasher::new();
+                        (&line[info.content..], highlight::id(lang), start).hash(&mut h);
+                        let k = h.finish();
+                        *state = match old_states.remove(&k) {
+                            Some(end) => end,
+                            None => {
+                                let mut end = start;
+                                highlight::spans(lang, &line[info.content..], &mut end);
+                                end
+                            }
+                        };
+                        self.code_states.insert(k, *state);
+                        Some((*lang, start))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+
             let mut hasher = DefaultHasher::new();
             let links_gen = if line.contains("[[") {
                 self.links_gen
             } else {
                 0
             };
-            (line, info, act, source, (z * 100.0) as u32, links_gen).hash(&mut hasher);
+            let hl_key = code_hl.map(|(l, s)| (highlight::id(l), s));
+            (
+                line,
+                info,
+                act,
+                source,
+                (z * 100.0) as u32,
+                links_gen,
+                hl_key,
+            )
+                .hash(&mut hasher);
             let key = hasher.finish();
 
             let body = BoxStyle {
@@ -1348,6 +1418,7 @@ impl View {
                 weight: 400,
                 ink: Ink::Text,
                 callout: false,
+                code: None,
             };
             let mono = BoxStyle {
                 mono: true,
@@ -1355,6 +1426,7 @@ impl View {
                 weight: 400,
                 ink: Ink::Text,
                 callout: false,
+                code: None,
             };
             // Lines of one paragraph sit closer together than separate blocks.
             let heading_hashes = o.heading_hashes && matches!(info.kind, Kind::Heading(_));
@@ -1501,6 +1573,7 @@ impl View {
                             weight: 600,
                             ink: Ink::Heading,
                             callout: false,
+                            code: None,
                         };
                         let rule = o.heading_rule[n as usize - 1];
                         // Smaller headings get a little less space above.
@@ -1566,6 +1639,7 @@ impl View {
                             } else {
                                 Ink::Text
                             },
+                            code: code_hl,
                             ..mono
                         };
                         text_row(
