@@ -113,6 +113,7 @@ Misspelled words get a red wavy underline (Windows' spell checker, in your langu
 | `Ctrl+G` | Go to line |
 | Click a link | Open it (`Ctrl+Click` on the line you are editing; `[[Note]]` opens the note) |
 | `Ctrl+Shift+O` | Show / hide the outline of headings, with the notes that link to this one (backlinks) below it |
+| `Ctrl+Shift+[` / `Ctrl+Shift+]` | Fold / unfold the section under the heading the caret is in (click the `⋯` to unfold; **View: Unfold All Headings** in the palette) |
 | `Ctrl+Shift+V` | Toggle source mode |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+Numpad0` | Zoom in / out (5% steps) / reset; the zoom is remembered |
 | `Ctrl+Shift+T` | Light / dark theme |

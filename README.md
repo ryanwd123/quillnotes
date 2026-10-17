@@ -53,6 +53,7 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 | `Ctrl+B`, `Ctrl+Shift+E`, `Ctrl+0` | Show / hide the explorer, switch focus to / from it, focus it |
 | `Ctrl+Shift+O` | Show / hide the outline |
 | `Ctrl+Shift+2` (or `@` in `Ctrl+P`) | Go to a heading in this note |
+| `Ctrl+Shift+[` / `Ctrl+Shift+]` | Fold / unfold the section the caret is in |
 | `Alt+Left/Right`, mouse back/forward | Previous / next file |
 | `Ctrl+Shift+B` `Ctrl+I` `Ctrl+E` `Ctrl+K` | Bold, italic, code, link |
 | `Ctrl+1`…`6`, `Ctrl+Shift+7/8/9`, `Ctrl+Shift+.` | Headings, lists, tasks, quote |
