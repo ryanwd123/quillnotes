@@ -42,6 +42,12 @@ pub struct Lang {
     any_case: bool,
     /// `<tag` and `</tag` names are keywords (HTML, XML).
     tags: bool,
+    /// `$name` (PowerShell) or `#name` (M) is one word, so `$true` and `#date` can be
+    /// keywords; a quote after it starts a quoted name (`#"Changed Type"`), left plain.
+    sigil: Option<u8>,
+    /// `\` escapes the next character in strings. M strings end at the first quote
+    /// (`""` inside one reads as two strings side by side, which looks the same).
+    backslash_escapes: bool,
 }
 
 /// Languages are only ever the entries of `LANGS`, so one is equal only to itself.
@@ -78,6 +84,8 @@ const LANGS: &[Lang] = &[
         caps_types: true,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["python", "py"],
@@ -98,6 +106,8 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &[
@@ -173,6 +183,8 @@ const LANGS: &[Lang] = &[
         caps_types: true,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &[
@@ -247,6 +259,8 @@ const LANGS: &[Lang] = &[
         caps_types: true,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["go", "golang"],
@@ -292,6 +306,8 @@ const LANGS: &[Lang] = &[
         caps_types: true,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["sh", "bash", "shell", "zsh", "console"],
@@ -308,6 +324,8 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["powershell", "ps1", "pwsh", "ps"],
@@ -325,6 +343,8 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: true,
         tags: false,
+        sigil: Some(b'$'),
+        backslash_escapes: true,
     },
     Lang {
         names: &["json", "jsonc"],
@@ -338,6 +358,8 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["toml", "ini", "cfg", "conf", "yaml", "yml"],
@@ -351,6 +373,8 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: false,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["sql", "sqlite", "postgres", "mysql"],
@@ -386,6 +410,8 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: true,
         tags: false,
+        sigil: None,
+        backslash_escapes: true,
     },
     Lang {
         names: &["html", "xml", "svg", "xaml", "vue"],
@@ -399,6 +425,75 @@ const LANGS: &[Lang] = &[
         caps_types: false,
         any_case: false,
         tags: true,
+        sigil: None,
+        backslash_escapes: true,
+    },
+    Lang {
+        names: &["powerquery", "pq", "m", "mquery"],
+        keywords: &[
+            "and",
+            "as",
+            "each",
+            "else",
+            "error",
+            "false",
+            "if",
+            "in",
+            "is",
+            "let",
+            "meta",
+            "not",
+            "null",
+            "or",
+            "otherwise",
+            "section",
+            "shared",
+            "then",
+            "true",
+            "try",
+            "type",
+            "#binary",
+            "#date",
+            "#datetime",
+            "#datetimezone",
+            "#duration",
+            "#infinity",
+            "#nan",
+            "#sections",
+            "#shared",
+            "#table",
+            "#time",
+        ],
+        types: &[
+            "any",
+            "anynonnull",
+            "binary",
+            "date",
+            "datetime",
+            "datetimezone",
+            "duration",
+            "function",
+            "list",
+            "logical",
+            "none",
+            "nullable",
+            "number",
+            "optional",
+            "record",
+            "table",
+            "text",
+            "time",
+        ],
+        line_comments: &["//"],
+        block_comment: Some(("/*", "*/")),
+        quotes: b"\"",
+        triple: false,
+        multiline_backtick: false,
+        caps_types: false,
+        any_case: false,
+        tags: false,
+        sigil: Some(b'#'),
+        backslash_escapes: false,
     },
 ];
 
@@ -446,14 +541,16 @@ pub fn spans(lang: &Lang, line: &str, state: &mut State) -> Vec<(Range<usize>, T
                 None => return vec![(0..n, Tok::Comment)],
             }
         }
-        State::Str { quote, triple } => match close_string(b, 0, quote, triple) {
-            Some(e) => {
-                out.push((0..e, Tok::Str));
-                i = e;
-                *state = State::Code;
+        State::Str { quote, triple } => {
+            match close_string(b, 0, quote, triple, lang.backslash_escapes) {
+                Some(e) => {
+                    out.push((0..e, Tok::Str));
+                    i = e;
+                    *state = State::Code;
+                }
+                None => return vec![(0..n, Tok::Str)],
             }
-            None => return vec![(0..n, Tok::Str)],
-        },
+        }
     }
     while i < n {
         let rest = &line[i..];
@@ -481,7 +578,7 @@ pub fn spans(lang: &Lang, line: &str, state: &mut State) -> Vec<(Range<usize>, T
         if lang.quotes.contains(&c) {
             let triple = lang.triple && b[i..].starts_with(&[c, c, c]);
             let start = i + if triple { 3 } else { 1 };
-            match close_string(b, start, c, triple) {
+            match close_string(b, start, c, triple, lang.backslash_escapes) {
                 Some(e) => {
                     out.push((i..e, Tok::Str));
                     i = e;
@@ -518,8 +615,15 @@ pub fn spans(lang: &Lang, line: &str, state: &mut State) -> Vec<(Range<usize>, T
             i = e;
             continue;
         }
-        // `$name` is one word in PowerShell, so `$true` can be a keyword.
-        let sigil = usize::from(c == b'$' && lang.any_case);
+        let sigil = usize::from(lang.sigil == Some(c));
+        if sigil == 1
+            && let Some(&q) = b.get(i + 1)
+            && lang.quotes.contains(&q)
+        {
+            // A quoted name: skip it, or the rest of the line if it isn't closed.
+            i = close_string(b, i + 2, q, false, lang.backslash_escapes).unwrap_or(n);
+            continue;
+        }
         if starts_word && (is_ident(c) || sigil == 1) {
             let e = i + sigil + b[i + sigil..].iter().take_while(|&&c| is_ident(c)).count();
             let word = &line[i..e];
@@ -553,11 +657,11 @@ fn find(line: &str, pat: &str, from: usize) -> Option<usize> {
 }
 
 /// Just past the quote closing a string that started before `from`, skipping
-/// backslash escapes; None when the line ends first.
-fn close_string(b: &[u8], from: usize, quote: u8, triple: bool) -> Option<usize> {
+/// backslash escapes if the language has them; None when the line ends first.
+fn close_string(b: &[u8], from: usize, quote: u8, triple: bool, escapes: bool) -> Option<usize> {
     let mut i = from;
     while i < b.len() {
-        if b[i] == b'\\' {
+        if escapes && b[i] == b'\\' {
             i += 2;
             continue;
         }
@@ -670,5 +774,47 @@ mod tests {
             toks("sh", &["echo $HOME # hi"]),
             [vec![t("echo", Keyword), t("# hi", Comment)]]
         );
+    }
+
+    #[test]
+    fn power_query_m() {
+        use Tok::*;
+        // `#"..."` names stay plain, `#date` is a keyword, and a backslash does not
+        // escape the closing quote.
+        assert_eq!(
+            toks(
+                "powerquery",
+                &[
+                    r#"    #"Changed Type" = Csv.Document(File.Contents("C:\data\"), #date(2024, 1, 2)),"#
+                ]
+            ),
+            [vec![
+                t(r#""C:\data\""#, Str),
+                t("#date", Keyword),
+                t("2024", Number),
+                t("1", Number),
+                t("2", Number),
+            ]]
+        );
+        assert_eq!(
+            toks(
+                "pq",
+                &["let x = each [a] as number /* c */ in try x otherwise null // done"]
+            ),
+            [vec![
+                t("let", Keyword),
+                t("each", Keyword),
+                t("as", Keyword),
+                t("number", Type),
+                t("/* c */", Comment),
+                t("in", Keyword),
+                t("try", Keyword),
+                t("otherwise", Keyword),
+                t("null", Keyword),
+                t("// done", Comment),
+            ]]
+        );
+        // M is case-sensitive.
+        assert_eq!(toks("m", &["Let IF"]), [vec![]]);
     }
 }
