@@ -122,7 +122,10 @@ between runs. A saved position on a monitor that is no longer connected is ignor
 * Right-click a code block or inline code to copy it; `Ctrl+C` with nothing selected
   does the same while the cursor is in code.
 * `Ctrl+Shift+O` shows the document's headings in a panel on the right. The heading
-  the cursor is under is highlighted, and clicking one jumps to it.
+  the cursor is under is highlighted, and clicking one jumps to it. Below the
+  headings, **Backlinks** lists the folder's other notes that link to this one
+  (`[[wiki]]` or relative `.md` links, not those in code) with the linking line;
+  click one to open it there.
 
 ### Command links
 

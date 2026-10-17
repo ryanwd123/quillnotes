@@ -104,7 +104,7 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | `Ctrl+H` | Replace: `Tab` switches between find and replace, `Enter` in the replacement replaces the match and goes to the next, `Ctrl+Enter` replaces all (one undo step) |
 | `Ctrl+G` | Go to line |
 | Click a link | Open it (`Ctrl+Click` on the line you are editing; `[[Note]]` opens the note) |
-| `Ctrl+Shift+O` | Show / hide the outline of headings |
+| `Ctrl+Shift+O` | Show / hide the outline of headings, with the notes that link to this one (backlinks) below it |
 | `Ctrl+Shift+V` | Toggle source mode |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+Numpad0` | Zoom in / out (5% steps) / reset; the zoom is remembered |
 | `Ctrl+Shift+T` | Light / dark theme |
