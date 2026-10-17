@@ -330,7 +330,12 @@ pub fn open_dialog(hwnd: HWND, dir: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
-pub fn save_dialog(hwnd: HWND, current: Option<&Path>, suggested: &str) -> Option<PathBuf> {
+pub fn save_dialog(
+    hwnd: HWND,
+    current: Option<&Path>,
+    dir: Option<&Path>,
+    suggested: &str,
+) -> Option<PathBuf> {
     modal(|| unsafe {
         let dlg: IFileSaveDialog =
             CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -341,7 +346,7 @@ pub fn save_dialog(hwnd: HWND, current: Option<&Path>, suggested: &str) -> Optio
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| suggested.to_string());
         let _ = dlg.SetFileName(&HSTRING::from(name));
-        if let Some(item) = current.and_then(|p| p.parent()).and_then(|d| {
+        if let Some(item) = dir.and_then(|d| {
             SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(d.as_os_str()), None)
                 .ok()
         }) {

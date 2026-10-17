@@ -3832,7 +3832,13 @@ impl App {
             .filter(|s| !s.trim().is_empty())
             .map(|s| format!("{}.md", s.trim()))
             .unwrap_or_else(|| "Untitled.md".into());
-        match platform::save_dialog(self.hwnd, self.doc.path.as_deref(), &suggested) {
+        let dir = self.doc_dir().or_else(|| self.folder.clone());
+        match platform::save_dialog(
+            self.hwnd,
+            self.doc.path.as_deref(),
+            dir.as_deref(),
+            &suggested,
+        ) {
             Some(p) => self.write_to(&p),
             None => false,
         }
