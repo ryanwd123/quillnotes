@@ -9,6 +9,7 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+P` | Go to a file in the open folder (type part of its name or folder) |
+| `Ctrl+Shift+2`, or `@` first in `Ctrl+P` | Go to a heading in this note (`Esc` goes back) |
 | `Ctrl+Shift+F` | Search the text of the folder's Markdown files; `Up`/`Down` preview a result, `Enter` opens it, `Escape` clears then closes |
 | `Ctrl+R` | Open a recent folder, or **Open Folder…** |
 | `Ctrl+B` | Show / hide the explorer |
