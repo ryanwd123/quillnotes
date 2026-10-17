@@ -89,7 +89,7 @@ pub fn relative_path(from: &Path, to: &Path) -> String {
 }
 
 /// Percent-encodes what would end or confuse a link destination.
-fn encode(path: &str) -> String {
+pub fn encode(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
         match c {

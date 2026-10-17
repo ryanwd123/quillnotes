@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{APP_NAME, App, PromptKind};
-use crate::doc::{self, Document, Pos};
+use crate::doc::{self, Document, EditKind, Pos};
 use crate::palette::{Mode, Palette, SearchFile, Target};
 use crate::platform::{self, MenuItem};
 use crate::render::{SidebarButton, SidebarRow, SidebarView};
@@ -692,18 +692,23 @@ impl App {
         });
     }
 
-    /// Renames or moves `src` to `target`, following the open file if it moves.
-    fn rename_to(&mut self, src: &Path, target: &Path) -> bool {
+    /// Renames or moves `src` to `target`, following the open file if it moves and
+    /// offering to update links to it. Returns None when it failed, else text to add
+    /// to the status message (about links updated).
+    fn rename_to(&mut self, src: &Path, target: &Path) -> Option<String> {
         if target.exists() {
             self.say(format!(
                 "{} already exists",
                 workspace::relative(self.folder.as_deref().unwrap_or(Path::new("")), target)
             ));
-            return false;
+            return None;
         }
         if let Some(parent) = target.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        // Links are found before the move, while the old paths still resolve.
+        let moved = self.notes_moving(src, target);
+        let refs = self.links_to_move(&moved);
         if let Err(e) = std::fs::rename(src, target) {
             platform::message_box(
                 self.hwnd,
@@ -711,7 +716,7 @@ impl App {
                 APP_NAME,
                 MB_OK | MB_ICONERROR,
             );
-            return false;
+            return None;
         }
         if let Some(open) = self.doc.path.clone()
             && workspace::contains(src, &open)
@@ -734,7 +739,132 @@ impl App {
         self.tree_cut = None;
         self.rescan();
         self.reveal_in_tree(target);
-        true
+        Some(self.update_links(&moved, refs))
+    }
+
+    /// The notes that move when `src` moves to `target`: (old path, new path).
+    fn notes_moving(&self, src: &Path, target: &Path) -> Vec<(PathBuf, PathBuf)> {
+        if self.folder.is_none() {
+            return Vec::new();
+        }
+        if !src.is_dir() {
+            return if workspace::is_markdown(src) {
+                vec![(src.to_path_buf(), target.to_path_buf())]
+            } else {
+                Vec::new()
+            };
+        }
+        self.entries
+            .iter()
+            .filter(|e| !e.is_dir && workspace::is_markdown(&e.path))
+            .filter_map(|e| {
+                let rest = e.path.strip_prefix(src).ok()?;
+                Some((e.path.clone(), target.join(rest)))
+            })
+            .collect()
+    }
+
+    fn links_to_move(&mut self, moved: &[(PathBuf, PathBuf)]) -> Vec<workspace::LinkRef> {
+        let Some(root) = self.folder.clone().filter(|_| !moved.is_empty()) else {
+            return Vec::new();
+        };
+        let old: Vec<PathBuf> = moved.iter().map(|m| m.0.clone()).collect();
+        let open = self.doc.path.clone();
+        let open = open.as_deref().map(|p| (p, self.doc.lines.as_slice()));
+        workspace::links_to_move(&root, &self.entries, &old, &mut self.link_cache, open)
+    }
+
+    /// After notes moved: offers to rewrite the links found before the move (`refs`)
+    /// to their new places. The open note is edited as one undo step. Returns what
+    /// was done, for the status bar (empty when nothing was).
+    fn update_links(
+        &mut self,
+        moved: &[(PathBuf, PathBuf)],
+        refs: Vec<workspace::LinkRef>,
+    ) -> String {
+        let Some(root) = self.folder.clone() else {
+            return String::new();
+        };
+        let now = |p: &Path| {
+            moved
+                .iter()
+                .find(|(o, _)| workspace::same_path(o, p))
+                .map_or_else(|| p.to_path_buf(), |(_, n)| n.clone())
+        };
+        let mut edits: Vec<(PathBuf, Vec<(usize, String, String)>)> = Vec::new();
+        for r in refs {
+            let (note, dest) = (now(&r.note), now(&r.dest));
+            let Some(new) = workspace::new_target(&root, &self.entries, &note, &r.target, &dest)
+            else {
+                continue;
+            };
+            match edits.iter_mut().find(|(n, _)| *n == note) {
+                Some((_, list)) => list.push((r.line, r.target, new)),
+                None => edits.push((note, vec![(r.line, r.target, new)])),
+            }
+        }
+        if edits.is_empty() {
+            return String::new();
+        }
+        let n: usize = edits.iter().map(|e| e.1.len()).sum();
+        let plural = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+        let what = format!(
+            "{} in {}",
+            plural(n, "link", "links"),
+            plural(edits.len(), "note", "notes")
+        );
+        let r = platform::message_box(
+            self.hwnd,
+            &format!("Update {what} to the new location?"),
+            APP_NAME,
+            MB_YESNO | MB_ICONQUESTION,
+        );
+        if r != IDYES {
+            return String::new();
+        }
+        let mut failed = 0;
+        for (note, list) in edits {
+            if self.doc.path.as_deref() == Some(note.as_path()) {
+                let clean = !self.doc.is_dirty();
+                self.begin(EditKind::Other);
+                for (line, old, new) in list {
+                    let Some(text) = self.doc.lines.get(line) else {
+                        continue;
+                    };
+                    if let Some(text) = workspace::retarget(text, &old, &new) {
+                        let len = self.doc.line_len(line);
+                        self.replace_keep(Pos::new(line, 0), Pos::new(line, len), &text);
+                    }
+                }
+                self.commit();
+                if clean {
+                    self.save();
+                }
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&note) else {
+                failed += 1;
+                continue;
+            };
+            let mut doc = Document::from_bytes(&bytes, None).0;
+            for (line, old, new) in list {
+                if let Some(text) = doc
+                    .lines
+                    .get(line)
+                    .and_then(|t| workspace::retarget(t, &old, &new))
+                {
+                    doc.lines[line] = text;
+                }
+            }
+            if std::fs::write(&note, doc.to_bytes()).is_err() {
+                failed += 1;
+            }
+        }
+        if failed == 0 {
+            format!("; updated {what}")
+        } else {
+            format!("; {} could not be updated", plural(failed, "note", "notes"))
+        }
     }
 
     /// Moves `src` into the folder `dest`.
@@ -749,11 +879,11 @@ impl App {
             return;
         }
         let target = dest.join(name_of(src));
-        if self.rename_to(src, &target) {
+        if let Some(links) = self.rename_to(src, &target) {
             let root = self.folder.clone().unwrap_or_default();
             let to = workspace::relative(&root, dest);
             self.say(format!(
-                "Moved {} to {}",
+                "Moved {} to {}{links}",
                 name_of(src),
                 if to.is_empty() { name_of(&root) } else { to }
             ));
@@ -800,8 +930,10 @@ impl App {
         match kind {
             PromptKind::Rename => {
                 let target = path.parent().unwrap_or(Path::new("")).join(&name);
-                if target != path && self.rename_to(&path, &target) {
-                    self.say(format!("Renamed to {name}"));
+                if target != path
+                    && let Some(links) = self.rename_to(&path, &target)
+                {
+                    self.say(format!("Renamed to {name}{links}"));
                 }
             }
             PromptKind::NewFile => {

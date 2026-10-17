@@ -355,6 +355,113 @@ pub fn backlinks(
     out
 }
 
+/// A link that has to change when notes move: in `note`, on `line`, written as
+/// `target`, pointing to `dest`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkRef {
+    pub note: PathBuf,
+    pub line: usize,
+    pub target: String,
+    pub dest: PathBuf,
+}
+
+/// Before the notes `moved` move: the links to them, and the relative links in them
+/// to notes staying put. `open` is the open note with its unsaved text.
+pub fn links_to_move(
+    root: &Path,
+    entries: &[Entry],
+    moved: &[PathBuf],
+    cache: &mut LinkCache,
+    open: Option<(&Path, &[String])>,
+) -> Vec<LinkRef> {
+    let is_moved = |p: &Path| moved.iter().any(|m| same_path(m, p));
+    let mut notes: Vec<(PathBuf, Vec<(usize, String)>)> = note_links_cached(entries, cache)
+        .iter()
+        .filter(|(p, _)| !open.is_some_and(|(o, _)| same_path(o, p)))
+        .map(|(p, (_, links))| (p.clone(), links.iter().map(|(l, t, _)| (*l, t.clone())).collect()))
+        .collect();
+    if let Some((p, lines)) = open {
+        notes.push((p.to_path_buf(), links_in(lines)));
+    }
+    let mut out = Vec::new();
+    for (note, links) in notes {
+        let dir = note.parent().unwrap_or(root);
+        let note_moves = is_moved(&note);
+        for (line, target) in links {
+            let Some(dest) = link_dest(root, entries, dir, &target) else {
+                continue;
+            };
+            let outbound = note_moves && !target.starts_with("[[") && dest.is_file();
+            if is_moved(&dest) || outbound {
+                out.push(LinkRef {
+                    note: note.clone(),
+                    line,
+                    target,
+                    dest,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// After a move: how a link `target` from the note `note` to `dest` (both where
+/// they are now) should be written, or None when it can stay. A `[[link]]` uses the
+/// note's name when that finds it, else its path from the root; a path link is
+/// relative to the note. `#heading` parts are kept.
+pub fn new_target(
+    root: &Path,
+    entries: &[Entry],
+    note: &Path,
+    target: &str,
+    dest: &Path,
+) -> Option<String> {
+    let dir = note.parent().unwrap_or(root);
+    if let Some(inner) = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
+        let (name, anchor) = inner.split_at(inner.find('#').unwrap_or(inner.len()));
+        let stem = stem(dest);
+        let found = resolve_note(Some(root), entries, dir, &stem);
+        let new = if found.is_some_and(|f| same_path(&f, dest)) {
+            stem
+        } else {
+            let rel = relative(root, dest);
+            rel[..rel.len() - dest.extension().map_or(0, |x| x.len() + 1)].to_string()
+        };
+        return (new != name.trim()).then(|| format!("[[{new}{anchor}]]"));
+    }
+    let (path, anchor) = target.split_at(target.find('#').unwrap_or(target.len()));
+    let new = crate::attach::encode(&crate::attach::relative_path(dir, dest));
+    (crate::attach::decode(&new) != crate::attach::decode(path)).then(|| format!("{new}{anchor}"))
+}
+
+/// `line` with the link written as `old` (a target from [`links_in`]) changed to
+/// `new`, or None when it is not there.
+pub fn retarget(line: &str, old: &str, new: &str) -> Option<String> {
+    let inner = |t: &str| t.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")).map(String::from);
+    if let (Some(o), Some(n)) = (inner(old), inner(new)) {
+        for end in ["]]", "|"] {
+            let pat = format!("[[{o}{end}");
+            if let Some(i) = line.find(&pat) {
+                return Some(format!("{}[[{n}{end}{}", &line[..i], &line[i + pat.len()..]));
+            }
+        }
+        return None;
+    }
+    for open in ["](<", "]("] {
+        let pat = format!("{open}{old}");
+        let mut from = 0;
+        while let Some(k) = line[from..].find(&pat) {
+            let i = from + k;
+            let rest = &line[i + pat.len()..];
+            if rest.starts_with([')', '>', ' ', '\t']) {
+                return Some(format!("{}{open}{new}{rest}", &line[..i]));
+            }
+            from = i + pat.len();
+        }
+    }
+    None
+}
+
 /// Indices of the entries visible in the tree: those whose parent folders are all
 /// expanded. With `notes_only`, `data` folders and files other than Markdown are
 /// left out.
@@ -659,6 +766,67 @@ mod tests {
         // Changed files (here, a new size) are read again.
         std::fs::write(root.join("a/two.md"), "nothing").unwrap();
         assert_eq!(found(&mut cache, "plan.md"), [("a/one.md".into(), 0)]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn retargets_links() {
+        let r = |line: &str, old: &str, new: &str| retarget(line, old, new);
+        assert_eq!(
+            r("a [[old#h|x]] b", "[[old#h]]", "[[new#h]]").as_deref(),
+            Some("a [[new#h|x]] b")
+        );
+        assert_eq!(r("[[old]] [[old]]", "[[old]]", "[[n]]").as_deref(), Some("[[n]] [[old]]"));
+        assert_eq!(
+            r("[x](old.md#y \"t\") [z](old.md.bak)", "old.md#y", "d/new.md#y").as_deref(),
+            Some("[x](d/new.md#y \"t\") [z](old.md.bak)")
+        );
+        assert_eq!(r("[x](<my old.md>)", "my old.md", "my%20new.md").as_deref(), Some("[x](<my%20new.md>)"));
+        assert_eq!(r("[x](old.md.bak)", "old.md", "new.md"), None);
+    }
+
+    #[test]
+    fn moves_links_with_notes() {
+        let root = std::env::temp_dir().join(format!("penmark-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        let files = [
+            ("plan.md", "[[todo]] and [up](a/todo.md)"),
+            ("a/todo.md", "[back](../plan.md#x) [[plan]]"),
+            ("b/todo.md", "same name"),
+            ("misc.md", "[[a/todo|tasks]]\n`[[a/todo]]`"),
+        ];
+        for (f, text) in files {
+            std::fs::write(root.join(f), text).unwrap();
+        }
+        let entries = scan(&root);
+        let (old, new) = (root.join("a/todo.md"), root.join("b/sub/tasks.md"));
+        let mut cache = LinkCache::new();
+        let refs = links_to_move(&root, &entries, std::slice::from_ref(&old), &mut cache, None);
+        std::fs::create_dir_all(root.join("b/sub")).unwrap();
+        std::fs::rename(&old, &new).unwrap();
+        let entries = scan(&root);
+        let mut got: Vec<(String, String, String)> = refs
+            .iter()
+            .filter_map(|r| {
+                let note = if same_path(&r.note, &old) { new.clone() } else { r.note.clone() };
+                let dest = if same_path(&r.dest, &old) { new.clone() } else { r.dest.clone() };
+                let t = new_target(&root, &entries, &note, &r.target, &dest)?;
+                Some((relative(&root, &note), r.target.clone(), t))
+            })
+            .collect();
+        got.sort();
+        let s = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
+        assert_eq!(
+            got,
+            [
+                s("b/sub/tasks.md", "../plan.md#x", "../../plan.md#x"),
+                s("misc.md", "[[a/todo]]", "[[tasks]]"),
+                s("plan.md", "[[todo]]", "[[tasks]]"),
+                s("plan.md", "a/todo.md", "b/sub/tasks.md"),
+            ]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
