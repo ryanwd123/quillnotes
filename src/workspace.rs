@@ -144,6 +144,34 @@ pub fn note_links(root: &Path, entries: &[Entry], exclude: Option<&Path>) -> Vec
         .collect()
 }
 
+/// The headings in `lines`: (line, level, text as shown).
+pub fn headings(lines: &[String]) -> Vec<(usize, u8, String)> {
+    markdown::classify(lines)
+        .iter()
+        .enumerate()
+        .filter_map(|(l, info)| match info.kind {
+            Kind::Heading(n) => Some((l, n, markdown::plain_text(&lines[l], info.content))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Headings (as notes named after them) matching `query`, best first and otherwise
+/// in document order, at most `max`, with the matched byte offsets in each.
+pub fn filter_headings(headings: &[NoteLink], query: &str, max: usize) -> Vec<(usize, Vec<usize>)> {
+    let mut found: Vec<(i32, usize, Vec<usize>)> = headings
+        .iter()
+        .enumerate()
+        .filter_map(|(i, h)| {
+            let (score, hits) = term_match(query, &h.name)?;
+            Some((score, i, hits))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    found.truncate(max);
+    found.into_iter().map(|(_, i, hits)| (i, hits)).collect()
+}
+
 /// Notes matching `query` (typed after `[[`), best first, at most `max`, with the
 /// matched byte offsets in each name.
 pub fn filter_notes(notes: &[NoteLink], query: &str, max: usize) -> Vec<(usize, Vec<usize>)> {

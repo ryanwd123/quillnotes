@@ -130,7 +130,7 @@ impl CellSel {
 }
 
 /// The open `/` menu, for the `/` at `line`, `col`; or the `[[` note menu, whose
-/// `col` is just after the `[[`.
+/// `col` is just after the `[[` (or, listing a note's headings, after `[[note#`).
 struct SlashMenu {
     line: usize,
     col: usize,
@@ -138,8 +138,10 @@ struct SlashMenu {
     /// Matching [`slash::ITEMS`] (or `notes`) indices with highlighted label offsets.
     matches: Vec<(usize, Vec<usize>)>,
     selected: usize,
-    /// The notes offered, for the `[[` menu.
+    /// The notes offered, for the `[[` menu (or headings, as notes named after them).
     notes: Option<Vec<NoteLink>>,
+    /// The `[[note#` menu: `notes` are the note's headings.
+    headings: bool,
 }
 
 /// Rows in the `[[` note menu.
@@ -572,6 +574,8 @@ impl App {
                     .links
                     .iter()
                     .filter_map(|l| crate::render::wiki_name(&l.1))
+                    // `[[#heading]]` is a link within this note.
+                    .filter(|n| !n.is_empty())
                 {
                     let k = name.to_lowercase();
                     let found = *resolved.entry(k.clone()).or_insert_with(|| {
@@ -897,11 +901,17 @@ impl App {
         } else {
             s
         };
+        // `#` in the `[[` menu takes the highlighted note, then lists its headings.
+        if s == "#" {
+            self.accept_note_name();
+        }
         self.type_text(&s);
         if s == "/" {
             self.open_slash();
         } else if s == "[" {
             self.open_note_menu();
+        } else if s == "#" {
+            self.open_heading_menu();
         }
     }
 
@@ -3017,6 +3027,7 @@ impl App {
                 matches: Vec::new(),
                 selected: 0,
                 notes: None,
+                headings: false,
             });
             self.update_slash();
             self.invalidate();
@@ -3045,6 +3056,90 @@ impl App {
             matches: Vec::new(),
             selected: 0,
             notes: Some(notes),
+            headings: false,
+        });
+        self.update_slash();
+        self.invalidate();
+    }
+
+    /// With the `[[` note menu open on a typed name, replaces the name with the
+    /// highlighted note's (without closing the link).
+    fn accept_note_name(&mut self) {
+        let Some(m) = &self.slash else { return };
+        let (Some(notes), false) = (&m.notes, m.headings) else {
+            return;
+        };
+        let Some(&(item, _)) = m.matches.get(m.selected).filter(|_| !m.query.is_empty()) else {
+            return;
+        };
+        let (at, target) = (Pos::new(m.line, m.col), notes[item].target.clone());
+        self.slash = None;
+        self.begin(EditKind::Other);
+        let p = self.doc.replace(at, self.cursor, &target);
+        self.set_sel(p, p);
+        self.commit();
+    }
+
+    /// Opens the heading menu when `#` was just typed in `[[note#`: that note's
+    /// headings, or the open note's for `[[#`.
+    fn open_heading_menu(&mut self) {
+        let c = self.cursor;
+        if self.source || self.anchor != c {
+            return;
+        }
+        let line = &self.doc.lines[c.line];
+        let Some(before) = line[..c.col].strip_suffix('#') else {
+            return;
+        };
+        let Some(open) = before.rfind("[[") else {
+            return;
+        };
+        let name = before[open + 2..].trim().to_string();
+        if name.contains(['[', ']', '|', '#'])
+            || matches!(self.info(c.line).kind, Kind::Code | Kind::Fence)
+        {
+            return;
+        }
+        let lines = if name.is_empty() {
+            self.doc.lines.clone()
+        } else {
+            let dir = self
+                .doc_dir()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let Some(path) =
+                workspace::resolve_note(self.folder.as_deref(), &self.entries, &dir, &name)
+            else {
+                return;
+            };
+            if self.doc.path.as_deref() == Some(path.as_path()) {
+                self.doc.lines.clone()
+            } else {
+                let Ok(bytes) = std::fs::read(&path) else {
+                    return;
+                };
+                Document::from_bytes(&bytes, None).0.lines
+            }
+        };
+        let headings: Vec<NoteLink> = workspace::headings(&lines)
+            .into_iter()
+            .filter(|h| !h.2.is_empty())
+            .map(|(_, level, text)| NoteLink {
+                name: text.clone(),
+                folder: format!("H{level}"),
+                target: text,
+            })
+            .collect();
+        if headings.is_empty() {
+            return;
+        }
+        self.slash = Some(SlashMenu {
+            line: c.line,
+            col: c.col,
+            query: String::new(),
+            matches: Vec::new(),
+            selected: 0,
+            notes: Some(headings),
+            headings: true,
         });
         self.update_slash();
         self.invalidate();
@@ -3060,7 +3155,9 @@ impl App {
         let valid = self.anchor == c
             && c.line == m.line
             && c.col <= line.len()
-            && if notes {
+            && if m.headings {
+                c.col >= m.col && line.as_bytes().get(m.col - 1) == Some(&b'#')
+            } else if notes {
                 c.col >= m.col && line.get(m.col - 2..m.col) == Some("[[")
             } else {
                 c.col > m.col && line.as_bytes().get(m.col) == Some(&b'/')
@@ -3069,7 +3166,8 @@ impl App {
         let query = if valid { &line[from..c.col] } else { "" };
         let matches = match &m.notes {
             _ if !valid => Vec::new(),
-            Some(_) if query.contains(['[', ']', '|']) => Vec::new(),
+            Some(_) if query.contains(['[', ']', '|', '#']) => Vec::new(),
+            Some(list) if m.headings => workspace::filter_headings(list, query, NOTE_MENU_ROWS),
             Some(list) => workspace::filter_notes(list, query, NOTE_MENU_ROWS),
             None if query.contains(char::is_whitespace) => Vec::new(),
             None => slash::filter(query),
@@ -3245,6 +3343,24 @@ impl App {
         }
         self.open_palette(p);
         self.heading_origin = Some(origin);
+    }
+
+    /// Goes to the heading whose text matches `name` (as a `#anchor`: case, spaces
+    /// and punctuation aside), at the top of the view. Says so when there is none.
+    fn go_to_heading_named(&mut self, name: &str) {
+        let want = slug(name);
+        let line = self
+            .outline_items()
+            .iter()
+            .find(|h| slug(&h.2) == want)
+            .map(|h| h.0);
+        match line {
+            Some(l) => {
+                self.show_heading(l);
+                self.changed(false);
+            }
+            None => self.say(format!("No heading \"{name}\" in {}", self.doc_name())),
+        }
     }
 
     /// Shows the highlighted heading.
@@ -3730,7 +3846,15 @@ impl App {
             })
             .collect();
         let popup = self.slash.as_ref().map(|m| PopupView {
-            at: Pos::new(m.line, m.col - if m.notes.is_some() { 2 } else { 0 }),
+            at: Pos::new(
+                m.line,
+                m.col
+                    - match (m.headings, m.notes.is_some()) {
+                        (true, _) => 1,
+                        (_, true) => 2,
+                        _ => 0,
+                    },
+            ),
             wide: m.notes.is_some(),
             selected: m.selected,
             items: m
@@ -4711,15 +4835,34 @@ Reload it and lose your unsaved changes?"
         let dir = self
             .doc_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        if let Some(name) = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
-            let name = name.split('#').next().unwrap_or(name).trim();
-            let found = workspace::resolve_note(self.folder.as_deref(), &self.entries, &dir, name);
+        if let Some(inner) = target.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")) {
+            let (name, heading) = match inner.split_once('#') {
+                Some((n, h)) => (n.trim(), Some(h.trim())),
+                None => (inner.trim(), None),
+            };
+            let found = if name.is_empty() {
+                // `[[#heading]]`: this note.
+                self.doc.path.clone()
+            } else {
+                workspace::resolve_note(self.folder.as_deref(), &self.entries, &dir, name)
+            };
+            if found.is_some() && found == self.doc.path {
+                if let Some(h) = heading {
+                    self.go_to_heading_named(h);
+                }
+                return;
+            }
             if !self.confirm_discard() {
                 return;
             }
             if let Some(path) = found {
                 self.open_path(&path);
                 self.reveal_in_tree(&path);
+                if let Some(h) = heading.filter(|_| self.doc.path.as_ref() == Some(&path)) {
+                    self.go_to_heading_named(h);
+                }
+            } else if name.is_empty() {
+                return;
             } else {
                 let file = if workspace::is_markdown(Path::new(name)) {
                     name.to_string()
@@ -4739,28 +4882,29 @@ Reload it and lose your unsaved changes?"
             return;
         }
         if let Some(anchor) = target.strip_prefix('#') {
-            let want = slug(anchor);
-            let infos = self.infos().to_vec();
-            if let Some(l) = (0..self.doc.lines.len()).find(|&l| {
-                matches!(infos[l].kind, Kind::Heading(_))
-                    && slug(&self.doc.lines[l][infos[l].content..]) == want
-            }) {
-                self.set_sel(Pos::new(l, 0), Pos::new(l, 0));
-                self.changed(false);
-            }
+            self.go_to_heading_named(anchor);
             return;
         }
         if workspace::has_scheme(target) {
             platform::shell_open(self.hwnd, target);
             return;
         }
-        let path = dir.join(attach::decode(target.split('#').next().unwrap_or("")));
+        let (file, anchor) = target.split_once('#').unwrap_or((target, ""));
+        let path = dir.join(attach::decode(file));
         let is_md = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
         if is_md && path.exists() {
-            if self.confirm_discard() {
+            let here = self
+                .doc
+                .path
+                .as_deref()
+                .is_some_and(|p| workspace::same_path(p, &path));
+            if !here && self.confirm_discard() {
                 self.open_path(&path);
+            }
+            if !anchor.is_empty() && (here || self.doc.path.as_deref() == Some(path.as_path())) {
+                self.go_to_heading_named(&attach::decode(anchor));
             }
         } else {
             platform::shell_open(self.hwnd, &path.to_string_lossy());
@@ -5046,6 +5190,58 @@ mod tests {
         a.undo(true);
         assert_eq!(a.doc.lines, ["one", "two", "three"]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn hash_in_note_menu_completes_headings_and_links_open_there() {
+        let root = std::env::temp_dir().join(format!("penmark-sections-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("plan.md"),
+            "# Plan\n\n## Goals\n\n## Risk Items\nx",
+        )
+        .unwrap();
+        std::fs::write(root.join("note.md"), "").unwrap();
+        let mut a = app("# Here\n\n");
+        a.folder = Some(root.clone());
+        a.entries = workspace::scan(&root);
+        a.doc.path = Some(root.join("note.md"));
+        a.set_sel(Pos::new(2, 0), Pos::new(2, 0));
+        let typed = |a: &mut App, s: &str| s.chars().for_each(|c| a.on_char(c as u16));
+        // `#` takes the highlighted note and lists its headings.
+        typed(&mut a, "[[pl#");
+        assert_eq!(a.doc.lines[2], "[[plan#");
+        let m = a.slash.as_ref().expect("heading menu");
+        let names: Vec<&str> = m
+            .notes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(names, ["Plan", "Goals", "Risk Items"]);
+        let order: Vec<usize> = m.matches.iter().map(|x| x.0).collect();
+        assert_eq!(order, [0, 1, 2], "in document order");
+        typed(&mut a, "ri");
+        a.slash_accept();
+        assert_eq!(a.doc.lines[2], "[[plan#Risk Items]]");
+        // `[[#` lists this note's headings.
+        a.set_sel(Pos::new(1, 0), Pos::new(1, 0));
+        typed(&mut a, "[[#");
+        let m = a.slash.as_ref().expect("this note's headings");
+        assert_eq!(m.notes.as_ref().unwrap()[0].name, "Here");
+        a.slash = None;
+        // Links with a section go to it, matched like an anchor.
+        a.doc.mark_saved();
+        a.open_link("[[#here]]");
+        assert_eq!(a.cursor.line, 0);
+        a.open_link("[[plan#risk items]]");
+        assert_eq!(a.doc.path.as_deref(), Some(root.join("plan.md").as_path()));
+        assert_eq!(a.cursor.line, 4);
+        a.open_link("plan.md#goals");
+        assert_eq!(a.cursor.line, 2);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
