@@ -100,6 +100,8 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 
 Code blocks are syntax highlighted when the fence names the language (```` ```rust ````, `python`, `js`, `ts`, `c`, `cs`, `go`, `sh`, `ps1`, `json`, `toml`, `yaml`, `sql`, `html`, …).
 
+Misspelled words get a red wavy underline (Windows' spell checker, in your language). Right-click one for suggestions, **Add to Dictionary** or **Ignore**. Code, links' targets, URLs, `[[note names]]` and words with digits or paths are not checked. **View: Toggle Spell Check** turns it off.
+
 ## Navigation and view
 
 | Shortcut | Action |

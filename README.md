@@ -21,6 +21,11 @@ The file stays plain Markdown; Penmark never converts it to another format.
 * All other lines are rendered: hidden delimiters, real bullets and checkboxes,
   numbered lists, quote bars, callouts, code blocks, tables, rules, and local images.
 * Code blocks and tables switch to source as a whole when the cursor enters them.
+* Misspelled words in prose get a red wavy underline from Windows' built-in spell
+  checker, in the user's language. Right-click one for suggestions, Add to Dictionary
+  (the Windows user dictionary) or Ignore. Code, link targets, URLs, `[[note names]]`
+  and words with digits or path characters are not checked, nor is the word being
+  typed. **View: Toggle Spell Check** turns it off.
 * Code blocks are syntax highlighted when the fence names a language Penmark knows:
   Rust, Python, JavaScript/TypeScript, C/C++/C#/Java, Go, shell, PowerShell, JSON,
   TOML/INI/YAML, SQL and HTML/XML (`src/highlight.rs`).
