@@ -29,8 +29,10 @@ The file stays plain Markdown; Penmark never converts it to another format.
   and words with digits or path characters are not checked, nor is the word being
   typed. **View: Toggle Spell Check** turns it off.
 * Code blocks are syntax highlighted when the fence names a language Penmark knows:
-  Rust, Python, JavaScript/TypeScript, C/C++/C#/Java, Go, shell, PowerShell, JSON,
-  TOML/INI/YAML, SQL and HTML/XML (`src/highlight.rs`).
+  Rust, Python, JavaScript/TypeScript, C/C++/C#/Java/Kotlin/Swift, Go, shell,
+  PowerShell, JSON, TOML/INI/YAML, SQL, HTML/XML and Power Query M. The fence names
+  for each are listed in the help page; to add a language, add an entry to `LANGS` in
+  `src/highlight.rs`.
 * Headings fold: `Ctrl+Shift+[` hides the section under the heading the caret is in
   and leaves a `⋯` after it; click the `⋯` or press `Ctrl+Shift+]` to unfold, or run
   **View: Unfold All Headings**.

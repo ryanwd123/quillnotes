@@ -99,7 +99,22 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | `Enter` | New line, continuing lists and quotes |
 | `Shift+Enter` | New line without continuing the list |
 
-Code blocks are syntax highlighted when the fence names the language (```` ```rust ````, `python`, `js`, `ts`, `c`, `cs`, `go`, `sh`, `ps1`, `json`, `toml`, `yaml`, `sql`, `html`, …).
+Code blocks are syntax highlighted when the fence names the language, as in ```` ```rust ````. Any of these names work (in any case):
+
+| Language | Fence names |
+| --- | --- |
+| Rust | `rust`, `rs` |
+| Python | `python`, `py` |
+| JavaScript, TypeScript | `javascript`, `js`, `jsx`, `mjs`, `typescript`, `ts`, `tsx`, `json5` |
+| C, C++, C#, Java, Kotlin, Swift | `c`, `h`, `cpp`, `c++`, `cc`, `hpp`, `cs`, `csharp`, `c#`, `java`, `kotlin`, `kt`, `swift` |
+| Go | `go`, `golang` |
+| Shell | `sh`, `bash`, `shell`, `zsh`, `console` |
+| PowerShell | `powershell`, `ps1`, `pwsh`, `ps` |
+| JSON | `json`, `jsonc` |
+| TOML, INI, YAML | `toml`, `ini`, `cfg`, `conf`, `yaml`, `yml` |
+| SQL | `sql`, `sqlite`, `postgres`, `mysql` |
+| HTML, XML | `html`, `xml`, `svg`, `xaml`, `vue` |
+| Power Query M | `powerquery`, `pq`, `m`, `mquery` |
 
 Misspelled words get a red wavy underline (Windows' spell checker, in your language). Right-click one for suggestions, **Add to Dictionary** or **Ignore**. Code, links' targets, URLs, `[[note names]]` and words with digits or paths are not checked. **View: Toggle Spell Check** turns it off.
 
