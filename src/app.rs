@@ -88,8 +88,8 @@ impl PromptKind {
 }
 
 /// Everything the layout depends on: doc version, selected lines, table being edited,
-/// source mode, width, zoom, DPI, missing wiki links.
-type LayoutKey = (u64, usize, usize, u32, bool, u32, u32, u32, u64);
+/// source mode, width, zoom, DPI, missing wiki links, folds.
+type LayoutKey = (u64, usize, usize, u32, bool, u32, u32, u32, u64, u64);
 
 /// Where the caret goes when moving to a table cell.
 #[derive(Clone, Copy)]
@@ -145,6 +145,27 @@ struct SlashMenu {
 /// Rows in the `[[` note menu.
 const NOTE_MENU_ROWS: usize = 10;
 
+/// The lines each folded heading hides: (heading line, the lines after it up to the
+/// next heading of the same or a higher level). `headings` are (line, level, text).
+fn folded_sections(
+    headings: &[(usize, u8, String)],
+    folded: &HashSet<usize>,
+    lines: usize,
+) -> Vec<(usize, std::ops::Range<usize>)> {
+    headings
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| folded.contains(&h.0))
+        .map(|(k, &(line, level, _))| {
+            let end = headings[k + 1..]
+                .iter()
+                .find(|h| h.1 <= level)
+                .map_or(lines, |h| h.0);
+            (line, line + 1..end)
+        })
+        .collect()
+}
+
 /// A place in a file, for going back and forward between files.
 struct NavEntry {
     path: PathBuf,
@@ -193,6 +214,9 @@ pub struct App {
     /// True while the saved placement is applied, so a DPI change keeps the saved size.
     pub restoring_placement: bool,
     palette: Option<Palette>,
+    /// Folded headings of the open file (`.0`), each as its text and which heading
+    /// with that text it is, so folds stay on their heading as lines move.
+    folds: (Option<PathBuf>, Vec<(String, usize)>),
     /// Where the caret was when Go to Heading opened, to go back to on Escape.
     heading_origin: Option<(Pos, Pos, f32)>,
     /// Set while Search in Files is open (see app/folder.rs).
@@ -341,6 +365,7 @@ impl App {
             untitled_name: "Untitled",
             palette: None,
             heading_origin: None,
+            folds: (None, Vec::new()),
             search_origin: None,
             slash: None,
             cells: None,
@@ -421,6 +446,7 @@ impl App {
     pub fn ensure_layout(&mut self) {
         self.infos();
         self.update_missing_links();
+        self.update_folds();
         let (a, b) = self.sel();
         let grid = self.grid_block();
         let key = (
@@ -433,6 +459,7 @@ impl App {
             self.view.zoom.to_bits(),
             self.view.dpi.to_bits(),
             self.view.links_gen,
+            self.view.fold_gen,
         );
         if self.layout_key != Some(key) {
             let dir = self.doc_dir();
@@ -447,6 +474,76 @@ impl App {
             );
             self.layout_key = Some(key);
         }
+    }
+
+    /// Each heading as its fold key: its text and how many headings before it have
+    /// the same text.
+    fn heading_keys(&mut self) -> Vec<(usize, u8, (String, usize))> {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        self.outline_items()
+            .iter()
+            .map(|(line, level, text)| {
+                let n = seen.entry(text.clone()).or_insert(0);
+                *n += 1;
+                (*line, *level, (text.clone(), *n - 1))
+            })
+            .collect()
+    }
+
+    /// Finds the folded headings' lines for the view, unfolding the section the
+    /// caret is in (after find, go to line, an edit, ...).
+    fn update_folds(&mut self) {
+        if self.folds.0 != self.doc.path {
+            self.folds = (self.doc.path.clone(), Vec::new());
+        }
+        let mut lines = HashSet::new();
+        if !self.folds.1.is_empty() {
+            let keys = self.heading_keys();
+            lines = keys
+                .iter()
+                .filter(|(_, _, k)| self.folds.1.contains(k))
+                .map(|h| h.0)
+                .collect();
+            let headings = self.outline_items().to_vec();
+            let n = self.doc.lines.len();
+            for (heading, range) in folded_sections(&headings, &lines, n) {
+                if range.contains(&self.cursor.line) {
+                    lines.remove(&heading);
+                    if let Some((_, _, k)) = keys.iter().find(|h| h.0 == heading) {
+                        self.folds.1.retain(|f| f != k);
+                    }
+                }
+            }
+            // Folds whose heading is gone are dropped.
+            self.folds.1.retain(|f| keys.iter().any(|h| &h.2 == f));
+        }
+        if lines != self.view.folds {
+            self.view.folds = lines;
+            self.view.fold_gen += 1;
+        }
+    }
+
+    /// Folds (or unfolds) the section the caret is in, by its heading.
+    fn fold(&mut self, fold: bool) {
+        let line = self.cursor.line;
+        let keys = self.heading_keys();
+        let Some((hline, _, key)) = keys.into_iter().rfind(|h| h.0 <= line) else {
+            return self.say("No heading here");
+        };
+        if fold {
+            if !self.folds.1.contains(&key) {
+                self.folds.1.push(key);
+            }
+            // The caret goes to the heading, which stays in view.
+            if line != hline {
+                self.infos();
+                let p = Pos::new(hline, self.infos[hline].content);
+                self.set_sel(p, p);
+            }
+        } else {
+            self.folds.1.retain(|f| *f != key);
+        }
+        self.changed(false);
     }
 
     /// Finds the document's `[[links]]` to notes that don't exist, for the view to
@@ -3349,6 +3446,12 @@ impl App {
                 self.open_palette(Palette::options(&self.view.options(), ""));
             }
             Command::QuickOpen => self.quick_open(),
+            Command::FoldHeading => self.fold(true),
+            Command::UnfoldHeading => self.fold(false),
+            Command::UnfoldAll => {
+                self.folds.1.clear();
+                self.invalidate();
+            }
             Command::GoToHeading => self.go_to_heading(""),
             Command::SearchFiles => self.search_files(),
             Command::OpenFolder => self.open_folder_dialog(),
@@ -3799,6 +3902,18 @@ impl App {
         let infos = self.infos.clone();
         let hit = self.view.hit(&self.doc.lines, &infos, dx, dy + self.scroll);
         let p = self.doc.clamp(hit.pos);
+        // The ⋯ after a folded heading unfolds it.
+        if let Some(m) = self.view.fold_marker(p.line)
+            && dx >= m.left
+            && dx <= m.right
+            && dy + self.scroll >= m.top - 4.0
+            && dy + self.scroll <= m.bottom + 4.0
+        {
+            self.drag = Drag::None;
+            let c = Pos::new(p.line, self.doc.line_len(p.line));
+            self.set_sel(c, c);
+            return self.fold(false);
+        }
         if hit.checkbox && count == 1 && !shift_down() {
             self.toggle_task(p.line);
             self.drag = Drag::None;
@@ -4930,6 +5045,37 @@ mod tests {
         a.undo(true);
         assert_eq!(a.doc.lines, ["one", "two", "three"]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn folded_section_ranges() {
+        let h = |l: usize, n: u8| (l, n, String::new());
+        let heads = [h(0, 1), h(2, 2), h(5, 2), h(7, 1)];
+        let f = |lines: &[usize]| folded_sections(&heads, &lines.iter().copied().collect(), 9);
+        assert_eq!(f(&[0]), [(0, 1..7)]);
+        assert_eq!(f(&[2, 7]), [(2, 3..5), (7, 8..9)]);
+        assert_eq!(f(&[5]), [(5, 6..7)]);
+    }
+
+    #[test]
+    fn folds_follow_their_heading_and_open_for_the_caret() {
+        let mut a = app("# A\na1\n## B\nb1\nb2\n## C\nc1\n## B\nb3");
+        a.set_sel(Pos::new(3, 1), Pos::new(3, 1));
+        a.fold(true);
+        a.update_folds();
+        assert_eq!(a.cursor, Pos::new(2, 3), "caret moves to the heading");
+        assert_eq!(a.view.folds, HashSet::from([2]));
+        // A line added above moves the fold with its heading, not to the other "B".
+        a.begin(EditKind::Other);
+        a.doc.replace(Pos::new(0, 0), Pos::new(0, 0), "new\n");
+        a.commit();
+        a.set_sel(Pos::new(3, 0), Pos::new(3, 0));
+        a.update_folds();
+        assert_eq!(a.view.folds, HashSet::from([3]));
+        // The caret going into the section (find, go to line) unfolds it.
+        a.set_sel(Pos::new(5, 0), Pos::new(5, 0));
+        a.update_folds();
+        assert!(a.view.folds.is_empty() && a.folds.1.is_empty());
     }
 
     #[test]

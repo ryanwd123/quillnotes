@@ -437,6 +437,8 @@ pub struct Row {
     active: bool,
     /// Row of the table whose cells are being edited.
     grid: bool,
+    /// Inside a folded heading's section: not shown.
+    hidden: bool,
 }
 
 /// Table editing controls shown while the mouse is near the table being edited.
@@ -573,6 +575,9 @@ pub struct View {
     pub links_gen: u64,
     /// The light and dark palettes, in `Ink` order.
     colors: ([u32; INK_COUNT], [u32; INK_COUNT]),
+    /// Folded headings (by line); `fold_gen` changes with them.
+    pub folds: HashSet<usize>,
+    pub fold_gen: u64,
     /// Misspelled byte ranges by line, underlined when painted.
     pub spelling: HashMap<usize, Vec<std::ops::Range<usize>>>,
     /// The highlighting state after each code line, by line, language and state
@@ -644,6 +649,8 @@ impl View {
                 links_gen: 0,
                 colors: (LIGHT, DARK),
                 spelling: HashMap::new(),
+                folds: HashSet::new(),
+                fold_gen: 0,
                 code_states: HashMap::new(),
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
@@ -1403,6 +1410,8 @@ impl View {
 
         let mut y = 28.0 * z;
         let mut table: Option<Rc<TableBox>> = None;
+        // The level of the folded heading whose section is being skipped.
+        let mut hiding: Option<u8> = None;
         for (i, line) in lines.iter().enumerate() {
             let info = infos[i];
             let in_grid = !source && grid != 0 && info.block == grid;
@@ -1417,7 +1426,25 @@ impl View {
                 vis: Vis::None,
                 active: act,
                 grid: in_grid,
+                hidden: false,
             };
+            // Lines under a folded heading take no space, up to the next heading of
+            // the same or a higher level.
+            if let Some(level) = hiding {
+                if matches!(info.kind, Kind::Heading(n) if n <= level) {
+                    hiding = None;
+                } else {
+                    row.hidden = true;
+                    rows.push(row);
+                    continue;
+                }
+            }
+            if let Kind::Heading(n) = info.kind
+                && !source
+                && self.folds.contains(&i)
+            {
+                hiding = Some(n);
+            }
 
             let code_hl = match info.kind {
                 Kind::Fence if fence.is_none_or(|f| f.0 != info.block) => {
@@ -2009,10 +2036,33 @@ impl View {
     }
 
     pub fn row_at(&self, y: f32) -> usize {
-        self.rows
+        let mut i = self
+            .rows
             .partition_point(|r| r.y <= y)
             .saturating_sub(1)
-            .min(self.rows.len().saturating_sub(1))
+            .min(self.rows.len().saturating_sub(1));
+        // Below a folded section at the end: its heading.
+        while i > 0 && self.rows[i].hidden {
+            i -= 1;
+        }
+        i
+    }
+
+    /// The `⋯` marker after a folded heading's text on line `i`, in document
+    /// coordinates.
+    pub fn fold_marker(&self, i: usize) -> Option<D2D_RECT_F> {
+        if !self.folds.contains(&i) {
+            return None;
+        }
+        let row = self.rows.get(i)?;
+        let Vis::Text(tb) = &row.vis else {
+            return None;
+        };
+        let (x, y, h) = tb.caret(tb.d2s.len() as u32 - 1);
+        let z = self.zoom;
+        let x0 = row.x + x + 10.0 * z;
+        let y0 = row.y + row.top + y + h * 0.25;
+        Some(rect(x0, y0, x0 + 30.0 * z, y0 + h * 0.5))
     }
 
     pub fn hit(&self, lines: &[String], infos: &[LineInfo], x: f32, y: f32) -> HitResult {
@@ -2299,6 +2349,23 @@ impl View {
                         self.brush(tb.ink),
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                     );
+                    if let Some(m) = self.fold_marker(i) {
+                        let rr = D2D1_ROUNDED_RECT {
+                            rect: m,
+                            radiusX: 4.0 * z,
+                            radiusY: 4.0 * z,
+                        };
+                        rt.FillRoundedRectangle(&rr, self.brush(Ink::InlineCodeBg));
+                        let cy = (m.top + m.bottom) / 2.0;
+                        for k in 0..3 {
+                            let e = D2D1_ELLIPSE {
+                                point: v2(m.left + (8.0 + 7.0 * k as f32) * z, cy),
+                                radiusX: 1.6 * z,
+                                radiusY: 1.6 * z,
+                            };
+                            rt.FillEllipse(&e, self.brush(Ink::Dim));
+                        }
+                    }
                     for r in self.spelling.get(&i).into_iter().flatten() {
                         let (a, b) = (tb.s2d(r.start), tb.s2d(r.end));
                         if b > a {

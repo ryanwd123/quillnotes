@@ -26,6 +26,9 @@ pub enum Command {
     ToggleExplorer,
     ToggleOutline,
     ToggleSpellCheck,
+    FoldHeading,
+    UnfoldHeading,
+    UnfoldAll,
     FolderSettings,
     ChangeFont,
     ChangeCodeFont,
@@ -95,6 +98,17 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         Some(Action::ToggleOutline),
         Command::ToggleOutline,
     ),
+    (
+        "View: Fold Heading",
+        Some(Action::Run(Command::FoldHeading)),
+        Command::FoldHeading,
+    ),
+    (
+        "View: Unfold Heading",
+        Some(Action::Run(Command::UnfoldHeading)),
+        Command::UnfoldHeading,
+    ),
+    ("View: Unfold All Headings", None, Command::UnfoldAll),
     (
         "View: Toggle Spell Check",
         Some(Action::Run(Command::ToggleSpellCheck)),

@@ -320,6 +320,19 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
     ),
     ("View", "zoom_reset", Action::ZoomReset, "Ctrl+Num0"),
     (
+        "View",
+        "fold_heading",
+        Action::Run(Command::FoldHeading),
+        "Ctrl+Shift+[",
+    ),
+    (
+        "View",
+        "unfold_heading",
+        Action::Run(Command::UnfoldHeading),
+        "Ctrl+Shift+]",
+    ),
+    ("View", "unfold_all", Action::Run(Command::UnfoldAll), ""),
+    (
         "Tables",
         "table_align_left",
         Action::Run(Command::Table(TableCmd::AlignLeft)),
