@@ -15,6 +15,7 @@ mod render;
 mod settings;
 mod slash;
 mod table;
+mod theme;
 mod workspace;
 
 use std::path::PathBuf;

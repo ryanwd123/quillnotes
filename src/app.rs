@@ -28,6 +28,7 @@ use crate::render::{
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
 use crate::table::{self, Grid, TableCmd};
+use crate::theme::{self, Theme};
 use crate::workspace::{self, Entry, FolderSettings, NoteLink};
 
 pub const APP_NAME: &str = "Penmark";
@@ -246,6 +247,7 @@ pub struct App {
     back: Vec<NavEntry>,
     forward: Vec<NavEntry>,
     keymap: Keymap,
+    theme: Theme,
 }
 
 fn ctrl_down() -> bool {
@@ -298,6 +300,8 @@ impl App {
         }
         view.outline = settings.get("outline") == Some("on");
         let (keymap, keymap_errors) = Keymap::load();
+        let (theme, theme_errors) = Theme::load();
+        view.set_colors(theme.light, theme.dark);
         App {
             hwnd: HWND::default(),
             doc: Document::new(),
@@ -312,7 +316,10 @@ impl App {
             caret_on: true,
             focused: true,
             layout_key: None,
-            message: keymap_errors.first().map(|e| (e.clone(), Instant::now())),
+            message: keymap_errors
+                .first()
+                .or(theme_errors.first())
+                .map(|e| (e.clone(), Instant::now())),
             prompt: None,
             find_query: String::new(),
             replace_query: String::new(),
@@ -362,6 +369,7 @@ impl App {
             back: Vec::new(),
             forward: Vec::new(),
             keymap,
+            theme,
             restoring_placement: false,
         }
     }
@@ -990,6 +998,52 @@ impl App {
     }
 
     /// Picks up changes to keymap.ini, reporting the first problem in it.
+    fn reload_theme(&mut self) {
+        if let Some(errors) = self.theme.reload_if_changed() {
+            self.view.set_colors(self.theme.light, self.theme.dark);
+            self.invalidate();
+            match errors.first() {
+                Some(e) => self.say(e.clone()),
+                None => self.say("Colors reloaded"),
+            }
+        }
+    }
+
+    /// Writes theme.ini with every color as it is now, and opens it.
+    fn write_theme(&mut self) {
+        let Some(path) = theme::path() else {
+            return self.say("No settings folder (APPDATA is not set)");
+        };
+        self.reload_theme();
+        if path.exists()
+            && platform::message_box(
+                self.hwnd,
+                &format!(
+                    "{} already exists.\n\nReplace it with every color? Colors you changed \
+                     are kept; comments are not.",
+                    path.display()
+                ),
+                APP_NAME,
+                MB_YESNO | MB_ICONQUESTION,
+            ) != IDYES
+        {
+            return;
+        }
+        let text = self.theme.to_ini().replace('\n', "\r\n");
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, text));
+        match written {
+            Ok(()) => {
+                self.reload_theme();
+                self.say(format!("Wrote {}", path.display()));
+                platform::shell_open(self.hwnd, &path.to_string_lossy());
+            }
+            Err(e) => self.say(format!("Could not write {}: {e}", path.display())),
+        }
+    }
+
     fn reload_keymap(&mut self) {
         if let Some(errors) = self.keymap.reload_if_changed() {
             match errors.first() {
@@ -3086,6 +3140,7 @@ impl App {
             Command::ToggleTheme => self.toggle_theme(),
             Command::OpenSettingsFolder => self.open_settings_folder(),
             Command::WriteKeymap => self.write_keymap(),
+            Command::WriteTheme => self.write_theme(),
             Command::Quit => platform::close_all_windows(),
             Command::Help => {
                 if let Ok(exe) = std::env::current_exe() {
@@ -3186,6 +3241,7 @@ impl App {
         if focused {
             self.check_disk();
             self.reload_keymap();
+            self.reload_theme();
             self.restart_blink();
             self.update_ime();
         }
@@ -4088,6 +4144,9 @@ impl App {
                 self.update_title();
                 if keymap::path().as_deref() == Some(path) {
                     self.reload_keymap();
+                }
+                if theme::path().as_deref() == Some(path) {
+                    self.reload_theme();
                 }
                 if new_path && self.folder.is_some() {
                     self.rescan();

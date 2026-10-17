@@ -63,16 +63,54 @@ pub enum Ink {
     CodeNumber,
     CodeType,
 }
-const INK_COUNT: usize = 34;
+pub const INK_COUNT: usize = 34;
 
-const DARK: [u32; INK_COUNT] = [
+/// Each `Ink`'s name in theme.ini.
+pub const INK_NAMES: [&str; INK_COUNT] = [
+    "bg",
+    "text",
+    "heading",
+    "dim",
+    "link",
+    "code_bg",
+    "inline_code_bg",
+    "quote",
+    "selection",
+    "caret",
+    "status_bg",
+    "status_text",
+    "rule",
+    "table_header",
+    "mark",
+    "accent",
+    "scrollbar",
+    "note",
+    "tip",
+    "warning",
+    "danger",
+    "important",
+    "palette_bg",
+    "palette_sel",
+    "shadow",
+    "link_bg",
+    "command_text",
+    "command_bg",
+    "command_hover",
+    "code_keyword",
+    "code_string",
+    "code_comment",
+    "code_number",
+    "code_type",
+];
+
+pub const DARK: [u32; INK_COUNT] = [
     0xFF1B1B1B, 0xFFD4D4D4, 0xFFEDEDED, 0xFF6E6E6E, 0xFF5AA9FF, 0xFF24272D, 0xFF2D3036, 0xFF4E5664,
     0x80264F78, 0xFFE6E6E6, 0xFF161616, 0xFF8E8E8E, 0xFF3C3C3C, 0xFF232528, 0x70857000, 0xFF5AA9FF,
     0x40FFFFFF, 0xFF4F8EF7, 0xFF3FB950, 0xFFD29922, 0xFFF85149, 0xFFA371F7, 0xFF252629, 0xFF2F4058,
     0x24000000, 0xFF1E3550, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8, 0xFF569CD6, 0xFFCE9178, 0xFF6A9955,
     0xFFB5CEA8, 0xFF4EC9B0,
 ];
-const LIGHT: [u32; INK_COUNT] = [
+pub const LIGHT: [u32; INK_COUNT] = [
     0xFFFFFFFF, 0xFF24292F, 0xFF101418, 0xFF9AA0A6, 0xFF0969DA, 0xFFF4F5F7, 0xFFEEF0F2, 0xFFD0D7DE,
     0x6699C8FF, 0xFF111111, 0xFFF3F3F3, 0xFF6A6A6A, 0xFFE1E4E8, 0xFFF6F8FA, 0x80FFE066, 0xFF0969DA,
     0x40000000, 0xFF0969DA, 0xFF1A7F37, 0xFF9A6700, 0xFFCF222E, 0xFF8250DF, 0xFFFFFFFF, 0xFFE3ECF8,
@@ -533,6 +571,8 @@ pub struct View {
     /// changes with them, so lines with wiki links are laid out again.
     pub missing_links: HashSet<String>,
     pub links_gen: u64,
+    /// The light and dark palettes, in `Ink` order.
+    colors: ([u32; INK_COUNT], [u32; INK_COUNT]),
     /// The highlighting state after each code line, by line, language and state
     /// before it, so unchanged code is not tokenized again.
     code_states: HashMap<u64, highlight::State>,
@@ -600,6 +640,7 @@ impl View {
                 search: false,
                 missing_links: HashSet::new(),
                 links_gen: 0,
+                colors: (LIGHT, DARK),
                 code_states: HashMap::new(),
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
@@ -708,8 +749,18 @@ impl View {
         self.opts.num(num::CODE_SIZE) / 100.0
     }
 
-    fn palette(&self) -> &'static [u32; INK_COUNT] {
-        if self.dark { &DARK } else { &LIGHT }
+    fn palette(&self) -> &[u32; INK_COUNT] {
+        if self.dark {
+            &self.colors.1
+        } else {
+            &self.colors.0
+        }
+    }
+
+    /// Sets the light and dark palettes (from theme.ini) and repaints with them.
+    pub fn set_colors(&mut self, light: [u32; INK_COUNT], dark: [u32; INK_COUNT]) {
+        self.colors = (light, dark);
+        self.apply_theme();
     }
 
     /// Re-applies the palette to existing brushes (layouts keep referencing them).

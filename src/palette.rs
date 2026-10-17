@@ -35,6 +35,7 @@ pub enum Command {
     Help,
     OpenSettingsFolder,
     WriteKeymap,
+    WriteTheme,
     Quit,
     Table(TableCmd),
 }
@@ -116,6 +117,11 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         "Preferences: Write keymap.ini (Edit Keyboard Shortcuts)",
         None,
         Command::WriteKeymap,
+    ),
+    (
+        "Preferences: Write theme.ini (Edit Colors)",
+        None,
+        Command::WriteTheme,
     ),
     ("Help: Keyboard Shortcuts", None, Command::Help),
 ];

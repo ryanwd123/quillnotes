@@ -421,6 +421,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
         Action::Run(Command::WriteKeymap),
         "",
     ),
+    (
+        "Preferences",
+        "write_theme",
+        Action::Run(Command::WriteTheme),
+        "",
+    ),
     ("Preferences", "help", Action::Run(Command::Help), ""),
 ];
 
