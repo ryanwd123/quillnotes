@@ -1,5 +1,4 @@
 # Penmark
-
 A small, keyboard-driven, what-you-see-is-what-you-get Markdown editor for Windows.
 It is a single native executable (about 700 KB) built on Win32, Direct2D and
 DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs). There is no
@@ -38,7 +37,6 @@ front matter; GFM tables; thematic breaks; HTML comments; backslash escapes; and
 entities.
 
 ## Keyboard
-
 Shortcuts follow VS Code's defaults where they don't clash with Markdown formatting:
 `Ctrl+I` and `Ctrl+K` stay italic and link, as in other Markdown editors, and bold is
 `Ctrl+Shift+B` so that `Ctrl+B` can toggle the explorer as in VS Code. The full list
@@ -69,7 +67,6 @@ in the command palette. Shortcuts can be changed in `keymap.ini` (see
 | `Ctrl+W`, `Ctrl+Shift+W`, `Ctrl+Q` | Close file, close window, quit (close every window) |
 
 ### Folders
-
 A window can have one folder open, like a VS Code workspace (subfolders included, no
 multi-root). Open one with **File: Open Folder…** in the palette, `Ctrl+R`, or
 `penmark.exe C:\path\to\folder`. Started without arguments, Penmark reopens the last
