@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{APP_NAME, App, PromptKind};
 use crate::doc::{Document, Pos};
-use crate::palette::{Mode, Palette, SearchFile};
+use crate::palette::{Mode, Palette, SearchFile, Target};
 use crate::platform::{self, MenuItem};
 use crate::render::{SidebarButton, SidebarRow, SidebarView};
 use crate::settings::Settings;
@@ -25,6 +25,17 @@ pub(super) struct TreeDrag {
     active: bool,
     /// Folder the entry would be moved into.
     target: Option<PathBuf>,
+}
+
+/// Where the editor was when Search in Files opened, to go back to when it is
+/// cancelled. While another file is previewed, `doc` holds the open document.
+pub(super) struct SearchOrigin {
+    doc: Option<Document>,
+    anchor: Pos,
+    cursor: Pos,
+    scroll: f32,
+    /// Whether the editor shows the highlighted result rather than this place.
+    previewing: bool,
 }
 
 fn name_of(path: &Path) -> String {
@@ -194,13 +205,118 @@ impl App {
             String::new()
         };
         self.open_palette(Palette::search(files, &query));
+        self.search_origin = Some(SearchOrigin {
+            doc: None,
+            anchor: self.anchor,
+            cursor: self.cursor,
+            scroll: self.scroll,
+            previewing: false,
+        });
+        self.view.search = true;
+        self.fit_search_rows();
+        self.clamp_scroll();
         self.search_status();
+    }
+
+    /// Sizes the search results list to the panel.
+    pub(super) fn fit_search_rows(&mut self) {
+        let rows = self.view.search_rows();
+        if let Some(p) = &mut self.palette
+            && p.mode == Mode::Search
+        {
+            p.set_rows(rows);
+        }
+    }
+
+    /// Whether the editor below the search panel shows a result.
+    pub(super) fn search_previewing(&self) -> bool {
+        self.search_origin.as_ref().is_some_and(|o| o.previewing)
+    }
+
+    /// Shows the highlighted search result in the editor, centered, without
+    /// opening it: the open document is kept aside, unchanged, until the search ends.
+    pub(super) fn preview_match(&mut self) {
+        let Some(Target::OpenMatch {
+            path,
+            line,
+            col,
+            len,
+        }) = self
+            .palette
+            .as_ref()
+            .and_then(|p| p.selected())
+            .map(|i| i.target.clone())
+        else {
+            return;
+        };
+        let Some(o) = &mut self.search_origin else {
+            return;
+        };
+        let kept = o.doc.as_ref().map(|d| d.path.as_deref());
+        if kept == Some(Some(path.as_path())) {
+            // Back to the open document.
+            self.doc = o.doc.take().unwrap();
+        } else if self.doc.path.as_deref() != Some(path.as_path()) {
+            let Ok(bytes) = std::fs::read(&path) else {
+                return self.say(format!("Could not read {}", path.display()));
+            };
+            let doc = Document::from_bytes(&bytes, Some(path)).0;
+            let open = std::mem::replace(&mut self.doc, doc);
+            o.doc.get_or_insert(open);
+        }
+        o.previewing = true;
+        self.set_sel(Pos::new(line, col), Pos::new(line, col + len));
+        self.center_caret();
+        self.update_title();
+        self.invalidate();
+    }
+
+    /// Puts the editor back where it was when the search opened, keeping the search.
+    pub(super) fn show_search_origin(&mut self) {
+        let Some(o) = &mut self.search_origin else {
+            return;
+        };
+        if !o.previewing {
+            return;
+        }
+        if let Some(doc) = o.doc.take() {
+            self.doc = doc;
+        }
+        o.previewing = false;
+        (self.anchor, self.cursor, self.scroll) = (o.anchor, o.cursor, o.scroll);
+        self.clamp_scroll();
+        self.update_title();
+        self.invalidate();
+    }
+
+    /// Removes the search panel, with the editor back where it was.
+    pub(super) fn end_search(&mut self) {
+        if self.search_origin.is_none() {
+            return;
+        }
+        self.show_search_origin();
+        self.search_origin = None;
+        self.view.search = false;
+        self.relayout();
+    }
+
+    /// Scrolls so the caret is in the middle of the view, where the document allows.
+    fn center_caret(&mut self) {
+        self.ensure_layout();
+        if let Some((_, y, h)) = self.view.caret_rect(self.cursor) {
+            self.scroll = y + h / 2.0 - self.view_h() / 2.0;
+        }
+        self.clamp_scroll();
     }
 
     /// Shows the number of Search in Files results in the status bar.
     pub(super) fn search_status(&mut self) {
         let Some(p) = &self.palette else { return };
-        if p.mode != Mode::Search || p.query.trim().is_empty() {
+        if p.mode != Mode::Search {
+            return;
+        }
+        if p.query.trim().is_empty() {
+            self.message = None;
             return;
         }
         let (lines, files, more) = p.found;
@@ -227,6 +343,7 @@ impl App {
         }
         self.tree_focus = false;
         self.changed(false);
+        self.center_caret();
     }
 
     /// Ctrl+R: pick a recent folder.
@@ -1014,6 +1131,71 @@ mod tests {
         assert!(a.palette.is_none());
         assert_eq!(a.sel(), (Pos::new(1, 4), Pos::new(1, 10)));
         assert_eq!(a.find_query, "needle");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_previews_results() {
+        let root = std::env::temp_dir().join(format!("penmark-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let open = root.join("open.md");
+        let other = root.join("sub").join("b.md");
+        std::fs::write(&open, "saved text").unwrap();
+        std::fs::write(&other, "x\r\nA Needle here").unwrap();
+
+        let mut a = app("one\ntwo needle\nthree");
+        a.doc.path = Some(open.clone());
+        a.folder = Some(root.clone());
+        a.set_sel(Pos::new(1, 4), Pos::new(1, 10));
+        let version = a.doc.version;
+        a.search_files();
+        assert!(a.view.search);
+        assert!(a.view.header_h() > a.view.h / 3.0);
+
+        // Results are shown in the editor as they are highlighted.
+        a.palette_key(VK_DOWN, false, false);
+        assert_eq!(a.doc.version, version);
+        assert_eq!(a.sel(), (Pos::new(1, 4), Pos::new(1, 10)));
+        a.palette_key(VK_UP, false, false);
+        assert_eq!(a.doc.path.as_deref(), Some(other.as_path()));
+        assert_eq!(a.sel(), (Pos::new(1, 2), Pos::new(1, 8)));
+
+        // Escape clears the query and goes back to the open document...
+        a.palette_key(VK_ESCAPE, false, false);
+        let p = a.palette.as_ref().unwrap();
+        assert!(p.query.is_empty() && p.selected().is_none());
+        assert_eq!(a.doc.version, version);
+        assert_eq!(a.doc.lines[2], "three");
+        // ...and again closes the search.
+        a.palette_key(VK_ESCAPE, false, false);
+        assert!(a.palette.is_none() && !a.view.search);
+
+        // Escape from a preview restores the place in the open document.
+        a.set_sel(Pos::new(2, 1), Pos::new(2, 1));
+        a.search_files();
+        a.on_char(b'n' as u16);
+        a.palette_key(VK_DOWN, false, false);
+        assert_eq!(a.doc.path.as_deref(), Some(open.as_path()));
+        a.palette_key(VK_UP, false, false);
+        assert_eq!(a.doc.path.as_deref(), Some(other.as_path()));
+        a.palette_key(VK_ESCAPE, false, false);
+        a.palette_key(VK_ESCAPE, false, false);
+        assert_eq!(a.doc.version, version);
+        assert_eq!(a.sel(), (Pos::new(2, 1), Pos::new(2, 1)));
+
+        // Enter opens the highlighted result (here in the open document, after
+        // previewing another file).
+        a.search_files();
+        a.on_char(b'e' as u16);
+        a.palette_key(VK_DOWN, false, false);
+        a.palette_key(VK_UP, false, false);
+        assert_eq!(a.doc.path.as_deref(), Some(other.as_path()));
+        a.palette_key(VK_DOWN, false, false);
+        a.palette_key(VK_RETURN, false, false);
+        assert!(a.palette.is_none() && a.search_origin.is_none() && !a.view.search);
+        assert_eq!(a.doc.version, version);
+        assert_eq!(a.sel(), (Pos::new(0, 2), Pos::new(0, 3)));
         let _ = std::fs::remove_dir_all(&root);
     }
 

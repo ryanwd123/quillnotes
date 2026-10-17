@@ -22,8 +22,8 @@ use crate::options::RenderOptions;
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
-    HeaderView, OutlineView, PALETTE_ROWS, PaletteItem, PaletteView, PopupView, SidebarButton,
-    Status, TableUi, View,
+    HeaderView, OutlineView, PaletteItem, PaletteView, PopupView, SidebarButton, Status, TableUi,
+    View,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
@@ -175,6 +175,8 @@ pub struct App {
     /// True while the saved placement is applied, so a DPI change keeps the saved size.
     pub restoring_placement: bool,
     palette: Option<Palette>,
+    /// Set while Search in Files is open (see app/folder.rs).
+    search_origin: Option<folder::SearchOrigin>,
     slash: Option<SlashMenu>,
     cells: Option<CellSel>,
     /// Mouse position (client DIPs) while over the window, for table controls.
@@ -295,6 +297,7 @@ impl App {
             last_title: String::new(),
             untitled_name: "Untitled",
             palette: None,
+            search_origin: None,
             slash: None,
             cells: None,
             mouse: None,
@@ -678,6 +681,8 @@ impl App {
         if let Some(p) = &mut self.palette {
             p.insert(&s);
             self.palette_changed();
+            // A new query shows where the editor was until a result is picked again.
+            self.show_search_origin();
             return;
         }
         if let Some(p) = &mut self.prompt
@@ -2721,6 +2726,7 @@ impl App {
     // Command palette
 
     fn open_palette(&mut self, p: Palette) {
+        self.end_search();
         self.prompt = None;
         self.slash = None;
         self.palette = Some(p);
@@ -2735,6 +2741,7 @@ impl App {
         {
             self.preview_font(&font, p.mode == Mode::CodeFonts);
         }
+        self.end_search();
         self.invalidate();
     }
 
@@ -2781,7 +2788,7 @@ impl App {
             alt: false,
         });
         let Some(p) = &mut self.palette else { return };
-        let page = PALETTE_ROWS as isize;
+        let page = p.rows() as isize;
         // In the options list, Left/Right change the selected value.
         if p.mode == Mode::Options
             && matches!(key, VK_LEFT | VK_RIGHT)
@@ -2803,7 +2810,10 @@ impl App {
         {
             return self.close_palette(true);
         }
+        let search = p.mode == Mode::Search;
         match key {
+            // The first Escape clears the search, the next closes it.
+            VK_ESCAPE if search && !p.query.is_empty() => p.clear(),
             VK_ESCAPE => return self.close_palette(true),
             VK_RETURN => return self.palette_accept(),
             VK_UP => p.move_by(-1),
@@ -2826,6 +2836,16 @@ impl App {
             _ => return,
         }
         self.palette_changed();
+        // Moving through search results shows each one in the editor; changing the
+        // query goes back to where the editor was.
+        if search {
+            match key {
+                VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT => self.preview_match(),
+                VK_HOME | VK_END if ctrl => self.preview_match(),
+                VK_ESCAPE | VK_BACK | VK_DELETE | VK_V => self.show_search_origin(),
+                _ => {}
+            }
+        }
     }
 
     fn palette_accept(&mut self) {
@@ -2845,6 +2865,8 @@ impl App {
             _ => {}
         }
         let mode = self.palette.take().map(|p| p.mode);
+        // A search result opens from where the editor was, not from its preview.
+        self.end_search();
         match target {
             Target::Command(cmd) => self.palette_command(cmd),
             Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
@@ -2943,6 +2965,14 @@ impl App {
                     self.palette_accept();
                 }
             }
+            // A click in the editor below the search panel keeps the result it shows.
+            _ if self.search_previewing()
+                && x >= self.view.inset()
+                && x < self.view.right()
+                && y < self.view.h - self.view.status_h() =>
+            {
+                self.palette_accept()
+            }
             _ => self.close_palette(true),
         }
     }
@@ -3008,6 +3038,7 @@ impl App {
 
     pub fn on_size(&mut self, pw: u32, ph: u32) {
         self.view.resize(pw, ph, self.view.dpi);
+        self.fit_search_rows();
         self.relayout();
     }
 
@@ -3102,6 +3133,7 @@ impl App {
                 cur: p.cur,
                 placeholder: p.placeholder(),
                 empty: p.empty_text(),
+                docked: p.mode == Mode::Search,
                 selected,
                 items: rows
                     .into_iter()
@@ -3478,8 +3510,13 @@ impl App {
 
     pub fn on_wheel(&mut self, delta: i16) {
         if let Some(p) = &mut self.palette {
+            let before = p.selected().map(|i| i.target.clone());
             p.scroll(-(delta as isize) * 3 / 120);
+            let moved = p.selected().map(|i| i.target.clone()) != before;
             self.palette_changed();
+            if moved && self.search_previewing() {
+                self.preview_match();
+            }
             return;
         }
         if self.mouse.is_some_and(|(x, y)| self.over_explorer(x, y)) {
@@ -3846,6 +3883,10 @@ impl App {
 
     /// Asks to save unsaved changes. Returns false if the user cancelled.
     pub fn confirm_discard(&mut self) -> bool {
+        // Ask about the open document, not a search result shown in its place.
+        if self.search_origin.is_some() {
+            self.close_palette(true);
+        }
         if !self.doc.is_dirty() {
             return true;
         }

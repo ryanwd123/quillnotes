@@ -449,6 +449,9 @@ pub struct PaletteView<'a> {
     pub selected: Option<usize>,
     /// Text shown when nothing matches.
     pub empty: &'a str,
+    /// Drawn as a panel across the top of the editor area (Search in Files)
+    /// instead of floating over it.
+    pub docked: bool,
 }
 
 /// Where the palette was last drawn, for mouse hit-testing.
@@ -505,6 +508,8 @@ pub struct View {
     pub explorer: bool,
     /// Whether the outline panel is shown on the right.
     pub outline: bool,
+    /// Whether the Search in Files panel is shown above the document.
+    pub search: bool,
     opts: RenderOptions,
     body_font: HSTRING,
     mono_font: HSTRING,
@@ -566,6 +571,7 @@ impl View {
                 tooltip: None,
                 explorer: false,
                 outline: false,
+                search: false,
                 opts: RenderOptions::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
@@ -625,9 +631,42 @@ impl View {
         }
     }
 
-    /// Height of the file name bar; the document starts below it.
-    pub fn header_h(&self) -> f32 {
+    /// Height of the file name bar.
+    fn bar_h(&self) -> f32 {
         (HEADER_H * self.ui()).round()
+    }
+
+    /// Top of the document viewport: below the search panel and the file name bar.
+    pub fn header_h(&self) -> f32 {
+        self.search_h() + self.bar_h()
+    }
+
+    /// Palette query input height, row height, and padding.
+    fn palette_metrics(&self) -> (f32, f32, f32) {
+        let k = self.ui();
+        (44.0 * k, 34.0 * k, 6.0 * k)
+    }
+
+    /// Height of the Search in Files panel: the top third of the editor area, with
+    /// room for a few results, and leaving some of the document in view.
+    pub fn search_h(&self) -> f32 {
+        if !self.search {
+            return 0.0;
+        }
+        let (input_h, item_h, pad) = self.palette_metrics();
+        let area = self.h - self.status_h();
+        let min = input_h + 2.0 * pad + 3.0 * item_h;
+        (area / 3.0)
+            .max(min)
+            .min(area - self.bar_h() - 2.0 * item_h)
+            .max(input_h)
+            .floor()
+    }
+
+    /// Results that fit in the Search in Files panel.
+    pub fn search_rows(&self) -> usize {
+        let (input_h, item_h, pad) = self.palette_metrics();
+        (((self.search_h() - input_h - 2.0 * pad) / item_h) as usize).max(1)
     }
 
     /// Height of the document viewport.
@@ -2387,16 +2426,22 @@ impl View {
         }
     }
 
-    /// Draws the command palette near the top of the window.
+    /// Draws the command palette near the top of the window, or docked across the
+    /// top of the editor area.
     unsafe fn paint_palette(&mut self, rt: &ID2D1HwndRenderTarget, p: &PaletteView) {
         let k = self.ui();
-        let pw = (self.w - 48.0).clamp(240.0, 600.0 * k);
-        let left = ((self.w - pw) / 2.0).floor();
-        let right = left + pw;
-        let top = 40.0f32.min(self.h * 0.08).floor();
-        let (input_h, item_h, pad) = (44.0 * k, 34.0 * k, 6.0 * k);
-        let rows = p.items.len().max(1);
-        let bottom = top + input_h + pad + rows as f32 * item_h + pad;
+        let (input_h, item_h, pad) = self.palette_metrics();
+        let (left, right, top, bottom) = if p.docked {
+            (self.inset(), self.right(), 0.0, self.search_h())
+        } else {
+            let pw = (self.w - 48.0).clamp(240.0, 600.0 * k);
+            let left = ((self.w - pw) / 2.0).floor();
+            let top = 40.0f32.min(self.h * 0.08).floor();
+            let rows = p.items.len().max(1);
+            let bottom = top + input_h + pad + rows as f32 * item_h + pad;
+            (left, left + pw, top, bottom)
+        };
+        let pw = right - left;
         self.palette_geom = Some(PaletteGeom {
             left,
             top,
@@ -2410,8 +2455,15 @@ impl View {
         let tx = left + 16.0 * k;
         let tw = pw - 32.0 * k;
         unsafe {
+            if p.docked {
+                rt.FillRectangle(&rect(left, top, right, bottom), self.brush(Ink::PaletteBg));
+                rt.FillRectangle(
+                    &rect(left, bottom - 1.0, right, bottom),
+                    self.brush(Ink::Rule),
+                );
+            }
             // Soft shadow, panel, border.
-            for k in 1..=4 {
+            for k in (1..=4).filter(|_| !p.docked) {
                 let o = k as f32 * 1.5;
                 let rr = D2D1_ROUNDED_RECT {
                     rect: rect(left - o, top - o + 3.0, right + o, bottom + o + 3.0),
@@ -2425,8 +2477,10 @@ impl View {
                 radiusX: 8.0,
                 radiusY: 8.0,
             };
-            rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
-            rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+            if !p.docked {
+                rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
+                rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+            }
 
             // Query input with caret (placeholder when empty).
             let (text, ink) = if p.query.is_empty() {
@@ -2483,7 +2537,7 @@ impl View {
                 let detail_w = if item.detail.is_empty() {
                     0.0
                 } else {
-                    (170.0 * k).min(tw * 0.4)
+                    (if p.docked { 320.0 } else { 170.0 } * k).min(tw * 0.4)
                 };
                 if !item.detail.is_empty() {
                     let wide: Vec<u16> = item.detail.encode_utf16().collect();
@@ -2722,17 +2776,17 @@ impl View {
         }
     }
 
-    /// The file name bar across the top of the editor area.
+    /// The file name bar across the top of the editor area, below the search panel.
     unsafe fn paint_header(&mut self, rt: &ID2D1HwndRenderTarget, hv: &HeaderView) {
         let k = self.ui();
-        let (l, r, h) = (self.inset(), self.right(), self.header_h());
+        let (l, r, top, h) = (self.inset(), self.right(), self.search_h(), self.bar_h());
         let name_f = self.format(Family::Ui, 13.0, 600);
         let small = self.format(Family::Ui, 12.0, 400);
         // Line the name up with the text when there is room.
         let x = (self.x0).max(l + 12.0 * k).min(r - 40.0 * k).max(l + 4.0);
         unsafe {
-            rt.FillRectangle(&rect(l, 0.0, r, h), self.brush(Ink::StatusBg));
-            rt.FillRectangle(&rect(l, h - 1.0, r, h), self.brush(Ink::Rule));
+            rt.FillRectangle(&rect(l, top, r, top + h), self.brush(Ink::StatusBg));
+            rt.FillRectangle(&rect(l, top + h - 1.0, r, top + h), self.brush(Ink::Rule));
             let name = if hv.dirty {
                 format!("{} \u{25cf}", hv.name)
             } else {
@@ -2742,7 +2796,7 @@ impl View {
                 return;
             };
             rt.DrawTextLayout(
-                v2(x, 0.0),
+                v2(x, top),
                 &nl,
                 self.brush(Ink::Text),
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -2755,7 +2809,7 @@ impl View {
             let fx = x + m.width + 10.0 * k;
             if let Some(fl) = self.panel_text(hv.folder, &small, r - fx - 8.0 * k, h) {
                 rt.DrawTextLayout(
-                    v2(fx, 0.0),
+                    v2(fx, top),
                     &fl,
                     self.brush(Ink::StatusText),
                     D2D1_DRAW_TEXT_OPTIONS_NONE,

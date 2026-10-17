@@ -182,6 +182,8 @@ pub struct Palette {
     selected: usize,
     /// First visible index into `filtered`.
     first: usize,
+    /// Number of items visible at once.
+    rows: usize,
     /// Font to restore when the font picker is cancelled.
     pub restore_font: Option<String>,
     /// Files searched in `Mode::Search`.
@@ -273,6 +275,7 @@ impl Palette {
             filtered: Vec::new(),
             selected: 0,
             first: 0,
+            rows: PALETTE_ROWS,
             restore_font: None,
             search: Vec::new(),
             found: (0, 0, false),
@@ -564,8 +567,8 @@ impl Palette {
         self.selected = i.min(self.filtered.len() - 1);
         if self.selected < self.first {
             self.first = self.selected;
-        } else if self.selected >= self.first + PALETTE_ROWS {
-            self.first = self.selected + 1 - PALETTE_ROWS;
+        } else if self.selected >= self.first + self.rows {
+            self.first = self.selected + 1 - self.rows;
         }
     }
 
@@ -584,16 +587,29 @@ impl Palette {
         self.select(i as usize);
     }
 
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Shows `rows` items at once, keeping the selection in view.
+    pub fn set_rows(&mut self, rows: usize) {
+        self.rows = rows.max(1);
+        self.first = self
+            .first
+            .min(self.filtered.len().saturating_sub(self.rows));
+        self.select(self.selected);
+    }
+
     pub fn select_visible(&mut self, row: usize) {
         self.select(self.first + row);
     }
 
     pub fn scroll(&mut self, rows: isize) {
-        let max_first = self.filtered.len().saturating_sub(PALETTE_ROWS) as isize;
+        let max_first = self.filtered.len().saturating_sub(self.rows) as isize;
         self.first = (self.first as isize + rows).clamp(0, max_first) as usize;
         self.selected = self.selected.clamp(
             self.first,
-            (self.first + PALETTE_ROWS).min(self.filtered.len()).max(1) - 1,
+            (self.first + self.rows).min(self.filtered.len()).max(1) - 1,
         );
     }
 
@@ -605,7 +621,7 @@ impl Palette {
 
     /// Visible items with their matched offsets, plus the selected row within them.
     pub fn visible(&self) -> (Vec<(&Item, &[usize])>, Option<usize>) {
-        let end = (self.first + PALETTE_ROWS).min(self.filtered.len());
+        let end = (self.first + self.rows).min(self.filtered.len());
         let rows = self.filtered[self.first..end]
             .iter()
             .map(|(i, m)| (&self.items[*i], m.as_slice()))
@@ -620,6 +636,12 @@ impl Palette {
         let s: String = s.chars().filter(|c| !c.is_control()).collect();
         self.query.insert_str(self.cur, &s);
         self.cur += s.len();
+        self.refilter();
+    }
+
+    pub fn clear(&mut self) {
+        self.query.clear();
+        self.cur = 0;
         self.refilter();
     }
 

@@ -70,8 +70,11 @@ folder and the file that was open in it.
 * `Ctrl+Shift+F` searches the text of the folder's Markdown files (not `.txt` or
   other files) and lists each matching line with its file and line number. The search
   is case-insensitive and starts with the selected text; the open file is searched as
-  edited, even unsaved. `Enter` opens the file with the match selected, and `F3` then
-  goes on to the next match in it.
+  edited, even unsaved. The search is a panel across the top third of the editor:
+  `Up` and `Down` show each result in the editor below it, centered, without opening
+  it. `Enter` opens the file with the match selected, and `F3` then goes on to the
+  next match in it. `Escape` clears the search, and again closes it, going back to
+  where you were.
 * `Ctrl+R` lists recent folders, with **Open Folder…** first.
 * The **explorer** (`Ctrl+B` to show or hide, `Ctrl+Shift+E` to switch focus to or
   from it, `Ctrl+0` to focus it) shows the folder tree, skipping hidden folders such
