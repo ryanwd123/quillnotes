@@ -69,7 +69,7 @@ Typing `*`, `_`, `` ` ``, `~` or `=` with text selected wraps the selection.
 
 Type `/` at the start of a line or after a space for the slash menu: **Code block**, **Table**, **Task**, **Heading 1**–**5**, **Horizontal rule**, **Today** / **Yesterday** / **Tomorrow**, and **Run**, **Shell** and **Start command** links. Keep typing to filter it, `Enter` inserts, `Esc` closes.
 
-Type `[[` to link to another note in the folder: pick it from the list as you type. A link to a note that doesn't exist yet is grey and underlined; click it to make the note.
+Type `[[` to link to another note in the folder: pick it from the list as you type. A link to a note that doesn't exist yet is grey and underlined; click it to make the note. Type `#` after the name (or press it while a note is highlighted) to pick one of its headings: `[[note#Heading]]` opens the note at that heading, and `[[#Heading]]` links within this note.
 
 ## Tables
 

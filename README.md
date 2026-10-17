@@ -132,6 +132,10 @@ between runs. A saved position on a monitor that is no longer connected is ignor
   `[[name]]` link is looked up next to the note, then from the folder root, then by
   file name anywhere in the folder. A link to a note that doesn't exist is drawn grey
   and underlined; clicking it starts that note.
+* Typing `#` in the `[[` list takes the highlighted note and lists its headings in
+  order (`[[#` lists this note's); picking one completes `[[note#Heading]]`. Clicking
+  such a link, `[[#Heading]]` or `file.md#heading` opens the note at that heading,
+  matched as an anchor (ignoring case, spaces and punctuation).
 * With a folder open, dropping files on a note copies them into a `data` folder next
   to it and links them with a relative path, at the drop caret that follows the
   mouse. Images are linked as images on a line of their own, so they render. Files
