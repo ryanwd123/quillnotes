@@ -120,6 +120,10 @@ The palette also sets the **UI font size**, the **code font** and the **code fon
 
 Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\Penmark\keymap.ini` with every command and its keys and opens it. Edit a line such as `bold = Ctrl+Shift+B` (several keys are separated by commas; an empty value removes the shortcut), or give keys to one of the palette commands listed without any, save, and switch back to Penmark. Problems in the file show in the status bar. **Preferences: Open Settings Folder** opens the folder; delete `keymap.ini` to go back to the defaults.
 
+## Changing colors
+
+Run **Preferences: Write theme.ini** from the palette. It writes `%APPDATA%\Penmark	heme.ini` with every color of the light and dark themes and opens it. Change a line such as `bg = #FFF8E7` under `[light]` or `[dark]` (`#AARRGGBB` adds transparency), save, and switch back to Penmark. Problems show in the status bar; delete `theme.ini` to go back to the default colors.
+
 ## Command links
 
 A link whose target starts with `run:` runs a program; `shell:` runs the text with `cmd`. Wrap the target in `<...>` so it can hold spaces. Options go in the title, separated by `;`:
