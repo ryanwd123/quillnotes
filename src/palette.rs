@@ -19,6 +19,9 @@ pub enum Command {
     CloseFolder,
     NewFile,
     NewFolder,
+    DailyNote,
+    PreviousDailyNote,
+    NextDailyNote,
     ToggleExplorer,
     ToggleOutline,
     FolderSettings,
@@ -58,6 +61,21 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
     ("File: Close Folder", None, Command::CloseFolder),
     ("File: New File in Folder\u{2026}", None, Command::NewFile),
     ("File: New Folder\u{2026}", None, Command::NewFolder),
+    (
+        "File: Open Today's Daily Note",
+        Some(Action::Run(Command::DailyNote)),
+        Command::DailyNote,
+    ),
+    (
+        "File: Previous Daily Note",
+        Some(Action::Run(Command::PreviousDailyNote)),
+        Command::PreviousDailyNote,
+    ),
+    (
+        "File: Next Daily Note",
+        Some(Action::Run(Command::NextDailyNote)),
+        Command::NextDailyNote,
+    ),
     ("File: Quit (Close All Windows)", None, Command::Quit),
     (
         "View: Toggle Explorer",
@@ -474,7 +492,7 @@ impl Palette {
             Mode::Options => "Filter options  ·  ←/→ adjust (Shift for more)  ·  Enter toggles",
             Mode::Files => "Go to file by name (add a folder name to narrow it down)",
             Mode::Folders => "Open a recent folder",
-            Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles",
+            Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles or edits",
             Mode::Search => "Search in Markdown files",
         }
     }

@@ -374,6 +374,102 @@ impl App {
         self.open_palette(p);
     }
 
+    /// Edits a text folder setting in the status bar prompt.
+    pub(super) fn folder_text_prompt(&mut self, opt: workspace::FolderOpt) {
+        let Some(dir) = self.folder.clone() else {
+            return;
+        };
+        let text = opt.text(&self.folder_settings);
+        let cur = text.len();
+        self.open_path_prompt(PromptKind::FolderText(opt), dir, text, cur);
+    }
+
+    /// The daily notes folder.
+    fn daily_dir(&self) -> Option<PathBuf> {
+        let dir = self.folder.as_ref()?;
+        Some(match self.folder_settings.daily_folder.as_str() {
+            "" => dir.clone(),
+            sub => dir.join(sub),
+        })
+    }
+
+    /// Alt+D: opens today's note in the daily notes folder, making it (from the
+    /// template, if one is set) when it does not exist yet.
+    pub(super) fn daily_note(&mut self) {
+        let Some(dir) = self.daily_dir() else {
+            return self.say("Open a folder first (Ctrl+R)");
+        };
+        let date = crate::slash::date_text(platform::today(), 0);
+        let path = dir.join(format!("{date}.md"));
+        if !path.exists() {
+            let text = match &self.folder_settings.daily_template {
+                Some(t) => {
+                    let t = self.folder.clone().unwrap_or_default().join(t);
+                    match std::fs::read_to_string(&t) {
+                        Ok(template) => workspace::fill_template(&template, &date),
+                        Err(e) => {
+                            self.say(format!("Template {} not read: {e}", t.display()));
+                            format!("# {date}\n\n")
+                        }
+                    }
+                }
+                None => format!("# {date}\n\n"),
+            };
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text)) {
+                return self.say(format!("Could not make {}: {e}", path.display()));
+            }
+            self.rescan();
+        }
+        self.open_daily(&path);
+    }
+
+    /// The daily note before or after the open one (or today, when the open file is
+    /// not a daily note).
+    pub(super) fn step_daily_note(&mut self, forward: bool) {
+        let Some(dir) = self.daily_dir() else {
+            return self.say("Open a folder first (Ctrl+R)");
+        };
+        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned());
+        let names: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                !e.is_dir
+                    && workspace::is_markdown(&e.path)
+                    && e.path.parent().is_some_and(|p| workspace::same_path(p, &dir))
+            })
+            .filter_map(|e| stem(&e.path))
+            .collect();
+        let current = self
+            .doc
+            .path
+            .as_deref()
+            .and_then(stem)
+            .filter(|s| workspace::is_date_name(s))
+            .unwrap_or_else(|| crate::slash::date_text(platform::today(), 0));
+        match workspace::daily_neighbor(&names, &current, forward) {
+            Some(name) => self.open_daily(&dir.join(format!("{name}.md"))),
+            None => self.say(if forward {
+                "No later daily note"
+            } else {
+                "No earlier daily note"
+            }),
+        }
+    }
+
+    fn open_daily(&mut self, path: &Path) {
+        if self.doc.path.as_deref() == Some(path) || !self.confirm_discard() {
+            return;
+        }
+        self.open_path(path);
+        if self.doc.path.as_deref() == Some(path) {
+            let end = self.doc.end();
+            self.set_sel(end, end);
+            self.changed(false);
+            self.reveal_in_tree(path);
+        }
+    }
+
     /// Applies and saves a change to the open folder's settings.
     pub(super) fn change_folder_settings(&mut self, f: impl FnOnce(&mut FolderSettings)) {
         let Some(dir) = self.folder.clone() else {
@@ -923,6 +1019,10 @@ impl App {
 
     /// Enter in the rename / new file / new folder prompt.
     pub(super) fn path_prompt_done(&mut self, kind: PromptKind, path: PathBuf, text: &str) {
+        if let PromptKind::FolderText(opt) = kind {
+            self.change_folder_settings(|f| opt.set_text(f, text));
+            return self.say(format!("{}: {}", opt.label(), opt.value_text(&self.folder_settings)));
+        }
         let name = text.trim().replace('/', "\\");
         if name.is_empty() {
             return;

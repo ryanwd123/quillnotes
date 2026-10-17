@@ -58,6 +58,9 @@ enum PromptKind {
     /// Create a file or folder inside the folder `Prompt::path`.
     NewFile,
     NewFolder,
+    /// A text folder setting, such as the daily notes folder (`Prompt::path` is the
+    /// open folder).
+    FolderText(workspace::FolderOpt),
 }
 
 struct Prompt {
@@ -2948,6 +2951,10 @@ impl App {
             // Options stay open so several can be changed in a row.
             Target::Option(opt) => return self.change_options(|o| opt.activate(o)),
             Target::ResetOptions => return self.change_options(|o| *o = RenderOptions::default()),
+            Target::FolderOpt(opt) if opt.is_text() => {
+                self.palette = None;
+                return self.folder_text_prompt(opt);
+            }
             Target::FolderOpt(opt) => return self.change_folder_settings(|f| opt.activate(f)),
             _ => {}
         }
@@ -3011,6 +3018,9 @@ impl App {
             Command::CloseFolder => self.close_folder(),
             Command::NewFile => self.new_item_prompt(false),
             Command::NewFolder => self.new_item_prompt(true),
+            Command::DailyNote => self.daily_note(),
+            Command::PreviousDailyNote => self.step_daily_note(false),
+            Command::NextDailyNote => self.step_daily_note(true),
             Command::ToggleExplorer => self.toggle_explorer(),
             Command::ToggleOutline => self.toggle_outline(),
             Command::FolderSettings => self.folder_settings_palette(),
@@ -3209,6 +3219,10 @@ impl App {
                     PromptKind::Rename => "Rename to (a/b.md moves it): ",
                     PromptKind::NewFile => "New file: ",
                     PromptKind::NewFolder => "New folder: ",
+                    PromptKind::FolderText(workspace::FolderOpt::DailyTemplate) => {
+                        "Daily note template (a note in the folder, empty for none): "
+                    }
+                    PromptKind::FolderText(_) => "Daily notes folder (empty for the top folder): ",
                 };
                 let extra = if p.kind.finds() {
                     self.message

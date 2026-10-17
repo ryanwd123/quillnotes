@@ -564,6 +564,10 @@ pub struct FolderSettings {
     pub autosave_secs: u32,
     /// The file last open in this folder (relative path).
     pub last_file: Option<String>,
+    /// Folder for daily notes, relative to the root.
+    pub daily_folder: String,
+    /// Note copied into each new daily note (relative path), if any.
+    pub daily_template: Option<String>,
 }
 
 impl Default for FolderSettings {
@@ -572,6 +576,8 @@ impl Default for FolderSettings {
             autosave: false,
             autosave_secs: 5,
             last_file: None,
+            daily_folder: "journal".into(),
+            daily_template: None,
         }
     }
 }
@@ -596,6 +602,13 @@ impl FolderSettings {
             .get(&key(folder, "last_file"))
             .filter(|v| !v.is_empty())
             .map(String::from);
+        if let Some(v) = s.get(&key(folder, "daily_folder")) {
+            f.daily_folder = v.to_string();
+        }
+        f.daily_template = s
+            .get(&key(folder, "daily_template"))
+            .filter(|v| !v.is_empty())
+            .map(String::from);
         f
     }
 
@@ -612,6 +625,11 @@ impl FolderSettings {
             &key(folder, "last_file"),
             self.last_file.as_deref().unwrap_or(""),
         );
+        s.set(&key(folder, "daily_folder"), &self.daily_folder);
+        s.set(
+            &key(folder, "daily_template"),
+            self.daily_template.as_deref().unwrap_or(""),
+        );
     }
 }
 
@@ -624,15 +642,47 @@ fn clamp_secs(v: u32) -> u32 {
 pub enum FolderOpt {
     Autosave,
     AutosaveDelay,
+    DailyFolder,
+    DailyTemplate,
 }
 
 impl FolderOpt {
-    pub const ALL: [FolderOpt; 2] = [FolderOpt::Autosave, FolderOpt::AutosaveDelay];
+    pub const ALL: [FolderOpt; 4] = [
+        FolderOpt::Autosave,
+        FolderOpt::AutosaveDelay,
+        FolderOpt::DailyFolder,
+        FolderOpt::DailyTemplate,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             FolderOpt::Autosave => "Autosave",
             FolderOpt::AutosaveDelay => "Autosave delay (seconds after the last edit)",
+            FolderOpt::DailyFolder => "Daily notes folder",
+            FolderOpt::DailyTemplate => "Daily note template",
+        }
+    }
+
+    /// Settings edited as text (Enter opens a prompt) rather than switched.
+    pub fn is_text(self) -> bool {
+        matches!(self, FolderOpt::DailyFolder | FolderOpt::DailyTemplate)
+    }
+
+    /// The text a text setting is edited from.
+    pub fn text(self, f: &FolderSettings) -> String {
+        match self {
+            FolderOpt::DailyFolder => f.daily_folder.clone(),
+            FolderOpt::DailyTemplate => f.daily_template.clone().unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn set_text(self, f: &mut FolderSettings, text: &str) {
+        let text = text.trim().trim_matches(['/', '\\']).replace('\\', "/");
+        match self {
+            FolderOpt::DailyFolder => f.daily_folder = text,
+            FolderOpt::DailyTemplate => f.daily_template = Some(text).filter(|t| !t.is_empty()),
+            _ => {}
         }
     }
 
@@ -640,6 +690,9 @@ impl FolderOpt {
         match self {
             FolderOpt::Autosave => (if f.autosave { "☑ On" } else { "☐ Off" }).into(),
             FolderOpt::AutosaveDelay => format!("‹ {} s ›", f.autosave_secs),
+            FolderOpt::DailyFolder if f.daily_folder.is_empty() => "(the folder itself)".into(),
+            FolderOpt::DailyFolder => f.daily_folder.clone(),
+            FolderOpt::DailyTemplate => f.daily_template.clone().unwrap_or_else(|| "(none)".into()),
         }
     }
 
@@ -650,6 +703,7 @@ impl FolderOpt {
             FolderOpt::AutosaveDelay => {
                 f.autosave_secs = clamp_secs((f.autosave_secs as i32 + steps).max(1) as u32);
             }
+            FolderOpt::DailyFolder | FolderOpt::DailyTemplate => {}
         }
     }
 
@@ -659,6 +713,33 @@ impl FolderOpt {
             f.autosave = !f.autosave;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Daily notes
+
+/// Whether a file stem is a daily note's: `YYYY-MM-DD`.
+pub fn is_date_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter()
+            .enumerate()
+            .all(|(i, &c)| if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() })
+}
+
+/// The daily note before or after `current` (a `YYYY-MM-DD` name) among `names`.
+pub fn daily_neighbor(names: &[String], current: &str, forward: bool) -> Option<String> {
+    let dates = names.iter().filter(|n| is_date_name(n));
+    if forward {
+        dates.filter(|n| n.as_str() > current).min().cloned()
+    } else {
+        dates.filter(|n| n.as_str() < current).max().cloned()
+    }
+}
+
+/// A daily note's text from a template: `{{date}}` and `{{title}}` become the date.
+pub fn fill_template(template: &str, date: &str) -> String {
+    template.replace("{{date}}", date).replace("{{title}}", date)
 }
 
 #[cfg(test)]
@@ -767,6 +848,25 @@ mod tests {
         std::fs::write(root.join("a/two.md"), "nothing").unwrap();
         assert_eq!(found(&mut cache, "plan.md"), [("a/one.md".into(), 0)]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn daily_notes() {
+        assert!(is_date_name("2026-10-17"));
+        assert!(!is_date_name("2026-10-1") && !is_date_name("2026_10_17") && !is_date_name("notes"));
+        let names: Vec<String> =
+            ["2026-10-01", "notes", "2026-10-20", "2026-09-30"].map(String::from).into();
+        let n = |c: &str, f: bool| daily_neighbor(&names, c, f);
+        assert_eq!(n("2026-10-17", true).as_deref(), Some("2026-10-20"));
+        assert_eq!(n("2026-10-17", false).as_deref(), Some("2026-10-01"));
+        assert_eq!(n("2026-10-01", false).as_deref(), Some("2026-09-30"));
+        assert_eq!(n("2026-10-20", true), None);
+        assert_eq!(fill_template("# {{title}}\n{{date}}", "2026-10-17"), "# 2026-10-17\n2026-10-17");
+        let mut f = FolderSettings::default();
+        FolderOpt::DailyFolder.set_text(&mut f, " notes\\daily/ ");
+        assert_eq!(f.daily_folder, "notes/daily");
+        FolderOpt::DailyTemplate.set_text(&mut f, "");
+        assert_eq!(f.daily_template, None);
     }
 
     #[test]

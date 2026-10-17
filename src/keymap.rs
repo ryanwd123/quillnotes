@@ -173,6 +173,24 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
     ),
     (
         "Files and folders",
+        "daily_note",
+        Action::Run(Command::DailyNote),
+        "Alt+D",
+    ),
+    (
+        "Files and folders",
+        "previous_daily_note",
+        Action::Run(Command::PreviousDailyNote),
+        "",
+    ),
+    (
+        "Files and folders",
+        "next_daily_note",
+        Action::Run(Command::NextDailyNote),
+        "",
+    ),
+    (
+        "Files and folders",
         "close_window",
         Action::CloseWindow,
         "Ctrl+Shift+W",
