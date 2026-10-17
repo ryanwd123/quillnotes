@@ -3,17 +3,23 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::app::APP_NAME;
-
 #[derive(Default)]
 pub struct Settings {
     values: BTreeMap<String, String>,
 }
 
 /// The settings folder, `%APPDATA%\Penmark`.
+#[cfg(not(test))]
 pub fn dir() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
-    Some(PathBuf::from(appdata).join(APP_NAME))
+    Some(PathBuf::from(appdata).join(crate::app::APP_NAME))
+}
+
+/// Tests get a per-run temp folder so they never write to the user's real
+/// settings, keymap or theme files.
+#[cfg(test)]
+pub fn dir() -> Option<PathBuf> {
+    Some(std::env::temp_dir().join(format!("penmark-settings-{}", std::process::id())))
 }
 
 fn path() -> Option<PathBuf> {
