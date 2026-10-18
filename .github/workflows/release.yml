@@ -1,0 +1,69 @@
+# Builds the Windows wheel and publishes it to PyPI with trusted publishing
+# (no API token stored in GitHub).
+#   - Push a tag like v0.1.0 to publish to PyPI.
+#   - Run the workflow by hand (Actions tab -> Release -> Run workflow) to
+#     publish to TestPyPI instead.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PyPI versions can never be reused, so catch a mismatched tag before uploading.
+      - name: Check the tag matches the Cargo.toml version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          python -c "import os, sys, tomllib; v = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']; t = os.environ['GITHUB_REF_NAME']; sys.exit(0 if t == 'v' + v else f'Tag {t} does not match Cargo.toml version {v}')"
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist
+
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # Lets test runs be repeated without bumping the version.
+          skip-existing: true
+
+  publish-pypi:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
