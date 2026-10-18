@@ -2761,7 +2761,7 @@ impl View {
                                     rt.DrawTextLayout(
                                         v2(ox - 6.0 * z - w, oy),
                                         l,
-                                        self.brush(Ink::Dim),
+                                        self.brush(Ink::Text),
                                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                                     );
                                 }
