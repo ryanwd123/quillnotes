@@ -4768,12 +4768,17 @@ impl App {
         if let Some(e) = leaving
             && self.doc.path.as_deref() == Some(path)
         {
-            if self.back.len() >= NAV_MAX {
-                self.back.remove(0);
-            }
-            self.back.push(e);
-            self.forward.clear();
+            self.push_back(e);
         }
+    }
+
+    /// Records `e`, the file being left, in the back history.
+    fn push_back(&mut self, e: NavEntry) {
+        if self.back.len() >= NAV_MAX {
+            self.back.remove(0);
+        }
+        self.back.push(e);
+        self.forward.clear();
     }
 
     fn read_path(&mut self, path: &Path) {
@@ -5048,6 +5053,10 @@ Reload it and lose your unsaved changes?"
         if !self.confirm_discard() {
             return;
         }
+        // So Back returns to the file this note was started from.
+        if let Some(e) = self.nav_entry() {
+            self.push_back(e);
+        }
         self.doc = Document::new();
         self.infos_ver = None;
         self.set_sel(Pos::default(), Pos::default());
@@ -5111,6 +5120,9 @@ Reload it and lose your unsaved changes?"
                     format!("{name}.md")
                 };
                 let path = dir.join(file);
+                if let Some(e) = self.nav_entry() {
+                    self.push_back(e);
+                }
                 self.doc = Document::new();
                 self.doc.path = Some(path);
                 self.infos_ver = None;
@@ -5439,6 +5451,26 @@ mod tests {
         a.undo(true);
         assert_eq!(a.doc.lines, ["one", "two", "three"]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn back_after_a_new_note_returns_to_the_file_it_left() {
+        let root = std::env::temp_dir().join(format!("penmark-newback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (first, second) = (root.join("a.md"), root.join("b.md"));
+        std::fs::write(&first, "a").unwrap();
+        std::fs::write(&second, "b").unwrap();
+        let mut a = app("");
+        a.open_path(&first);
+        a.open_path(&second);
+        a.new_doc();
+        assert_eq!(a.doc.path, None);
+        a.navigate(true);
+        assert_eq!(a.doc.path.as_deref(), Some(second.as_path()));
+        a.navigate(true);
+        assert_eq!(a.doc.path.as_deref(), Some(first.as_path()));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
