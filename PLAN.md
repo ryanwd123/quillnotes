@@ -32,6 +32,80 @@ Found by reading the code (no changes made) and running `cargo test` (73 passed)
 - **Modal dialogs.** While a message box is open, `IN_MODAL` makes most messages go to `DefWindowProc` (`src/main.rs:63`). Check that the window repaints and does not appear frozen after closing a dialog from a keyboard shortcut.
 - **Save As from an untitled document with a heading.** The suggested name strips leading `#`, `>`, `-` and spaces but not `*`, `1.` or `[ ]`, so a heading like `1. Ideas` suggests `1. Ideas.md`. Check and decide the rule.
 
+## UI and Markdown rendering review (Live 2)
+
+This one was done by driving the built app's Win32 window (screenshots plus real
+keystrokes and posted mouse/key messages) on two documents that exercise every
+supported syntax, in light and dark themes. Unlike the review above, these items
+come from the running UI. Screenshots are in `%TEMP%\opencode\penmark_ui`.
+
+### Bug: a stray colored dot under a folded heading
+
+Folding a heading whose section contains a blockquote or callout leaves a small
+square of the quote's color at the left margin, at the fold point. It is the
+"Important" purple (`#8250DF`, confirmed from the pixel) when the hidden callout
+is `> [!IMPORTANT]`, and grey for a plain quote. It reproduces in both test
+documents and disappears when the section is unfolded.
+
+Cause: the decorations are built in a second pass over `self.rows` in
+`View::layout` that does not skip rows a fold marked hidden (`src/render.rs`
+~2031-2077). A fully hidden quote run therefore has `y0 == y1`, and the bar is
+painted as `rect(x, y0 + 2, x + 3z, y1 - 2)` (`src/render.rs:2406`) — a
+rectangle whose top is below its bottom, which Direct2D still fills, leaving the
+dot. The same pass also emits a zero-height `Decor::Block` for a hidden code
+block. Fix direction: skip `row.hidden` rows when collecting `decor`, or drop
+runs where `y1 <= y0`.
+
+### Cosmetic: ordered-list numbers are dimmer than bullets
+
+A rendered ordered-list number is drawn with `Ink::Dim` (`src/render.rs:2706`)
+but an unordered bullet with `Ink::Text` (`src/render.rs:2712`), so `1.` is grey
+while `•` is black at the same level. Seen in both themes.
+
+### Limitation: four-space indented code becomes an indented paragraph
+
+Lines indented by four spaces are not treated as a code block: they render as
+paragraph text with the leading spaces shown and no code background. This is in
+neither the README's supported list nor its "Not yet supported" list.
+
+### Observation: missing `[[wiki]]` links are only marked with a folder open
+
+`App::update_missing_links` (`src/app.rs:594`) only runs `if let Some(root) =
+self.folder`. Opened as a single file, every `[[link]]` renders as a valid blue
+link, so a missing note looks the same as a good one. With a folder open the
+grey underline appears as documented.
+
+### Observation: the table delimiter row shows the whole table as source
+
+With the caret on the `| --- |` row (reachable with Go to Line), `grid_block`
+returns 0 because `table::row_of_line` has no row for the delimiter, so the
+table renders as Markdown. Header and data cells render and edit correctly, with
+the caret's cell outlined.
+
+### Verified rendering (no issues found)
+
+Headings H1-H6 and heading wrapping; YAML front matter; paragraphs and wrapping
+(the continuation aligns to the text column and list items hang under their
+text); nested bullets and numbers (markers stay right-aligned on their dot);
+task lists; blockquotes and nesting; callouts NOTE, TIP, WARNING, IMPORTANT and
+an unknown type; fenced code with highlighting (Rust, Python, JSON and an
+unknown fence) and long-line wrapping; tables (left/center/right alignment,
+inline code, escaped `\|`, empty cells, bold/italic/link cells); rules `---`,
+`***`, `___`; single- and multi-line HTML comments; escapes and entities; links,
+autolinks, bare URLs and `[[wiki]]` links; very long unbroken words and URLs
+wrap; unicode, emoji and RTL text; inline bold, italic, strikethrough, highlight,
+code and nesting.
+
+Live 2 specifics behaved as described: an edited line keeps its rendered height
+(heading, blank line, rule, code fence — the fence source spills above the
+block) and the text column does not shift (the prefix hangs into the margin); an
+image under the caret stays an image with a bold caret before or after it; a
+table under the caret stays rendered with the cell outlined.
+
+Window chrome also rendered correctly: breadcrumb, status bar, outline panel
+(with the caret's heading highlighted), the folder explorer, the command palette
+and the dark theme.
+
 ## Plan file note
 
 The committed `PLAN.md` had a "Color theme" item (`write-theme.ini`). The working-tree copy is empty, so that item is removed in the diff. This file is left uncommitted; decide whether to keep or restore that item before committing.
