@@ -564,6 +564,14 @@ impl App {
             return;
         }
         let path = self.doc.path.clone().unwrap();
+        if self.doc.lossy {
+            // Overwriting the original bytes needs a yes from Save.
+            self.autosave_failed = Some(self.doc.version);
+            return self.say(format!(
+                "Autosave paused: {} was not valid UTF-8; Ctrl+S to save over it",
+                self.doc_name()
+            ));
+        }
         if self.disk_differs() {
             // Leave the newer file alone; focusing the window asks what to do.
             self.autosave_failed = Some(self.doc.version);
@@ -1438,6 +1446,26 @@ mod tests {
     use super::super::tests::app;
     use super::*;
     use crate::palette::Target;
+
+    #[test]
+    fn autosave_leaves_a_file_that_was_not_utf8_alone() {
+        let root = std::env::temp_dir().join(format!("penmark-lossy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("latin1.md");
+        std::fs::write(&path, b"caf\xe9").unwrap();
+        let mut a = app("");
+        a.folder = Some(root.clone());
+        a.folder_settings.autosave = true;
+        a.folder_settings.autosave_secs = 0;
+        a.read_path(&path);
+        assert!(a.doc.lossy);
+        a.on_char(b'!' as u16);
+        a.autosave_tick();
+        assert_eq!(std::fs::read(&path).unwrap(), b"caf\xe9");
+        assert!(a.doc.is_dirty() && !a.autosave_pending());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn save_as_in_a_folder_uses_the_palette() {

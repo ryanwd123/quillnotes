@@ -78,6 +78,9 @@ pub struct Document {
     saved_depth: Option<usize>,
     /// The file's stamp when it was last read or written.
     pub disk: Option<Stamp>,
+    /// The file was not valid UTF-8 and its invalid bytes were replaced when read,
+    /// so saving over it loses the original bytes.
+    pub lossy: bool,
 }
 
 /// Position just after `text` inserted at `start`.
@@ -101,6 +104,7 @@ impl Document {
             open: None,
             saved_depth: Some(0),
             disk: None,
+            lossy: false,
         }
     }
 
@@ -118,6 +122,7 @@ impl Document {
         doc.path = path;
         doc.crlf = crlf;
         doc.bom = bom;
+        doc.lossy = lossy;
         (doc, lossy)
     }
 

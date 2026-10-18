@@ -4810,7 +4810,9 @@ impl App {
     }
 
     fn write_to(&mut self, path: &Path) -> bool {
-        if self.doc.path.as_deref() == Some(path) && !self.confirm_overwrite() {
+        if self.doc.path.as_deref() == Some(path)
+            && !(self.confirm_overwrite() && self.confirm_lossy_save())
+        {
             return false;
         }
         match std::fs::write(path, self.doc.to_bytes()) {
@@ -4818,6 +4820,7 @@ impl App {
                 let new_path = self.doc.path.as_deref() != Some(path);
                 self.doc.path = Some(path.to_path_buf());
                 self.doc.mark_saved();
+                self.doc.lossy = false;
                 self.doc.disk = doc::stamp(path);
                 self.say("Saved");
                 self.update_title();
@@ -4929,6 +4932,26 @@ Overwrite it with your version?"
         r == IDYES
     }
 
+    /// Before saving over a file whose invalid UTF-8 was replaced when it was read:
+    /// asks, since the original bytes are lost. Returns false to leave it alone.
+    fn confirm_lossy_save(&mut self) -> bool {
+        if !self.doc.lossy {
+            return true;
+        }
+        let name = self.doc_name();
+        let r = platform::message_box(
+            self.hwnd,
+            &format!(
+                "{name} was not valid UTF-8 when it was opened, and its invalid bytes \
+                 were replaced with \u{FFFD}.\n\nSave over it anyway? The original bytes \
+                 will be lost."
+            ),
+            APP_NAME,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        );
+        r == IDYES
+    }
+
     /// Notices the open file changing outside Penmark (on focus): reloads it when
     /// there are no unsaved changes, and otherwise asks.
     fn check_disk(&mut self) {
@@ -4989,6 +5012,7 @@ Reload it and lose your unsaved changes?"
         self.commit();
         self.doc.crlf = fresh.crlf;
         self.doc.bom = fresh.bom;
+        self.doc.lossy = fresh.lossy;
         self.doc.mark_saved();
         self.clamp_scroll();
         self.update_title();
