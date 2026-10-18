@@ -781,6 +781,7 @@ impl App {
             "{},{},{},{},{}",
             r.left, r.top, r.right, r.bottom, maximized as i32
         );
+        // Only called as the window closes, so there is nowhere to report a failure.
         let _ = Settings::update(|s| s.set("window", &value));
     }
 
@@ -822,6 +823,14 @@ impl App {
         self.message = Some((msg.into(), Instant::now()));
         self.restart_blink();
         self.invalidate();
+    }
+
+    /// Saves a setting, saying so when it could not be written (a read-only
+    /// settings folder). Call it after any `say` it should not be hidden by.
+    fn save_setting(&mut self, f: impl FnOnce(&mut Settings)) {
+        if let Err(e) = Settings::update(f) {
+            self.say(format!("Settings not saved: {e}"));
+        }
     }
 
     fn set_sel(&mut self, anchor: Pos, cursor: Pos) {
@@ -1193,12 +1202,12 @@ impl App {
     fn toggle_spell_check(&mut self) {
         self.spell_on = !self.spell_on;
         let on = self.spell_on;
-        let _ = Settings::update(|s| s.set("spellcheck", if on { "on" } else { "off" }));
         self.say(if on {
             "Spell check on"
         } else {
             "Spell check off"
         });
+        self.save_setting(|s| s.set("spellcheck", if on { "on" } else { "off" }));
         self.invalidate();
     }
 
@@ -4519,7 +4528,7 @@ impl App {
         self.outline = !self.outline;
         self.view.outline = self.outline;
         let on = self.outline;
-        let _ = Settings::update(|s| s.set("outline", if on { "on" } else { "off" }));
+        self.save_setting(|s| s.set("outline", if on { "on" } else { "off" }));
         self.outline_current = None;
         self.relayout();
         self.scroll_to_caret();
@@ -4779,13 +4788,14 @@ impl App {
                 self.set_sel(Pos::default(), Pos::default());
                 self.scroll = 0.0;
                 self.prompt = None;
-                self.remember_file();
                 self.relayout();
                 self.say(if lossy {
                     "Opened (file was not valid UTF-8; invalid bytes replaced)"
                 } else {
                     "Opened"
                 });
+                // After `say`, so a settings write failure is not hidden by it.
+                self.remember_file();
                 self.changed(false);
             }
             Err(e) => {
@@ -5173,7 +5183,7 @@ Reload it and lose your unsaved changes?"
                 return;
             }
             if !c.confirm {
-                let _ = Settings::update(|s| {
+                self.save_setting(|s| {
                     let mut keys: Vec<String> = s
                         .get("trusted_commands")
                         .unwrap_or("")

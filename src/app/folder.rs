@@ -59,8 +59,8 @@ impl App {
     /// Opens `dir` as this window's folder, offering to save the current file first.
     pub(super) fn switch_folder(&mut self, dir: &Path) {
         if !dir.is_dir() {
-            let _ = Settings::update(|s| workspace::remove_recent(s, dir));
-            return self.say(format!("{} is no longer available", dir.display()));
+            self.say(format!("{} is no longer available", dir.display()));
+            return self.save_setting(|s| workspace::remove_recent(s, dir));
         }
         if self.confirm_discard() {
             self.save_session();
@@ -86,7 +86,7 @@ impl App {
         let history: Vec<workspace::Spot> = self.back.iter().filter_map(spot).collect();
         self.folder_settings.last_spot = last_spot.clone();
         self.folder_settings.history = history.clone();
-        let _ = Settings::update(|s| {
+        self.save_setting(|s| {
             let mut f = FolderSettings::load(s, &dir);
             f.last_spot = last_spot;
             f.history = history;
@@ -96,7 +96,7 @@ impl App {
 
     /// Opens `dir` and the file that was last open in it.
     pub fn open_folder(&mut self, dir: &Path) {
-        let _ = Settings::update(|s| workspace::add_recent(s, dir));
+        self.save_setting(|s| workspace::add_recent(s, dir));
         self.folder = Some(dir.to_path_buf());
         self.folder_settings = FolderSettings::load(&Settings::load(), dir);
         self.expanded.clear();
@@ -199,7 +199,7 @@ impl App {
         }
         let rel = workspace::relative(&dir, &path);
         self.folder_settings.last_file = Some(rel.clone());
-        let _ = Settings::update(|s| {
+        self.save_setting(|s| {
             let mut f = FolderSettings::load(s, &dir);
             f.last_file = Some(rel);
             f.store(s, &dir);
@@ -596,7 +596,7 @@ impl App {
 
     pub(super) fn set_explorer(&mut self, show: bool) {
         if show != self.explorer {
-            let _ = Settings::update(|s| s.set("explorer", if show { "on" } else { "off" }));
+            self.save_setting(|s| s.set("explorer", if show { "on" } else { "off" }));
         }
         self.explorer = show;
         if !self.explorer_visible() {
@@ -1202,15 +1202,15 @@ impl App {
             SidebarButton::NotesOnly => {
                 self.notes_only = !self.notes_only;
                 let on = self.notes_only;
-                let _ = Settings::update(|s| {
-                    s.set("explorer.notes_only", if on { "on" } else { "off" })
-                });
                 let rows = self.tree_rows();
                 self.clamp_tree_scroll(rows.len());
                 self.say(if on {
                     "Explorer: showing Markdown files only"
                 } else {
                     "Explorer: showing all files"
+                });
+                self.save_setting(|s| {
+                    s.set("explorer.notes_only", if on { "on" } else { "off" })
                 });
             }
         }
