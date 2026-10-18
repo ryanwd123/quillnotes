@@ -18,21 +18,22 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # PyPI versions can never be reused, so catch a mismatched tag before uploading.
-      - name: Check the tag matches the Cargo.toml version
+      # quillnotes.rc holds the exe's file version, which is set by hand.
+      - name: Check the tag matches the Cargo.toml and quillnotes.rc versions
         if: github.ref_type == 'tag'
         shell: bash
         run: |
-          python -c "import os, sys, tomllib; v = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']; t = os.environ['GITHUB_REF_NAME']; sys.exit(0 if t == 'v' + v else f'Tag {t} does not match Cargo.toml version {v}')"
+          python -c "import os, sys, tomllib; v = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']; t = os.environ['GITHUB_REF_NAME']; rc = open('assets/quillnotes.rc').read(); sys.exit(f'Tag {t} does not match Cargo.toml version {v}' if t != 'v' + v else None if f'\"FileVersion\", \"{v}\"' in rc else f'assets/quillnotes.rc does not have version {v}')"
 
       - uses: PyO3/maturin-action@v1
         with:
           command: build
           args: --release --out dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels
           path: dist
@@ -44,7 +45,7 @@ jobs:
         run: |
           python -c "import glob, zipfile; z = zipfile.ZipFile(glob.glob('dist/*.whl')[0]); n = next(n for n in z.namelist() if n.endswith('/scripts/quillnotes.exe')); open('quillnotes.exe', 'wb').write(z.read(n))"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: exe
           path: quillnotes.exe
@@ -57,7 +58,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wheels
           path: dist
@@ -69,7 +70,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: exe
       - name: Create the release
