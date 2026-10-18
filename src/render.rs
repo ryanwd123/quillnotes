@@ -508,10 +508,10 @@ impl Row {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum ViewMode {
     /// Lines being edited show their Markdown source.
-    #[default]
     Live,
     /// Like Live, but rows keep their rendered height while edited, so the
     /// document shifts less as the caret moves.
+    #[default]
     Live2,
     /// Everything rendered and read-only.
     View,
