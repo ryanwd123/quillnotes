@@ -3,6 +3,8 @@ name = "quillnotes"
 version = "0.1.0"
 edition = "2024"
 description = "A small, keyboard-driven, WYSIWYG Markdown editor for Windows"
+license = "MIT"
+authors = ["Ryan DeWitt"]
 
 [dependencies]
 windows-numerics = "0.3.1"

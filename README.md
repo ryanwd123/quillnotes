@@ -193,3 +193,7 @@ Every line's layout is cached by its content and state. A keystroke re-lays out 
 ## Not yet supported
 
 Math rendering, footnote rendering, setext headings, reference-style link resolution, remote images, and HTML/PDF export. Indented (four-space) code blocks are not treated as code, so indented lines stay part of lists and paragraphs; use fenced code instead.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
