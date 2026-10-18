@@ -1819,6 +1819,14 @@ impl App {
             }
             a.col = s;
             b.col = e;
+        } else {
+            // Keep spaces at the selection's edges outside the markers.
+            let sel = &line[a.col..b.col];
+            let t = sel.trim();
+            if !t.is_empty() {
+                a.col += sel.len() - sel.trim_start().len();
+                b.col = a.col + t.len();
+            }
         }
         let run_before = line[..a.col].bytes().rev().take_while(|&c| c == mc).count();
         let run_after = line[b.col..].bytes().take_while(|&c| c == mc).count();
@@ -5613,5 +5621,24 @@ italic =",
         a.set_mode(ViewMode::Live);
         a.on_char(b'x' as u16);
         assert_eq!(a.doc.lines, ["- [ ] xtask"]);
+    }
+
+    #[test]
+    fn format_wrap_leaves_edge_spaces_outside() {
+        let mut a = app("say two words now");
+        a.set_sel(Pos::new(0, 4), Pos::new(0, 14));
+        a.run_action(Action::Code);
+        assert_eq!(a.doc.lines, ["say `two words` now"]);
+        assert_eq!(a.sel(), (Pos::new(0, 5), Pos::new(0, 14)));
+        // Toggling again with the same padded selection unwraps.
+        a.set_sel(Pos::new(0, 3), Pos::new(0, 16));
+        a.run_action(Action::Code);
+        assert_eq!(a.doc.lines, ["say two words now"]);
+
+        let mut a = app("a  b");
+        a.set_sel(Pos::new(0, 1), Pos::new(0, 3));
+        a.run_action(Action::Bold);
+        // A whitespace-only selection is wrapped as is.
+        assert_eq!(a.doc.lines, ["a**  **b"]);
     }
 }
