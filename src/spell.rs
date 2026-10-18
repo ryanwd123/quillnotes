@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(w.len(), 5); // é, two units for 😀, a, NUL
         assert_eq!(map, [0, 2, 2, 6, 7]);
         let errs = [0..3, 5..9];
-        assert_eq!(without_caret_word(&errs, Some(9)), [0..3]);
+        assert_eq!(without_caret_word(&errs, Some(9)), vec![0..3]);
         assert_eq!(without_caret_word(&errs, Some(4)), [0..3, 5..9]);
         assert_eq!(without_caret_word(&errs, None), [0..3, 5..9]);
     }

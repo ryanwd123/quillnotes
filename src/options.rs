@@ -369,10 +369,12 @@ mod tests {
 
     #[test]
     fn settings_round_trip() {
-        let mut o = RenderOptions::default();
-        o.dash_bullets = true;
-        o.heading_hashes = true;
-        o.heading_rule = [false, true, true, false, false, true];
+        let mut o = RenderOptions {
+            dash_bullets: true,
+            heading_hashes: true,
+            heading_rule: [false, true, true, false, false, true],
+            ..Default::default()
+        };
         o.nums[num::PARAGRAPH] = 9.0;
         let mut s = Settings::default();
         o.store(&mut s);
