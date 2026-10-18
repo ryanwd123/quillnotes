@@ -82,7 +82,7 @@ pub fn is_markdown(path: &Path) -> bool {
     })
 }
 
-/// Files Penmark opens itself (others open in their default app).
+/// Files QuillNotes opens itself (others open in their default app).
 pub fn is_text(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
         matches!(
@@ -855,7 +855,7 @@ mod tests {
     use super::*;
 
     fn temp_tree() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("penmark-ws-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-ws-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["notes/2024", "B", ".git", "node_modules"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn finds_backlinks() {
-        let root = std::env::temp_dir().join(format!("penmark-back-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-back-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a")).unwrap();
         let files = [
@@ -1021,7 +1021,7 @@ mod tests {
 
     #[test]
     fn moves_links_with_notes() {
-        let root = std::env::temp_dir().join(format!("penmark-move-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-move-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a")).unwrap();
         std::fs::create_dir_all(root.join("b")).unwrap();
@@ -1080,7 +1080,7 @@ mod tests {
 
     #[test]
     fn note_links_and_resolution() {
-        let root = std::env::temp_dir().join(format!("penmark-links-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-links-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["a", "b"] {
             std::fs::create_dir_all(root.join(d)).unwrap();

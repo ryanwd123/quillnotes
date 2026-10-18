@@ -20,8 +20,8 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
-/// The class of every Penmark window.
-pub const WINDOW_CLASS: PCWSTR = w!("PenmarkEditor");
+/// The class of every QuillNotes window.
+pub const WINDOW_CLASS: PCWSTR = w!("QuillNotesEditor");
 
 thread_local! {
     /// Set while a modal dialog runs its own message loop.
@@ -255,7 +255,7 @@ pub fn close_handle(h: HANDLE) {
     }
 }
 
-/// Asks every Penmark window, in every process, to close; each one saves or asks
+/// Asks every QuillNotes window, in every process, to close; each one saves or asks
 /// about unsaved changes as it would for its own close.
 pub fn close_all_windows() {
     unsafe extern "system" fn close(hwnd: HWND, _: LPARAM) -> BOOL {
@@ -661,7 +661,7 @@ impl SpellChecker {
         let _ = unsafe { self.0.Add(&HSTRING::from(word)) };
     }
 
-    /// Stops flagging `word` until Penmark closes.
+    /// Stops flagging `word` until QuillNotes closes.
     pub fn ignore(&self, word: &str) {
         let _ = unsafe { self.0.Ignore(&HSTRING::from(word)) };
     }

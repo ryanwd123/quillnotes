@@ -1,21 +1,21 @@
-# Penmark
+# QuillNotes
 
 A small, keyboard-driven, what-you-see-is-what-you-get Markdown editor for Windows. It is a single native executable (about 900 KB) built on Win32, Direct2D and DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs). There is no web view or GPU framework, and it needs no runtime. Direct2D draws in software rather than on the GPU: loading the GPU driver took most of the startup time and about 34 MB of memory, and a software repaint (about 7 ms) is fast enough for an editor.
 
 Inspired by [Velotype](https://github.com/manyougz/velotype), but rebuilt from scratch for Windows only and without the menu bar.
 
-> "Penmark" is a placeholder name. To rename, change `APP_NAME` in `src/app.rs`, the
-> `name` in `Cargo.toml`, and the strings in `assets/penmark.rc`.
+> "QuillNotes" is a placeholder name. To rename, change `APP_NAME` in `src/app.rs`, the
+> `name` in `Cargo.toml`, and the strings in `assets/quillnotes.rc`.
 
 ## How it works
 
-The file stays plain Markdown; Penmark never converts it to another format.
+The file stays plain Markdown; QuillNotes never converts it to another format.
 
 * Lines you are editing (the cursor line, or every line in the selection) show their Markdown syntax, dimmed. Block prefixes such as `#`, `-` and `>` hang into the margin so the text does not shift.
 * All other lines are rendered: hidden delimiters, real bullets and checkboxes, numbered lists, quote bars, callouts, code blocks, tables, rules, and local images.
 * Code blocks and tables switch to source as a whole when the cursor enters them.
 * Misspelled words in prose get a red wavy underline from Windows' built-in spell checker, in the user's language. Right-click one for suggestions, Add to Dictionary (the Windows user dictionary) or Ignore. Code, link targets, URLs, `[[note names]]` and words with digits or path characters are not checked, nor is the word being typed. **View: Toggle Spell Check** turns it off.
-* Code blocks are syntax highlighted when the fence names a language Penmark knows: Rust, Python, JavaScript/TypeScript, C/C++/C#/Java/Kotlin/Swift, Go, shell, PowerShell, JSON, TOML/INI/YAML, SQL, HTML/XML and Power Query M. The fence names for each are listed in the help page; to add a language, add an entry to `LANGS` in `src/highlight.rs`.
+* Code blocks are syntax highlighted when the fence names a language QuillNotes knows: Rust, Python, JavaScript/TypeScript, C/C++/C#/Java/Kotlin/Swift, Go, shell, PowerShell, JSON, TOML/INI/YAML, SQL, HTML/XML and Power Query M. The fence names for each are listed in the help page; to add a language, add an entry to `LANGS` in `src/highlight.rs`.
 * Headings fold: `Ctrl+Shift+[` hides the section under the heading the caret is in and leaves a `⋯` after it; click the `⋯` or press `Ctrl+Shift+]` to unfold, or run **View: Unfold All Headings**.
 * Click the view mode at the right of the status bar to cycle through the modes (or run **View: Cycle View Mode**); the mode is remembered:
   * **Live**: the lines being edited show their Markdown source.
@@ -54,19 +54,19 @@ Shortcuts follow VS Code's defaults where they don't clash with Markdown formatt
 
 ### Folders
 
-A window can have one folder open, like a VS Code workspace (subfolders included, no multi-root). Open one with **File: Open Folder…** in the palette, `Ctrl+R`, or `penmark.exe C:\path\to\folder`. Started without arguments, Penmark reopens the last folder and the file that was open in it. A folder opens where it was left: the caret and scroll in that file, and the `Alt+Left` history of files before it.
+A window can have one folder open, like a VS Code workspace (subfolders included, no multi-root). Open one with **File: Open Folder…** in the palette, `Ctrl+R`, or `quillnotes.exe C:\path\to\folder`. Started without arguments, QuillNotes reopens the last folder and the file that was open in it. A folder opens where it was left: the caret and scroll in that file, and the `Alt+Left` history of files before it.
 
 * `Ctrl+P` lists the folder's Markdown and text files by name, with their subfolder shown on the right. The search matches the name and the folder, so `2024 jan` finds `projects/2024/jan.md`.
 * `Ctrl+Shift+F` searches the text of the folder's Markdown files (not `.txt` or other files) and lists each matching line with its file and line number. The search is case-insensitive and starts with the selected text; the open file is searched as edited, even unsaved. The search is a panel across the top third of the editor: `Up` and `Down` show each result in the editor below it, centered, without opening it. `Enter` opens the file with the match selected, and `F3` then goes on to the next match in it. `Escape` clears the search, and again closes it, going back to where you were.
 * `Ctrl+R` lists recent folders, with **Open Folder…** first.
-* The **explorer** (`Ctrl+B` to show or hide, `Ctrl+Shift+E` to switch focus to or from it, `Ctrl+0` to focus it) shows the folder tree, skipping hidden folders such as `.git` and `node_modules`. Click or press `Enter` to open a file; non-text files open in their usual app. `Delete` moves to the Recycle Bin after a confirmation (turn it off in **Preferences: Open Settings**). `F2` renames, and a name like `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files and folders. Right-click for New File, New Folder, Rename, Delete and Reveal in File Explorer. If the open file is moved or renamed, the editor follows it, and when other notes link to a moved note (`[[name]]` or relative `.md` links) Penmark offers to update those links and the relative links inside it. With the explorer focused, `A` starts a new file and `Shift+A` a new folder; the header has buttons for both, and a funnel that shows only Markdown files (hiding `data` folders and everything else).
+* The **explorer** (`Ctrl+B` to show or hide, `Ctrl+Shift+E` to switch focus to or from it, `Ctrl+0` to focus it) shows the folder tree, skipping hidden folders such as `.git` and `node_modules`. Click or press `Enter` to open a file; non-text files open in their usual app. `Delete` moves to the Recycle Bin after a confirmation (turn it off in **Preferences: Open Settings**). `F2` renames, and a name like `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files and folders. Right-click for New File, New Folder, Rename, Delete and Reveal in File Explorer. If the open file is moved or renamed, the editor follows it, and when other notes link to a moved note (`[[name]]` or relative `.md` links) QuillNotes offers to update those links and the relative links inside it. With the explorer focused, `A` starts a new file and `Shift+A` a new folder; the header has buttons for both, and a funnel that shows only Markdown files (hiding `data` folders and everything else).
 * With a folder open, **Save As** (and saving a new note) asks for the path in the palette instead of the Windows dialog. It starts in the note's folder; type a name, with `/` or `\` between folders. Missing folders are created, and `.md` is added unless the name has a text extension. The folder's subfolders are listed as you type: `Tab` (or picking one) completes the highlighted folder, or with no name typed yet fills in the suggested one. A note outside the folder still uses the Windows dialog, and **Preferences: Open Settings** turns the palette off.
-* **Preferences: Folder Settings** in the palette holds per-folder settings: autosave on or off, and the delay in seconds after the last edit. With autosave on, switching files, closing the window, and signing out save instead of asking. Folder settings live in Penmark's settings file, not in the folder.
+* **Preferences: Folder Settings** in the palette holds per-folder settings: autosave on or off, and the delay in seconds after the last edit. With autosave on, switching files, closing the window, and signing out save instead of asking. Folder settings live in QuillNotes's settings file, not in the folder.
 * `Alt+D` opens today's daily note, `YYYY-MM-DD.md` in the daily notes folder (`journal` unless changed in Folder Settings), and makes it if needed: from the template note set there, with `{{date}}` and `{{title}}` replaced by the date, or with a `# YYYY-MM-DD` heading. **File: Previous Daily Note** and **File: Next Daily Note** step through the existing ones (unbound; give them keys in `keymap.ini`).
 * The window title is the folder's name. A bar above the document shows the open file's name, a dot when it has unsaved changes, and its subfolder.
 * `Alt+Left` / `Alt+Right` and the mouse back / forward buttons move through the files opened in the window, returning to where you were in each.
 
-When the open file changes on disk (a sync, `git pull`, another editor), Penmark reloads it when the window gets focus, keeping the caret and scroll; the reload is one undo step. With unsaved changes it asks first. Saving over a file that changed since it was read asks before overwriting it, and autosave pauses instead.
+When the open file changes on disk (a sync, `git pull`, another editor), QuillNotes reloads it when the window gets focus, keeping the caret and scroll; the reload is one undo step. With unsaved changes it asks first. Saving over a file that changed since it was read asks before overwriting it, and autosave pauses instead.
 
 The zoom level and the window's size, position and maximized state are remembered between runs. A saved position on a monitor that is no longer connected is ignored.
 
@@ -90,7 +90,7 @@ A link whose target starts with `run:` launches a program, and `shell:` runs its
 
 `run:` expands `%VARS%` itself and resolves a relative program against the working folder; `shell:` leaves the text to `cmd`. Options go in the title as `key=value` pairs separated by `;`: `cwd=` (default: the note's folder), `window=hidden|show|keep` (default `show` for `run:`, `hidden` for `shell:`), `wait` (report the exit code) or `detach` (the default), and `confirm` (always ask).
 
-The first click shows the full command and asks before running it. Penmark then stores a hash of the command and folder as trusted, so a link that changes asks again. Errors and, with `wait`, non-zero exit codes show in the status bar. Command links are drawn as black text on light green with a ▶ (`run:`) or `$` (`shell:`) glyph, and hovering one shows the command as it will run.
+The first click shows the full command and asks before running it. QuillNotes then stores a hash of the command and folder as trusted, so a link that changes asks again. Errors and, with `wait`, non-zero exit codes show in the status bar. Command links are drawn as black text on light green with a ▶ (`run:`) or `$` (`shell:`) glyph, and hovering one shows the command as it will run.
 
 CommonMark does not allow `>` inside a `<...>` link target, but commands often need it: in a command link the target ends at the first `>` that is followed by an optional title and `)`. Other Markdown tools will not render such a link.
 
@@ -130,7 +130,7 @@ To work with a table as Markdown text, select from outside it into it (for examp
 
 ### Command palette
 
-`Ctrl+Shift+P` opens a searchable list of commands. The search is split into space-separated terms, and an item matches when it contains every term in any order. For example, `mono cas` finds *Cascadia Mono*. Use `Up`/`Down` (or the mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to `%APPDATA%\Penmark\settings.ini`.
+`Ctrl+Shift+P` opens a searchable list of commands. The search is split into space-separated terms, and an item matches when it contains every term in any order. For example, `mono cas` finds *Cascadia Mono*. Use `Up`/`Down` (or the mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to `%APPDATA%\QuillNotes\settings.ini`.
 
 * **Font: Change Editor Font** lists every installed font, with each name drawn in its own typeface. The document previews the highlighted font live. `Enter` keeps it and `Esc` reverts. Code blocks and inline code stay monospace.
 * **Font: Change Code Font** does the same for code blocks and inline code, listing monospaced fonts first.
@@ -145,9 +145,9 @@ To work with a table as Markdown text, select from outside it into it (for examp
   * line height, content width, code font size and UI font size;
   * reset to defaults.
 
-* **Preferences: Open Settings Folder** opens `%APPDATA%\Penmark` in Explorer.
-* **Preferences: Write keymap.ini** writes `%APPDATA%\Penmark\keymap.ini` with every command and its current keys, then opens it in the app for `.ini` files. Each line is `command = keys`, such as `redo = Ctrl+Y, Ctrl+Shift+Z`; an empty value removes the shortcut, and commands left out keep their defaults. Palette commands without a default shortcut (fonts, folder settings, table actions, …) are listed with an empty value, ready to be given one. A key given to a command in the file is taken from any command that has it by default. The file is reloaded when Penmark gets focus (or when it is saved in Penmark), and problems in it show in the status bar. Caret movement, Enter, Tab, Backspace, Delete, and keys inside the palette, explorer and tables stay fixed. Writing it again keeps changed keys but not comments, so Penmark asks first.
-* **Preferences: Write theme.ini** does the same for colors: it writes `%APPDATA%\Penmark\theme.ini` with every color of the `[light]` and `[dark]` themes as `name = #RRGGBB` (or `#AARRGGBB` with transparency) and opens it. Colors left out keep their defaults; the file is reloaded on focus or when saved in Penmark, and problems show in the status bar.
+* **Preferences: Open Settings Folder** opens `%APPDATA%\QuillNotes` in Explorer.
+* **Preferences: Write keymap.ini** writes `%APPDATA%\QuillNotes\keymap.ini` with every command and its current keys, then opens it in the app for `.ini` files. Each line is `command = keys`, such as `redo = Ctrl+Y, Ctrl+Shift+Z`; an empty value removes the shortcut, and commands left out keep their defaults. Palette commands without a default shortcut (fonts, folder settings, table actions, …) are listed with an empty value, ready to be given one. A key given to a command in the file is taken from any command that has it by default. The file is reloaded when QuillNotes gets focus (or when it is saved in QuillNotes), and problems in it show in the status bar. Caret movement, Enter, Tab, Backspace, Delete, and keys inside the palette, explorer and tables stay fixed. Writing it again keeps changed keys but not comments, so QuillNotes asks first.
+* **Preferences: Write theme.ini** does the same for colors: it writes `%APPDATA%\QuillNotes\theme.ini` with every color of the `[light]` and `[dark]` themes as `name = #RRGGBB` (or `#AARRGGBB` with transparency) and opens it. Colors left out keep their defaults; the file is reloaded on focus or when saved in QuillNotes, and problems show in the status bar.
 
 To add a command, add a variant to `Command` and an entry to `COMMANDS` in `src/palette.rs`, then handle it in `App::palette_accept`. To give it a shortcut, add an `Action` and its default keys to `ACTIONS` in `src/keymap.rs`, then handle it in `App::run_action`.
 
@@ -161,7 +161,7 @@ Requires the Rust MSVC toolchain and the Windows SDK. The SDK comes with the Vis
 cargo build --release
 ```
 
-The executable is `target/release/penmark.exe`. To open a file or folder, pass it as an argument (`penmark.exe notes.md`, `penmark.exe C:\notes`), drop a file on the window, or use `Ctrl+O` / `Ctrl+R`.
+The executable is `target/release/quillnotes.exe`. To open a file or folder, pass it as an argument (`quillnotes.exe notes.md`, `quillnotes.exe C:\notes`), drop a file on the window, or use `Ctrl+O` / `Ctrl+R`.
 
 ## Code layout
 
@@ -174,7 +174,7 @@ The executable is `target/release/penmark.exe`. To open a file or folder, pass i
 | `src/app/folder.rs` | Open folder, quick open, explorer panel and its file operations, folder settings, autosave. |
 | `src/workspace.rs` | Folder scanning, tree visibility, recent folders, folder settings model. Unit-tested. |
 | `src/palette.rs` | Command palette: commands, term matching, filtering and selection. Unit-tested. |
-| `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
+| `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\QuillNotes\settings.ini`. |
 | `src/keymap.rs` | Keyboard shortcuts: commands, default keys, parsing and writing `keymap.ini`. Unit-tested. |
 | `src/table.rs` | Tables: cell lookup, row/column/alignment changes, serialization. Unit-tested. |
 | `src/slash.rs` | The `/` menu: items, filtering, and the edits they make. Unit-tested. |

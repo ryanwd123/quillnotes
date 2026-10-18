@@ -126,10 +126,10 @@ impl Theme {
     /// theme.ini text for these colors, with instructions.
     pub fn to_ini(&self) -> String {
         let mut out = String::from(
-            "; Penmark colors. Each line is name = #RRGGBB, or #AARRGGBB with an alpha\n\
+            "; QuillNotes colors. Each line is name = #RRGGBB, or #AARRGGBB with an alpha\n\
              ; (00 transparent, FF opaque) first. Colors left out, or this file deleted,\n\
-             ; go back to the defaults. Changes apply when you switch back to Penmark, or\n\
-             ; when this file is saved in Penmark. Ctrl+Shift+T switches light and dark.\n",
+             ; go back to the defaults. Changes apply when you switch back to QuillNotes, or\n\
+             ; when this file is saved in QuillNotes. Ctrl+Shift+T switches light and dark.\n",
         );
         for (title, colors) in [("light", &self.light), ("dark", &self.dark)] {
             out.push_str(&format!("\n[{title}]\n"));

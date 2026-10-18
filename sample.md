@@ -1,4 +1,4 @@
-# Penmark
+# QuillNotes
 A small, keyboard-driven, what-you-see-is-what-you-get Markdown editor for Windows.
 It is a single native executable (about 410 KB) built on Win32, Direct2D and
 DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs). There is no
@@ -7,11 +7,11 @@ web view or GPU framework, and it needs no runtime.
 Inspired by [Velotype](https://github.com/manyougz/velotype), but rebuilt from scratch for
 Windows only and without the menu bar.
 
-> "Penmark" is a placeholder name. To rename, change `APP_NAME` in `src/app.rs`, the
-> `name` in `Cargo.toml`, and the strings in `assets/penmark.rc`.
+> "QuillNotes" is a placeholder name. To rename, change `APP_NAME` in `src/app.rs`, the
+> `name` in `Cargo.toml`, and the strings in `assets/quillnotes.rc`.
 
 ## How it works
-The file stays plain Markdown; Penmark never converts it to another format.
+The file stays plain Markdown; QuillNotes never converts it to another format.
 
 * Lines you are editing (the cursor line, or every line in the selection) show
   their Markdown syntax, dimmed. Block prefixes such as `#`, `-` and `>` hang into
@@ -45,7 +45,7 @@ rendered by the editor itself. The highlights:
 ### Command palette
 `Ctrl+Shift+P` opens a fuzzy-searchable list of commands. Use `Up`/`Down` (or the
 mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
-`%APPDATA%\Penmark\settings.ini`.
+`%APPDATA%\QuillNotes\settings.ini`.
 
 * **Font: Change Editor Font** lists every installed font, with each name drawn in
   its own typeface. The document previews the highlighted font live. `Enter` keeps
@@ -76,8 +76,8 @@ Studio C++ build tools and provides `rc.exe`, which embeds the icon and manifest
 cargo build --release
 ```
 
-The executable is `target/release/penmark.exe`. To open a file, pass it as an argument
-(`penmark.exe notes.md`), drop it on the window, or use `Ctrl+O`.
+The executable is `target/release/quillnotes.exe`. To open a file, pass it as an argument
+(`quillnotes.exe notes.md`), drop it on the window, or use `Ctrl+O`.
 
 ## Code layout
 
@@ -88,7 +88,7 @@ The executable is `target/release/penmark.exe`. To open a file, pass it as an ar
 | `src/render.rs` | DirectWrite layout per line with a source↔display offset map, layout caching, painting, hit-testing. |
 | `src/app.rs` | Editor state, key and mouse handling, Markdown-aware editing commands, find, files. |
 | `src/palette.rs` | Command palette: commands, fuzzy matching, filtering and selection. Unit-tested. |
-| `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\Penmark\settings.ini`. |
+| `src/settings.rs` | Persisted `key=value` settings in `%APPDATA%\QuillNotes\settings.ini`. |
 | `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard, file dialogs, message boxes, shell, theme detection. |
 | `src/main.rs` | Window class, message loop, message dispatch. |

@@ -441,7 +441,7 @@ impl Palette {
         p
     }
 
-    /// Quick open: the Penmark-readable files under `root`, by name, with their
+    /// Quick open: the QuillNotes-readable files under `root`, by name, with their
     /// folder shown and searchable.
     pub fn files(root: &Path, entries: &[Entry], current: Option<&Path>) -> Self {
         let mut items: Vec<Item> = entries
@@ -1142,7 +1142,7 @@ mod tests {
 
     #[test]
     fn save_as_completes_folders_and_builds_paths() {
-        let root = std::env::temp_dir().join(format!("penmark-saveas-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-saveas-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("projects").join("work")).unwrap();
         std::fs::create_dir_all(root.join("daily")).unwrap();

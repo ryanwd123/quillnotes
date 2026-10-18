@@ -32,7 +32,7 @@ use crate::table::{self, Grid, TableCmd};
 use crate::theme::{self, Theme};
 use crate::workspace::{self, Entry, FolderSettings, NoteLink};
 
-pub const APP_NAME: &str = "Penmark";
+pub const APP_NAME: &str = "QuillNotes";
 
 /// Posted after files are dropped, to handle them once the drag has ended.
 pub const WM_APP_DROP: u32 = WM_APP + 1;
@@ -800,7 +800,7 @@ impl App {
         let _ = Settings::update(|s| s.set("window", &value));
     }
 
-    /// "folder — Penmark" while a folder is open, else "• file — Penmark".
+    /// "folder — QuillNotes" while a folder is open, else "• file — QuillNotes".
     pub fn update_title(&mut self) {
         let folder = self.folder.as_ref().map(|f| {
             f.file_name()
@@ -3886,7 +3886,7 @@ impl App {
         self.focused = focused;
         self.caret_on = focused;
         if focused && self.folder.is_some() {
-            // Pick up files added or removed outside Penmark.
+            // Pick up files added or removed outside QuillNotes.
             self.rescan();
         }
         if focused {
@@ -4975,7 +4975,7 @@ impl App {
         r == IDYES
     }
 
-    /// Notices the open file changing outside Penmark (on focus): reloads it when
+    /// Notices the open file changing outside QuillNotes (on focus): reloads it when
     /// there are no unsaved changes, and otherwise asks.
     fn check_disk(&mut self) {
         if self.search_previewing() {
@@ -5217,7 +5217,7 @@ impl App {
             let later = if c.confirm {
                 ""
             } else {
-                "\n\nPenmark won't ask again for this command unless it changes."
+                "\n\nQuillNotes won't ask again for this command unless it changes."
             };
             let r = platform::message_box(
                 self.hwnd,
@@ -5444,7 +5444,7 @@ mod tests {
 
     #[test]
     fn reloads_a_clean_file_changed_on_disk() {
-        let path = std::env::temp_dir().join(format!("penmark-reload-{}.md", std::process::id()));
+        let path = std::env::temp_dir().join(format!("quillnotes-reload-{}.md", std::process::id()));
         std::fs::write(&path, "one\ntwo\nthree").unwrap();
         let mut a = app("");
         a.read_path(&path);
@@ -5481,7 +5481,7 @@ mod tests {
 
     #[test]
     fn back_after_a_new_note_returns_to_the_file_it_left() {
-        let root = std::env::temp_dir().join(format!("penmark-newback-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-newback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let (first, second) = (root.join("a.md"), root.join("b.md"));
@@ -5501,7 +5501,7 @@ mod tests {
 
     #[test]
     fn hash_in_note_menu_completes_headings_and_links_open_there() {
-        let root = std::env::temp_dir().join(format!("penmark-sections-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-sections-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(

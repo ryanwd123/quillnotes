@@ -1,4 +1,4 @@
-//! User settings persisted as `key=value` lines in `%APPDATA%\Penmark\settings.ini`.
+//! User settings persisted as `key=value` lines in `%APPDATA%\QuillNotes\settings.ini`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ pub struct Settings {
     values: BTreeMap<String, String>,
 }
 
-/// The settings folder, `%APPDATA%\Penmark`.
+/// The settings folder, `%APPDATA%\QuillNotes`.
 #[cfg(not(test))]
 pub fn dir() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
@@ -20,7 +20,7 @@ pub fn dir() -> Option<PathBuf> {
 /// settings, keymap or theme files.
 #[cfg(test)]
 pub fn dir() -> Option<PathBuf> {
-    Some(std::env::temp_dir().join(format!("penmark-settings-{}", std::process::id())))
+    Some(std::env::temp_dir().join(format!("quillnotes-settings-{}", std::process::id())))
 }
 
 fn path() -> Option<PathBuf> {
@@ -38,7 +38,7 @@ impl Settings {
     }
 
     /// Applies `f` to the settings on disk and saves them. Reloading first keeps
-    /// changes made by other Penmark windows since this one started.
+    /// changes made by other QuillNotes windows since this one started.
     pub fn update(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
         let mut s = Settings::load();
         f(&mut s);

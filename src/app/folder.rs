@@ -1447,7 +1447,7 @@ mod tests {
 
     #[test]
     fn autosave_leaves_a_file_that_was_not_utf8_alone() {
-        let root = std::env::temp_dir().join(format!("penmark-lossy-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-lossy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("latin1.md");
@@ -1467,7 +1467,7 @@ mod tests {
 
     #[test]
     fn save_as_in_a_folder_uses_the_palette() {
-        let root = std::env::temp_dir().join(format!("penmark-savepal-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-savepal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("notes")).unwrap();
         let mut a = app("# Plan\n");
@@ -1494,7 +1494,7 @@ mod tests {
 
     #[test]
     fn search_in_files() {
-        let root = std::env::temp_dir().join(format!("penmark-search-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-search-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         let open = root.join("open.md");
@@ -1543,7 +1543,7 @@ mod tests {
 
     #[test]
     fn search_previews_results() {
-        let root = std::env::temp_dir().join(format!("penmark-preview-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-preview-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         let open = root.join("open.md");
@@ -1608,7 +1608,7 @@ mod tests {
 
     #[test]
     fn new_file_prompt_takes_keys_from_explorer() {
-        let root = std::env::temp_dir().join(format!("penmark-newfile-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-newfile-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 

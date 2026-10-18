@@ -747,7 +747,7 @@ impl Keymap {
     /// keymap.ini text for these keys, with instructions.
     pub fn to_ini(&self) -> String {
         let mut s = String::from(
-            "; Penmark keyboard shortcuts.\n\
+            "; QuillNotes keyboard shortcuts.\n\
              ;\n\
              ; Each line is `command = keys`. Separate several keys with commas, and leave\n\
              ; the keys empty to give a command no shortcut. Keys are written like\n\
@@ -759,7 +759,7 @@ impl Keymap {
              ; Commands with nothing after the = have no shortcut; add keys to give them one.\n\
              ; Commands left out of this file keep their default keys, and a key given to a\n\
              ; command here is taken from any command that has it by default. Changes apply\n\
-             ; when you switch back to Penmark, or save this file in it. Delete this file to\n\
+             ; when you switch back to QuillNotes, or save this file in it. Delete this file to\n\
              ; go back to the defaults.\n\
              ;\n\
              ; Moving the caret and selecting (arrows, Home, End, Page Up/Down, with Ctrl and\n\

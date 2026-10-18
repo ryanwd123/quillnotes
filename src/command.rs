@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn builds_command_lines() {
-        let dir = std::env::temp_dir().join(format!("penmark-cmd-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("quillnotes-cmd-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin").join("tool.exe"), "").unwrap();
         let run = |text: &str, title: &str| {

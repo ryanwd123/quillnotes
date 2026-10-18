@@ -1,6 +1,6 @@
-// Icon, manifest and version info embedded into penmark.exe by build.rs.
-1 ICON "penmark.ico"
-1 24 "penmark.exe.manifest"
+// Icon, manifest and version info embedded into quillnotes.exe by build.rs.
+1 ICON "quillnotes.ico"
+1 24 "quillnotes.exe.manifest"
 
 1 VERSIONINFO
 FILEVERSION 0,1,0,0
@@ -12,11 +12,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "Penmark Markdown editor"
-            VALUE "ProductName", "Penmark"
+            VALUE "FileDescription", "QuillNotes Markdown editor"
+            VALUE "ProductName", "QuillNotes"
             VALUE "FileVersion", "0.1.0"
             VALUE "ProductVersion", "0.1.0"
-            VALUE "OriginalFilename", "penmark.exe"
+            VALUE "OriginalFilename", "quillnotes.exe"
         END
     END
     BLOCK "VarFileInfo"

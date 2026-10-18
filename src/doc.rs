@@ -28,7 +28,7 @@ impl Pos {
 /// (anchor, cursor)
 pub type Sel = (Pos, Pos);
 
-/// A file's modification time and size, to notice it changing outside Penmark.
+/// A file's modification time and size, to notice it changing outside QuillNotes.
 pub type Stamp = (SystemTime, u64);
 
 pub fn stamp(path: &Path) -> Option<Stamp> {
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn notices_disk_changes() {
-        let path = std::env::temp_dir().join(format!("penmark-disk-{}.md", std::process::id()));
+        let path = std::env::temp_dir().join(format!("quillnotes-disk-{}.md", std::process::id()));
         std::fs::write(&path, "one").unwrap();
         let mut d = Document::from_bytes(b"one", Some(path.clone())).0;
         assert_eq!(d.disk_change(), None, "never read: nothing to compare");

@@ -1,5 +1,5 @@
 [package]
-name = "penmark"
+name = "quillnotes"
 version = "0.1.0"
 edition = "2024"
 description = "A small, keyboard-driven, WYSIWYG Markdown editor for Windows"

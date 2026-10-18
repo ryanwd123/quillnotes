@@ -256,10 +256,10 @@ mod tests {
 
     #[test]
     fn copies_into_data() {
-        let root = std::env::temp_dir().join(format!("penmark-attach-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quillnotes-attach-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("notes")).unwrap();
-        let outside = std::env::temp_dir().join(format!("penmark-src-{}.txt", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("quillnotes-src-{}.txt", std::process::id()));
         std::fs::write(&outside, "one").unwrap();
         std::fs::write(root.join("notes/inside.pdf"), "x").unwrap();
         let note = root.join("notes/n.md");

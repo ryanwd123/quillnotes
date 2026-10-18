@@ -1,6 +1,6 @@
-# Penmark
+# QuillNotes
 
-Penmark edits plain Markdown files. The lines you are editing show their Markdown syntax; everything else is rendered. Nothing is converted: the file on disk is exactly what you typed.
+QuillNotes edits plain Markdown files. The lines you are editing show their Markdown syntax; everything else is rendered. Nothing is converted: the file on disk is exactly what you typed.
 
 Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+I` and `Ctrl+K` stay italic and link; bold is `Ctrl+Shift+B` so `Ctrl+B` can toggle the explorer).
 
@@ -21,10 +21,10 @@ Shortcuts follow VS Code where they don't clash with Markdown formatting (`Ctrl+
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+W` | Close the file |
 | `Ctrl+Shift+N` / `Ctrl+Shift+W` | New window / close window |
-| `Ctrl+Q` | Quit: close every Penmark window |
+| `Ctrl+Q` | Quit: close every QuillNotes window |
 | `Alt+D` | Today's daily note (`journal/YYYY-MM-DD.md`, made if needed); **File: Previous / Next Daily Note** in the palette step through them |
 
-When the open file changes on disk (a sync, `git pull`, another editor), Penmark reloads it when you come back to the window, keeping your place; `Ctrl+Z` undoes the reload. With unsaved changes it asks first, and saving over a newer file asks before overwriting it.
+When the open file changes on disk (a sync, `git pull`, another editor), QuillNotes reloads it when you come back to the window, keeping your place; `Ctrl+Z` undoes the reload. With unsaved changes it asks first, and saving over a newer file asks before overwriting it.
 
 ## Explorer
 
@@ -41,9 +41,9 @@ When the open file changes on disk (a sync, `git pull`, another editor), Penmark
 
 The buttons at the top of the explorer make a new file or folder, and the funnel shows only Markdown files (hiding `data` folders and other files).
 
-When a renamed or moved note has links to it (`[[name]]` or relative `.md` links), Penmark offers to update them, along with the relative links inside the moved notes.
+When a renamed or moved note has links to it (`[[name]]` or relative `.md` links), QuillNotes offers to update them, along with the relative links inside the moved notes.
 
-**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit. It also sets the daily notes folder and a template note for new daily notes, in which `{{date}}` and `{{title}}` become the date. With autosave on, Penmark also saves before switching files or closing.
+**Preferences: Folder Settings** in the command palette sets autosave for the open folder, and the delay in seconds after the last edit. It also sets the daily notes folder and a template note for new daily notes, in which `{{date}}` and `{{title}}` become the date. With autosave on, QuillNotes also saves before switching files or closing.
 
 ## Attachments
 
@@ -138,11 +138,11 @@ The palette also sets the **UI font size**, the **code font** and the **code fon
 
 ## Changing shortcuts
 
-Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\Penmark\keymap.ini` with every command and its keys and opens it. Edit a line such as `bold = Ctrl+Shift+B` (several keys are separated by commas; an empty value removes the shortcut), or give keys to one of the palette commands listed without any, save, and switch back to Penmark. Problems in the file show in the status bar. **Preferences: Open Settings Folder** opens the folder; delete `keymap.ini` to go back to the defaults.
+Run **Preferences: Write keymap.ini** from the palette. It writes `%APPDATA%\QuillNotes\keymap.ini` with every command and its keys and opens it. Edit a line such as `bold = Ctrl+Shift+B` (several keys are separated by commas; an empty value removes the shortcut), or give keys to one of the palette commands listed without any, save, and switch back to QuillNotes. Problems in the file show in the status bar. **Preferences: Open Settings Folder** opens the folder; delete `keymap.ini` to go back to the defaults.
 
 ## Changing colors
 
-Run **Preferences: Write theme.ini** from the palette. It writes `%APPDATA%\Penmark\theme.ini` with every color of the light and dark themes and opens it. Change a line such as `bg = #FFF8E7` under `[light]` or `[dark]` (`#AARRGGBB` adds transparency), save, and switch back to Penmark. Problems show in the status bar; delete `theme.ini` to go back to the default colors.
+Run **Preferences: Write theme.ini** from the palette. It writes `%APPDATA%\QuillNotes\theme.ini` with every color of the light and dark themes and opens it. Change a line such as `bg = #FFF8E7` under `[light]` or `[dark]` (`#AARRGGBB` adds transparency), save, and switch back to QuillNotes. Problems show in the status bar; delete `theme.ini` to go back to the default colors.
 
 ## Command links
 
@@ -161,6 +161,6 @@ A link whose target starts with `run:` runs a program; `shell:` runs the text wi
 | `wait` / `detach` | Report the exit code when it ends / don't (default) |
 | `confirm` | Always ask before running |
 
-Penmark shows the full command and asks before running it the first time, and again whenever the link changes. Hover a command link to see the command it will run.
+QuillNotes shows the full command and asks before running it the first time, and again whenever the link changes. Hover a command link to see the command it will run.
 
 This page: **Help: Keyboard Shortcuts** in the command palette.
