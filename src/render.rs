@@ -267,18 +267,37 @@ pub struct TextBox {
     bgs: Vec<(u32, u32, Ink)>,
     /// (start, end, target, title) of each link, in layout positions.
     links: Vec<(u32, u32, String, String)>,
-    /// x of the content start, for active lines whose syntax prefix hangs left.
-    prefix_x: f32,
+    /// A shown syntax prefix, hanging left of the content.
+    pre: Option<Prefix>,
+    /// Layout index of a list marker drawn as a bullet shape (in the prefix).
+    bullet: Option<u32>,
     /// Ordered-list number, drawn left of the content when inactive.
     marker: Option<(IDWriteTextLayout, f32)>,
     baseline: f32,
     ink: Ink,
 }
 
+/// A line's syntax prefix (`- `, `## `, `> `) laid out on its own and drawn at
+/// x = -width, so the content starts at x = 0 and wrapped lines line up with it.
+/// Its layout indices come before the content's: `[0, len)`.
+struct Prefix {
+    layout: IDWriteTextLayout,
+    len: u32,
+    width: f32,
+    /// y offset that puts its baseline on the content's first baseline.
+    dy: f32,
+}
+
 impl TextBox {
     fn s2d(&self, col: usize) -> u32 {
         let i = self.d2s.partition_point(|&s| (s as usize) < col);
         i.min(self.d2s.len() - 1) as u32
+    }
+
+    /// Number of layout indices in the prefix; content index `i` is `i - pre_len`
+    /// in `layout`.
+    fn pre_len(&self) -> u32 {
+        self.pre.as_ref().map_or(0, |p| p.len)
     }
 
     fn set_width(&self, w: f32) {
@@ -292,42 +311,37 @@ impl TextBox {
     }
 
     fn rects(&self, a: u32, b: u32) -> Vec<DWRITE_HIT_TEST_METRICS> {
-        let mut buf = vec![DWRITE_HIT_TEST_METRICS::default(); 8];
-        let mut n = 0u32;
-        unsafe {
-            if self
-                .layout
-                .HitTestTextRange(a, b - a, 0.0, 0.0, Some(&mut buf), &mut n)
-                .is_err()
-            {
-                buf.resize(n as usize, Default::default());
-                if self
-                    .layout
-                    .HitTestTextRange(a, b - a, 0.0, 0.0, Some(&mut buf), &mut n)
-                    .is_err()
-                {
-                    return Vec::new();
-                }
+        let n = self.pre_len();
+        let mut out = Vec::new();
+        if let Some(p) = &self.pre
+            && a < n
+        {
+            out = range_rects(&p.layout, a, b.min(n));
+            for m in &mut out {
+                m.left -= p.width;
+                m.top += p.dy;
             }
         }
-        buf.truncate(n as usize);
-        buf
+        if b > n {
+            out.extend(range_rects(&self.layout, a.max(n) - n, b - n));
+        }
+        out
     }
 
     /// (x, y, height) of the caret before UTF-16 index `i`.
     fn caret(&self, i: u32) -> (f32, f32, f32) {
-        let (mut x, mut y) = (0.0, 0.0);
-        let mut m = DWRITE_HIT_TEST_METRICS::default();
-        unsafe {
-            let _ = self
-                .layout
-                .HitTestTextPosition(i, false, &mut x, &mut y, &mut m);
+        if let Some(p) = &self.pre
+            && i < p.len
+        {
+            let (x, y, h) = layout_caret(&p.layout, i);
+            return (x - p.width, y + p.dy, h);
         }
-        (x, m.top, m.height)
+        layout_caret(&self.layout, i - self.pre_len())
     }
 
     /// Visual line containing UTF-16 index `i`, plus (top, height) of every visual line.
     fn visual_lines(&self, i: u32) -> (usize, Vec<(f32, f32)>) {
+        let i = i.saturating_sub(self.pre_len());
         let buf = line_metrics(&self.layout);
         let (mut top, mut start, mut idx) = (0.0, 0u32, None);
         let mut out = Vec::with_capacity(buf.len());
@@ -344,25 +358,65 @@ impl TextBox {
     }
 
     fn hit(&self, x: f32, y: f32) -> (usize, Option<&(u32, u32, String, String)>) {
-        let mut trailing = BOOL(0);
-        let mut inside = BOOL(0);
-        let mut m = DWRITE_HIT_TEST_METRICS::default();
-        unsafe {
-            let _ = self
-                .layout
-                .HitTestPoint(x, y, &mut trailing, &mut inside, &mut m);
+        // Left of the content on its first visual line: in the prefix.
+        if let Some(p) = &self.pre
+            && x < 0.0
+            && line_metrics(&self.layout)
+                .first()
+                .is_none_or(|l| y < l.height)
+        {
+            let (pos, _) = layout_hit(&p.layout, x + p.width, y - p.dy);
+            return (self.d2s[pos as usize] as usize, None);
         }
-        let idx = (m.textPosition + if trailing.as_bool() { m.length } else { 0 }) as usize;
+        let n = self.pre_len();
+        let (pos, inside) = layout_hit(&self.layout, x, y);
+        let idx = (n + pos) as usize;
         let col = self.d2s[idx.min(self.d2s.len() - 1)] as usize;
-        let link = if inside.as_bool() {
-            self.links
-                .iter()
-                .find(|l| m.textPosition >= l.0 && m.textPosition < l.1)
-        } else {
-            None
-        };
+        let link = inside.and_then(|t| self.links.iter().find(|l| n + t >= l.0 && n + t < l.1));
         (col, link)
     }
+}
+
+/// Layout index nearest to (x, y), and the index of the character under it.
+fn layout_hit(l: &IDWriteTextLayout, x: f32, y: f32) -> (u32, Option<u32>) {
+    let mut trailing = BOOL(0);
+    let mut inside = BOOL(0);
+    let mut m = DWRITE_HIT_TEST_METRICS::default();
+    unsafe {
+        let _ = l.HitTestPoint(x, y, &mut trailing, &mut inside, &mut m);
+    }
+    let pos = m.textPosition + if trailing.as_bool() { m.length } else { 0 };
+    (pos, inside.as_bool().then_some(m.textPosition))
+}
+
+/// (x, y, height) of the caret before layout index `i`.
+fn layout_caret(l: &IDWriteTextLayout, i: u32) -> (f32, f32, f32) {
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut m = DWRITE_HIT_TEST_METRICS::default();
+    unsafe {
+        let _ = l.HitTestTextPosition(i, false, &mut x, &mut y, &mut m);
+    }
+    (x, m.top, m.height)
+}
+
+/// Rectangles covering layout indices `[a, b)`.
+fn range_rects(l: &IDWriteTextLayout, a: u32, b: u32) -> Vec<DWRITE_HIT_TEST_METRICS> {
+    let mut buf = vec![DWRITE_HIT_TEST_METRICS::default(); 8];
+    let mut n = 0u32;
+    unsafe {
+        if l.HitTestTextRange(a, b - a, 0.0, 0.0, Some(&mut buf), &mut n)
+            .is_err()
+        {
+            buf.resize(n as usize, Default::default());
+            if l.HitTestTextRange(a, b - a, 0.0, 0.0, Some(&mut buf), &mut n)
+                .is_err()
+            {
+                return Vec::new();
+            }
+        }
+    }
+    buf.truncate(n as usize);
+    buf
 }
 
 /// Metrics of every visual line (GetLineMetrics fails if the buffer is too small).
@@ -1116,7 +1170,8 @@ impl View {
 
     /// Builds a text box for `line[from..to]`. Inline syntax is parsed from `content`;
     /// when `active`, delimiters stay visible (dimmed) and `[from, content)` is the
-    /// hanging syntax prefix.
+    /// hanging syntax prefix. A list marker at byte `bullet` in the prefix is drawn as
+    /// a bullet shape instead of its character.
     #[allow(clippy::too_many_arguments)]
     fn make_box(
         &mut self,
@@ -1128,6 +1183,7 @@ impl View {
         active: bool,
         inline: bool,
         width: f32,
+        bullet: Option<usize>,
     ) -> TextBox {
         let mut inl = if inline {
             markdown::parse_inline(line, content, to)
@@ -1182,19 +1238,27 @@ impl View {
             d2s.partition_point(|&s| (s as usize) < src)
                 .min(d2s.len() - 1) as u32
         };
+        // Layout indices before `n` are the prefix, which gets its own layout.
+        let n = if content > from { s2d(content) } else { 0 };
+        let loc = |a: usize, b: usize| range(s2d(a).saturating_sub(n), s2d(b).saturating_sub(n));
+        let bullet = bullet.filter(|&b| from <= b && b < content).map(&s2d);
+        if let Some(b) = bullet {
+            // An en space leaves room for the bullet shape and the caret beside it.
+            text[b as usize] = 0x2002;
+        }
 
         let family = if st.mono { Family::Mono } else { Family::Body };
         let format = self.format(family, st.size, st.weight);
         let layout = unsafe {
             self.dw
-                .CreateTextLayout(&text, &format, width.max(1.0), 1.0e6)
+                .CreateTextLayout(&text[n as usize..], &format, width.max(1.0), 1.0e6)
                 .expect("CreateTextLayout")
         };
         let mut bgs = Vec::new();
         let mut links = Vec::new();
         unsafe {
             for (r, sty) in &inl.spans {
-                let rr = range(s2d(r.start), s2d(r.end));
+                let rr = loc(r.start, r.end);
                 match sty {
                     Style::Bold => {
                         let _ = layout.SetFontWeight(
@@ -1216,8 +1280,8 @@ impl View {
                         let _ = layout.SetFontFamilyName(&self.mono_font, rr);
                         let _ = layout.SetFontSize(st.size * self.code_scale(), rr);
                         bgs.push((
-                            rr.startPosition,
-                            rr.startPosition + rr.length,
+                            n + rr.startPosition,
+                            n + rr.startPosition + rr.length,
                             Ink::InlineCodeBg,
                         ));
                     }
@@ -1227,22 +1291,28 @@ impl View {
                     }
                     Style::Link => {
                         let _ = layout.SetDrawingEffect(self.brush(Ink::Link), rr);
-                        bgs.push((rr.startPosition, rr.startPosition + rr.length, Ink::LinkBg));
+                        bgs.push((
+                            n + rr.startPosition,
+                            n + rr.startPosition + rr.length,
+                            Ink::LinkBg,
+                        ));
                     }
                     Style::Image => {
                         let _ = layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rr);
                         let _ = layout.SetDrawingEffect(self.brush(Ink::Link), rr);
                     }
-                    Style::Mark => {
-                        bgs.push((rr.startPosition, rr.startPosition + rr.length, Ink::Mark))
-                    }
+                    Style::Mark => bgs.push((
+                        n + rr.startPosition,
+                        n + rr.startPosition + rr.length,
+                        Ink::Mark,
+                    )),
                     Style::Comment => {
                         let _ = layout.SetDrawingEffect(self.brush(Ink::Dim), rr);
                     }
                     Style::Command => {
                         let _ = layout.SetDrawingEffect(self.brush(Ink::CommandText), rr);
-                        let end = rr.startPosition + rr.length;
-                        bgs.push((rr.startPosition, end, Ink::CommandBg));
+                        let a = n + rr.startPosition;
+                        bgs.push((a, a + rr.length, Ink::CommandBg));
                     }
                 }
             }
@@ -1255,12 +1325,12 @@ impl View {
                         Tok::Number => Ink::CodeNumber,
                         Tok::Type => Ink::CodeType,
                     };
-                    let rr = range(s2d(content + r.start), s2d(content + r.end));
+                    let rr = loc(content + r.start, content + r.end);
                     let _ = layout.SetDrawingEffect(self.brush(ink), rr);
                 }
             }
             if let Some((r, ink)) = &callout {
-                let rr = range(s2d(r.start), s2d(r.end));
+                let rr = loc(r.start, r.end);
                 let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rr);
                 let _ = layout.SetDrawingEffect(self.brush(*ink), rr);
             }
@@ -1270,32 +1340,40 @@ impl View {
             let dim = self.brush(Ink::Dim);
             if active {
                 for r in &inl.hidden {
-                    let _ = layout.SetDrawingEffect(dim, range(s2d(r.start), s2d(r.end)));
+                    let _ = layout.SetDrawingEffect(dim, loc(r.start, r.end));
                 }
             }
-            // A shown syntax prefix (while editing, or always-visible heading markers).
-            if content > from {
-                let _ = layout.SetDrawingEffect(dim, range(0, s2d(content)));
-            }
         }
-        let mut tb = TextBox {
+        let baseline = line_metrics(&layout).first().map_or(0.0, |m| m.baseline);
+        // A shown syntax prefix (while editing, or always-visible heading markers).
+        let pre = (n > 0).then(|| unsafe {
+            let l = self
+                .dw
+                .CreateTextLayout(&text[..n as usize], &format, 1.0e5, 1.0e6)
+                .expect("CreateTextLayout");
+            let _ = l.SetDrawingEffect(self.brush(Ink::Dim), range(0, n));
+            let width = layout_caret(&l, n).0;
+            let dy = baseline - line_metrics(&l).first().map_or(0.0, |m| m.baseline);
+            Prefix {
+                layout: l,
+                len: n,
+                width,
+                dy,
+            }
+        });
+        TextBox {
+            height: Cell::new(layout_height(&layout)),
             layout,
             d2s,
             width: Cell::new(width),
-            height: Cell::new(0.0),
             bgs,
             links,
-            prefix_x: 0.0,
+            pre,
+            bullet,
             marker: None,
-            baseline: 0.0,
+            baseline,
             ink: st.ink,
-        };
-        tb.height.set(layout_height(&tb.layout));
-        if content > from {
-            tb.prefix_x = tb.caret(tb.s2d(content)).0;
         }
-        tb.baseline = line_metrics(&tb.layout).first().map_or(0.0, |m| m.baseline);
-        tb
     }
 
     /// Whether the link shown at `label` is a `[[wiki]]` link to a missing note.
@@ -1412,7 +1490,9 @@ impl View {
             let mut row = Vec::new();
             for (c, nat) in natural.iter_mut().enumerate() {
                 let rg = cells.get(c).cloned().unwrap_or(line.len()..line.len());
-                let tb = self.make_box(line, rg.start, rg.end, rg.start, st, false, true, 1.0e5);
+                let tb = self.make_box(
+                    line, rg.start, rg.end, rg.start, st, false, true, 1.0e5, None,
+                );
                 let mut m = DWRITE_TEXT_METRICS::default();
                 unsafe {
                     let _ = tb.layout.GetMetrics(&mut m);
@@ -1678,9 +1758,18 @@ impl View {
                     (info.content, info.content)
                 };
                 let w0 = right - cx - rpad;
+                // An unordered item's marker is drawn as its bullet while editing too.
+                let bullet = matches!(
+                    info.kind,
+                    Kind::List {
+                        ordered: false,
+                        task: None
+                    }
+                )
+                .then_some(info.marker);
                 let tb = this.cached_box(old, key, w0, |this| {
                     let mut tb =
-                        this.make_box(line, from, line.len(), content, st, act, inline, w0);
+                        this.make_box(line, from, line.len(), content, st, act, inline, w0, bullet);
                     if let (false, Kind::List { ordered: true, .. }) = (act, info.kind) {
                         let end = line[info.marker..]
                             .find(['.', ')'])
@@ -1698,10 +1787,8 @@ impl View {
                     }
                     tb
                 });
-                // While editing, the syntax prefix hangs left so content does not shift.
-                let hang = tb.prefix_x;
-                tb.set_width(w0 + hang);
-                row.x = cx - hang;
+                tb.set_width(w0);
+                row.x = cx;
                 row.top = pad.0;
                 row.h = tb.height.get() + pad.0 + pad.1;
                 row.vis = Vis::Text(tb);
@@ -2429,6 +2516,34 @@ impl View {
         }
     }
 
+    /// An unordered list item's bullet centered at (cx, cy); its shape follows the
+    /// nesting level.
+    unsafe fn bullet(&self, rt: &ID2D1HwndRenderTarget, cx: f32, cy: f32, level: u8, ink: Ink) {
+        let (z, base) = (self.zoom, self.base());
+        let brush = self.brush(ink);
+        let r = base * 0.17;
+        let e = D2D1_ELLIPSE {
+            point: v2(cx, cy),
+            radiusX: r,
+            radiusY: r,
+        };
+        unsafe {
+            if self.opts.dash_bullets {
+                let half = base * 0.22;
+                rt.FillRectangle(
+                    &rect(cx - half, cy - 0.7 * z, cx + half, cy + 0.7 * z),
+                    brush,
+                );
+                return;
+            }
+            match level % 3 {
+                0 => rt.FillEllipse(&e, brush),
+                1 => rt.DrawEllipse(&e, brush, 1.2 * z, None),
+                _ => rt.FillRectangle(&rect(cx - r, cy - r, cx + r, cy + r), brush),
+            }
+        }
+    }
+
     unsafe fn paint_row(
         &self,
         rt: &ID2D1HwndRenderTarget,
@@ -2502,6 +2617,19 @@ impl View {
                         self.brush(tb.ink),
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                     );
+                    if let Some(p) = &tb.pre {
+                        rt.DrawTextLayout(
+                            v2(ox - p.width, oy + p.dy),
+                            &p.layout,
+                            self.brush(Ink::Dim),
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+                    if let Some(b) = tb.bullet {
+                        let (x0, x1) = (tb.caret(b).0, tb.caret(b + 1).0);
+                        let cy = oy + tb.baseline - base * 0.3;
+                        self.bullet(rt, ox + (x0 + x1) / 2.0, cy, info.level, Ink::Dim);
+                    }
                     if let Some(m) = self.fold_marker(i) {
                         let rr = D2D1_ROUNDED_RECT {
                             rect: m,
@@ -2581,29 +2709,7 @@ impl View {
                                 }
                             }
                             (None, false) => {
-                                let cx = ox - base * 0.75;
-                                let r = base * 0.17;
-                                let e = D2D1_ELLIPSE {
-                                    point: v2(cx, cy),
-                                    radiusX: r,
-                                    radiusY: r,
-                                };
-                                if self.opts.dash_bullets {
-                                    let half = base * 0.22;
-                                    rt.FillRectangle(
-                                        &rect(cx - half, cy - 0.7 * z, cx + half, cy + 0.7 * z),
-                                        self.brush(Ink::Text),
-                                    );
-                                    return;
-                                }
-                                match info.level % 3 {
-                                    0 => rt.FillEllipse(&e, self.brush(Ink::Text)),
-                                    1 => rt.DrawEllipse(&e, self.brush(Ink::Text), 1.2 * z, None),
-                                    _ => rt.FillRectangle(
-                                        &rect(cx - r, cy - r, cx + r, cy + r),
-                                        self.brush(Ink::Text),
-                                    ),
-                                }
+                                self.bullet(rt, ox - base * 0.75, cy, info.level, Ink::Text)
                             }
                         }
                     }
