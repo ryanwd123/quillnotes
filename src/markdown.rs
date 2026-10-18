@@ -551,6 +551,9 @@ pub enum Style {
 pub struct Inline {
     /// Delimiters hidden when the line is rendered (shown dimmed while editing).
     pub hidden: Vec<Range<usize>>,
+    /// The delimiters among `hidden` of code, bold, italic, strikethrough and
+    /// highlight spans, which Live 2 hides while editing too.
+    pub fmt: Vec<Range<usize>>,
     pub spans: Vec<(Range<usize>, Style)>,
     /// Visible label range, link target, and title (empty if none).
     pub links: Vec<(Range<usize>, String, String)>,
@@ -580,6 +583,7 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Inline {
     let mut out = Inline::default();
     parse_range(s, start, end, &mut out);
     out.hidden.sort_by_key(|r| r.start);
+    out.fmt.sort_by_key(|r| r.start);
     out.spans.sort_by_key(|r| r.0.start);
     out.subs.sort_by_key(|r| r.0.start);
     out
@@ -786,8 +790,10 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                     }
                 }
                 if let Some(j) = found {
-                    out.hidden.push(i..i + n);
-                    out.hidden.push(j..j + n);
+                    for r in [i..i + n, j..j + n] {
+                        out.hidden.push(r.clone());
+                        out.fmt.push(r);
+                    }
                     out.spans.push((i + n..j, Style::Code));
                     i = j + n;
                 } else {
@@ -1006,8 +1012,10 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                 (_, 2) => Style::Bold,
                 _ => Style::Italic,
             };
-            out.hidden.push(open_r.clone());
-            out.hidden.push(close_r.clone());
+            for r in [open_r.clone(), close_r.clone()] {
+                out.hidden.push(r.clone());
+                out.fmt.push(r);
+            }
             out.spans.push((open_r.end..close_r.start, style));
             delims[oi].hi -= use_n;
             delims[ci].lo += use_n;
@@ -1091,10 +1099,14 @@ mod tests {
     }
 
     fn hidden(s: &str) -> String {
-        let inl = parse_inline(s, 0, s.len());
+        without(s, &parse_inline(s, 0, s.len()).hidden)
+    }
+
+    /// `s` with the (sorted) ranges `rs` removed.
+    fn without(s: &str, rs: &[Range<usize>]) -> String {
         let mut out = String::new();
         let mut i = 0;
-        for r in &inl.hidden {
+        for r in rs {
             if r.start >= i {
                 out.push_str(&s[i..r.start]);
                 i = r.end;
@@ -1117,6 +1129,20 @@ mod tests {
         assert_eq!(hidden("2 * 3 * 4"), "2 * 3 * 4");
         assert_eq!(hidden("\\*not italic\\*"), "*not italic*");
         assert_eq!(hidden("~~gone~~ and ==mark=="), "gone and mark");
+    }
+
+    #[test]
+    fn formatting_delimiters() {
+        let fmt = |s: &str| without(s, &parse_inline(s, 0, s.len()).fmt);
+        assert_eq!(
+            fmt("**b** *i* ~~s~~ ==m== `c` and ***bi***"),
+            "b i s m c and bi"
+        );
+        // Link, wiki link, escape and autolink syntax is not formatting.
+        assert_eq!(
+            fmt(r"[**a**](u) [[P|x]] \* <https://a.b>"),
+            r"[a](u) [[P|x]] \* <https://a.b>"
+        );
     }
 
     #[test]

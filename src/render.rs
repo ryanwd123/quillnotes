@@ -260,6 +260,18 @@ struct BoxStyle {
     code: Option<(&'static highlight::Lang, highlight::State)>,
 }
 
+/// How much of a text box's inline syntax is shown.
+#[derive(Clone, Copy, PartialEq)]
+enum Syntax {
+    /// Rendered: delimiters hidden and entities decoded.
+    Hidden,
+    /// Being edited: every delimiter shown, dimmed.
+    Shown,
+    /// Being edited in Live 2: formatting delimiters (`**`, `*`, `~~`, `==`, `` ` ``)
+    /// hidden, the rest shown dimmed.
+    Steady,
+}
+
 /// A laid-out run of text (one line, or one table cell) with its mapping back to source.
 pub struct TextBox {
     layout: IDWriteTextLayout,
@@ -1171,10 +1183,10 @@ impl View {
         16.0 * self.zoom
     }
 
-    /// Builds a text box for `line[from..to]`. Inline syntax is parsed from `content`;
-    /// when `active`, delimiters stay visible (dimmed) and `[from, content)` is the
-    /// hanging syntax prefix. A list marker at byte `bullet` in the prefix is drawn as
-    /// a bullet shape instead of its character.
+    /// Builds a text box for `line[from..to]`. Inline syntax is parsed from `content`
+    /// and shown as `syntax` says; `[from, content)` is the hanging syntax prefix. A
+    /// list marker at byte `bullet` in the prefix is drawn as a bullet shape instead
+    /// of its character.
     #[allow(clippy::too_many_arguments)]
     fn make_box(
         &mut self,
@@ -1183,7 +1195,7 @@ impl View {
         to: usize,
         content: usize,
         st: BoxStyle,
-        active: bool,
+        syntax: Syntax,
         inline: bool,
         width: f32,
         bullet: Option<usize>,
@@ -1205,7 +1217,12 @@ impl View {
                 callout = Some((name, callout_ink(&line[t..])));
             }
         }
-        let hidden: &[std::ops::Range<usize>] = if active { &[] } else { &inl.hidden };
+        let hidden: &[std::ops::Range<usize>] = match syntax {
+            Syntax::Hidden => &inl.hidden,
+            Syntax::Shown => &[],
+            Syntax::Steady => &inl.fmt,
+        };
+        let active = syntax != Syntax::Hidden;
         let subs: &[(std::ops::Range<usize>, String)] = if active { &[] } else { &inl.subs };
         let mut text = Vec::with_capacity(to - from);
         let mut d2s = Vec::with_capacity(to - from + 1);
@@ -1494,7 +1511,15 @@ impl View {
             for (c, nat) in natural.iter_mut().enumerate() {
                 let rg = cells.get(c).cloned().unwrap_or(line.len()..line.len());
                 let tb = self.make_box(
-                    line, rg.start, rg.end, rg.start, st, false, true, 1.0e5, None,
+                    line,
+                    rg.start,
+                    rg.end,
+                    rg.start,
+                    st,
+                    Syntax::Hidden,
+                    true,
+                    1.0e5,
+                    None,
                 );
                 let mut m = DWRITE_TEXT_METRICS::default();
                 unsafe {
@@ -1770,9 +1795,16 @@ impl View {
                     }
                 )
                 .then_some(info.marker);
+                // Live 2 keeps formatting delimiters hidden while editing, so text
+                // does not shift as the caret enters a line.
+                let syntax = match (act, steady) {
+                    (false, _) => Syntax::Hidden,
+                    (true, false) => Syntax::Shown,
+                    (true, true) => Syntax::Steady,
+                };
                 let tb = this.cached_box(old, key, w0, |this| {
-                    let mut tb =
-                        this.make_box(line, from, line.len(), content, st, act, inline, w0, bullet);
+                    let mut tb = this
+                        .make_box(line, from, line.len(), content, st, syntax, inline, w0, bullet);
                     if let (false, Kind::List { ordered: true, .. }) = (act, info.kind) {
                         let end = line[info.marker..]
                             .find(['.', ')'])
