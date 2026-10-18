@@ -412,6 +412,10 @@ pub fn message_box(
     caption: &str,
     style: MESSAGEBOX_STYLE,
 ) -> MESSAGEBOX_RESULT {
+    // A dialog would wait for a click and hold up the test run.
+    if cfg!(test) {
+        panic!("message box in a test: {text}");
+    }
     modal(|| unsafe {
         MessageBoxW(
             Some(hwnd),
