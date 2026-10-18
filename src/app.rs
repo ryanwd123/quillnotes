@@ -1735,12 +1735,11 @@ impl App {
                         .take_while(|&ch| ch == ' ' || ch == '`' || ch == '~')
                         .collect();
                     let indent: String = fence.chars().take_while(|&ch| ch == ' ').collect();
-                    let p = self.doc.replace(
+                    self.doc.replace(
                         c,
                         c,
                         &format!("\n{quote_prefix}{indent}\n{quote_prefix}{fence}"),
                     );
-                    let _ = p;
                     let mid = Pos::new(c.line + 1, quote_prefix.len() + indent.len());
                     self.set_sel(mid, mid);
                 }
@@ -4948,9 +4947,7 @@ impl App {
         let r = platform::message_box(
             self.hwnd,
             &format!(
-                "{name} changed on disk since it was opened.
-
-Overwrite it with your version?"
+                "{name} changed on disk since it was opened.\n\nOverwrite it with your version?"
             ),
             APP_NAME,
             MB_YESNO | MB_ICONWARNING,
@@ -4992,17 +4989,15 @@ Overwrite it with your version?"
         if !self.disk_differs() {
             return;
         }
-        let path = self.doc.path.clone().unwrap();
+        let Some(path) = self.doc.path.clone() else {
+            return;
+        };
         let stamp = doc::stamp(&path);
         if self.doc.is_dirty() {
             let name = self.doc_name();
             let r = platform::message_box(
                 self.hwnd,
-                &format!(
-                    "{name} changed on disk.
-
-Reload it and lose your unsaved changes?"
-                ),
+                &format!("{name} changed on disk.\n\nReload it and lose your unsaved changes?"),
                 APP_NAME,
                 MB_YESNO | MB_ICONWARNING,
             );
@@ -5026,14 +5021,8 @@ Reload it and lose your unsaved changes?"
         let fresh = Document::from_bytes(bytes, None).0;
         let end = self.doc.end();
         self.begin(EditKind::Other);
-        self.doc.replace(
-            Pos::default(),
-            end,
-            &fresh.lines.join(
-                "
-",
-            ),
-        );
+        self.doc
+            .replace(Pos::default(), end, &fresh.lines.join("\n"));
         self.set_sel(self.anchor, self.cursor);
         self.commit();
         self.doc.crlf = fresh.crlf;

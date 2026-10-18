@@ -1217,9 +1217,7 @@ impl App {
                 } else {
                     "Explorer: showing all files"
                 });
-                self.save_setting(|s| {
-                    s.set("explorer.notes_only", if on { "on" } else { "off" })
-                });
+                self.save_setting(|s| s.set("explorer.notes_only", if on { "on" } else { "off" }));
             }
         }
         self.invalidate();
