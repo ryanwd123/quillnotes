@@ -28,10 +28,17 @@ thread_local! {
     pub static IN_MODAL: Cell<bool> = const { Cell::new(false) };
 }
 
-fn modal<T>(f: impl FnOnce() -> T) -> T {
+/// Runs a dialog's message loop. Paints are skipped while it is open (the window
+/// procedure can't reach the app then), so the window repaints once it closes.
+fn modal<T>(hwnd: HWND, f: impl FnOnce() -> T) -> T {
     IN_MODAL.with(|m| m.set(true));
     let r = f();
     IN_MODAL.with(|m| m.set(false));
+    if !hwnd.is_invalid() {
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
+        }
+    }
     r
 }
 
@@ -318,7 +325,7 @@ unsafe fn result_path(item: &IShellItem) -> Option<PathBuf> {
 }
 
 pub fn open_dialog(hwnd: HWND, dir: Option<&Path>) -> Option<PathBuf> {
-    modal(|| unsafe {
+    modal(hwnd, || unsafe {
         let dlg: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         dlg.SetFileTypes(&FILTERS).ok()?;
@@ -339,7 +346,7 @@ pub fn save_dialog(
     dir: Option<&Path>,
     suggested: &str,
 ) -> Option<PathBuf> {
-    modal(|| unsafe {
+    modal(hwnd, || unsafe {
         let dlg: IFileSaveDialog =
             CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         dlg.SetFileTypes(&FILTERS).ok()?;
@@ -361,7 +368,7 @@ pub fn save_dialog(
 }
 
 pub fn folder_dialog(hwnd: HWND, start: Option<&Path>) -> Option<PathBuf> {
-    modal(|| unsafe {
+    modal(hwnd, || unsafe {
         let dlg: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let opts = dlg.GetOptions().ok()?;
@@ -388,7 +395,9 @@ pub fn recycle(hwnd: HWND, path: &Path) -> bool {
         fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_WANTNUKEWARNING).0 as u16,
         ..Default::default()
     };
-    modal(|| unsafe { SHFileOperationW(&mut op) == 0 && !op.fAnyOperationsAborted.as_bool() })
+    modal(hwnd, || unsafe {
+        SHFileOperationW(&mut op) == 0 && !op.fAnyOperationsAborted.as_bool()
+    })
 }
 
 /// Opens File Explorer with `path` selected.
@@ -416,7 +425,7 @@ pub fn message_box(
     if cfg!(test) {
         panic!("message box in a test: {text}");
     }
-    modal(|| unsafe {
+    modal(hwnd, || unsafe {
         MessageBoxW(
             Some(hwnd),
             &HSTRING::from(text),
@@ -462,7 +471,7 @@ pub fn popup_menu(hwnd: HWND, items: &[MenuItem], x: i32, y: i32) -> Option<u32>
         }
         let mut pt = POINT { x, y };
         let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut pt);
-        let chosen = modal(|| {
+        let chosen = modal(hwnd, || {
             TrackPopupMenu(
                 menu,
                 TPM_RETURNCMD | TPM_RIGHTBUTTON,
