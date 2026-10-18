@@ -2093,12 +2093,16 @@ impl View {
                         j += 1;
                     }
                     let lx = x0 + infos[i].quote as f32 * qw + infos[i].level as f32 * lw;
-                    self.decor.push(Decor::Block {
-                        x0: lx,
-                        x1: right,
-                        y0: rows[i].y,
-                        y1: rows[j].y + rows[j].h,
-                    });
+                    let (y0, y1) = (rows[i].y, rows[j].y + rows[j].h);
+                    // A block hidden under a folded heading has no height.
+                    if y1 > y0 {
+                        self.decor.push(Decor::Block {
+                            x0: lx,
+                            x1: right,
+                            y0,
+                            y1,
+                        });
+                    }
                     i = j + 1;
                 } else {
                     i += 1;
@@ -2117,12 +2121,12 @@ impl View {
                         let first = &lines[i][infos[i].qend.min(lines[i].len())..];
                         let ink = callout_ink(first);
                         let x = x0 + (d - 1) as f32 * qw + 2.0 * z;
-                        self.decor.push(Decor::Bar {
-                            x,
-                            y0: rows[i].y,
-                            y1: rows[j].y + rows[j].h,
-                            ink,
-                        });
+                        let (y0, y1) = (rows[i].y, rows[j].y + rows[j].h);
+                        // A quote hidden under a folded heading has no height;
+                        // its bar, inset 2px at each end, would be drawn inverted.
+                        if y1 > y0 {
+                            self.decor.push(Decor::Bar { x, y0, y1, ink });
+                        }
                         i = j + 1;
                     } else {
                         i += 1;
