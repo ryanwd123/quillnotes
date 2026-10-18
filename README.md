@@ -1,11 +1,15 @@
 # QuillNotes
+A native note taking app, markdown editor, and viewer
 
-A small, keyboard-driven, what-you-see-is-what-you-get Markdown editor for Windows. It is a single native executable (about 900 KB) built on Win32, Direct2D and DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs). There is no web view or GPU framework, and it needs no runtime. Direct2D draws in software rather than on the GPU: loading the GPU driver took most of the startup time and about 34 MB of memory, and a software repaint (about 7 ms) is fast enough for an editor.
+Why? I couldn't find one that had the features that I wanted that was not built with Electron or another bloated design. 
 
-Inspired by [Velotype](https://github.com/manyougz/velotype), but rebuilt from scratch for Windows only and without the menu bar.
+It is a single native executable (about 900 KB) built on Win32, Direct2D and
+DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs).
 
-> "QuillNotes" is a placeholder name. To rename, change `APP_NAME` in `src/app.rs`, the
-> `name` in `Cargo.toml`, and the strings in `assets/quillnotes.rc`.
+## Install
+Currently Windows only. 
+- Download the Windows portable executable from releases. 
+- Alternatively, install with pipx: `pipx install quillnotes`
 
 ## How it works
 
