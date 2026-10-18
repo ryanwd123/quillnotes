@@ -158,6 +158,9 @@ const SIDEBAR_INDENT: f32 = 14.0;
 const HEADER_H: f32 = 30.0;
 const OUTLINE_W: f32 = 240.0;
 
+/// Size of a code fence's text in Live 2, relative to body text.
+const FENCE_SCALE: f32 = 0.5;
+
 /// The file name bar above the document.
 pub struct HeaderView<'a> {
     pub name: &'a str,
@@ -1933,6 +1936,32 @@ impl View {
                             row.fit(opt(num::RULE_SPACING));
                         }
                     }
+                    Kind::Fence if steady => {
+                        // Fences are set very small so the row, caret and backticks
+                        // fit within the block's padding, which grows if it has to.
+                        let st = BoxStyle {
+                            ink: Ink::Dim,
+                            size: base * FENCE_SCALE,
+                            ..mono
+                        };
+                        text_row(
+                            self,
+                            &mut row,
+                            st,
+                            lx + code_pad,
+                            code_pad,
+                            false,
+                            (0.0, 0.0),
+                            &mut old_boxes,
+                        );
+                        let h = (row.h + 4.0 * z).max(opt(num::CODE_PADDING));
+                        if act {
+                            row.fit(h);
+                        } else {
+                            row.h = h;
+                            row.vis = Vis::None;
+                        }
+                    }
                     Kind::Fence if !act => row.h = opt(num::CODE_PADDING),
                     Kind::Fence | Kind::Code => {
                         let st = BoxStyle {
@@ -1954,13 +1983,6 @@ impl View {
                             (0.0, 0.0),
                             &mut old_boxes,
                         );
-                        if steady && info.kind == Kind::Fence {
-                            // The fence text spills out of the block, away from the code.
-                            let pad = opt(num::CODE_PADDING);
-                            let opening = i == 0 || infos[i - 1].block != info.block;
-                            row.top = if opening { pad - row.h } else { 0.0 };
-                            row.h = pad;
-                        }
                     }
                     Kind::Table { row: r } if !act => {
                         if r == 0 || table.is_none() {
