@@ -355,4 +355,5 @@ the lines that changed, which costs about 0.5 ms of CPU on a 20,000-line documen
 ## Not yet supported
 
 Math rendering, footnote rendering, setext headings, reference-style link resolution,
-remote images, and HTML/PDF export.
+remote images, and HTML/PDF export. Indented (four-space) code blocks are not treated as
+code, so indented lines stay part of lists and paragraphs; use fenced code instead.
