@@ -1,1 +1,21 @@
 /target
+
+# Python packaging (maturin writes wheels to target/wheels)
+/dist
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*
+.pypirc
+
+# Editors and OS
+.vs/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.claude/settings.local.json

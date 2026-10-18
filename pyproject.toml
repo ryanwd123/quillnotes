@@ -1,0 +1,27 @@
+# Packages the quillnotes.exe binary as a Python wheel so it can be installed
+# with `pip install quillnotes`. The version comes from Cargo.toml.
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "quillnotes"
+description = "A small, keyboard-driven, WYSIWYG Markdown editor for Windows"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ryan DeWitt" }]
+requires-python = ">=3.8"
+keywords = ["markdown", "editor", "notes", "windows"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Rust",
+    "Topic :: Text Editors",
+]
+dynamic = ["version"]
+
+[tool.maturin]
+bindings = "bin"
