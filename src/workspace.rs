@@ -30,6 +30,12 @@ fn skipped(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
 }
 
+/// Build output marked with a `CACHEDIR.TAG` (Cargo's `target`, among others). These
+/// can hold many thousands of files, and scanning them slowed every startup.
+fn cache_dir(dir: &Path) -> bool {
+    dir.join("CACHEDIR.TAG").is_file()
+}
+
 /// All entries under `root`, folders before files, each level sorted by name.
 pub fn scan(root: &Path) -> Vec<Entry> {
     let mut out = Vec::new();
@@ -46,7 +52,8 @@ fn scan_dir(dir: &Path, depth: usize, out: &mut Vec<Entry>) {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let is_dir = e.file_type().ok()?.is_dir();
-            (!skipped(&name)).then_some((name, e.path(), is_dir))
+            let path = e.path();
+            (!skipped(&name) && !(is_dir && cache_dir(&path))).then_some((name, path, is_dir))
         })
         .collect();
     items.sort_by(|a, b| {
@@ -857,7 +864,7 @@ mod tests {
     fn temp_tree() -> PathBuf {
         let root = std::env::temp_dir().join(format!("quillnotes-ws-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for d in ["notes/2024", "B", ".git", "node_modules"] {
+        for d in ["notes/2024", "B", ".git", "node_modules", "target/debug"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         for f in [
@@ -867,6 +874,8 @@ mod tests {
             "notes/2024/jan.md",
             "B/image.png",
             ".git/config",
+            "target/CACHEDIR.TAG",
+            "target/debug/app.exe",
         ] {
             std::fs::write(root.join(f), "x").unwrap();
         }
