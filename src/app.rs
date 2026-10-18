@@ -18,7 +18,7 @@ use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
 use crate::doc::{self, DiskChange, Document, EditKind, Pos, find_all, find_ci};
 use crate::keymap::{self, Action, Chord, Keymap};
 use crate::markdown::{self, Align, Kind, LineInfo};
-use crate::options::RenderOptions;
+use crate::options::{Prefs, RenderOptions};
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
@@ -293,6 +293,8 @@ pub struct App {
     forward: Vec<NavEntry>,
     keymap: Keymap,
     theme: Theme,
+    /// General preferences ("Preferences: Open Settings").
+    prefs: Prefs,
     /// Spell checking: on or off, Windows' checker (made when first needed; None
     /// inside when there is none for the language), and each line's misspellings by
     /// a hash of its text.
@@ -433,6 +435,7 @@ impl App {
             forward: Vec::new(),
             keymap,
             theme,
+            prefs: Prefs::load(&settings),
             spell_on: settings.get("spellcheck") != Some("off"),
             speller: None,
             spell_cache: HashMap::new(),
@@ -3575,6 +3578,13 @@ impl App {
             let steps = if key == VK_LEFT { -1 } else { 1 } * if shift { 5 } else { 1 };
             return self.change_folder_settings(|f| opt.adjust(f, steps));
         }
+        if p.mode == Mode::Preferences
+            && matches!(key, VK_LEFT | VK_RIGHT)
+            && let Some(Target::Pref(pref)) = p.selected().map(|i| i.target.clone())
+        {
+            let steps = if key == VK_LEFT { -1 } else { 1 };
+            return self.change_prefs(|x| pref.adjust(x, steps));
+        }
         // The key that opened the command palette or the search closes it.
         if bound == Some(Action::Palette)
             || (bound == Some(Action::SearchFiles) && p.mode == Mode::Search)
@@ -3587,6 +3597,7 @@ impl App {
             VK_ESCAPE if search && !p.query.is_empty() => p.clear(),
             VK_ESCAPE => return self.close_palette(true),
             VK_RETURN => return self.palette_accept(),
+            VK_TAB if p.mode == Mode::SaveAs => p.save_complete(),
             VK_UP => p.move_by(-1),
             VK_DOWN => p.move_by(1),
             VK_PRIOR => p.move_by(-page),
@@ -3637,6 +3648,16 @@ impl App {
                 return self.folder_text_prompt(opt);
             }
             Target::FolderOpt(opt) => return self.change_folder_settings(|f| opt.activate(f)),
+            Target::Pref(pref) => return self.change_prefs(|x| pref.activate(x)),
+            // Picking a folder completes it, as Tab does; the palette stays open.
+            Target::SaveFolder(_) => {
+                if let Some(p) = &mut self.palette {
+                    p.save_complete();
+                }
+                return self.palette_changed();
+            }
+            Target::SaveInvalid(why) => return self.say(why),
+            Target::SaveAs(path) => return self.save_in_folder(&path),
             _ => {}
         }
         let mode = self.palette.take().map(|p| p.mode);
@@ -3644,7 +3665,13 @@ impl App {
         self.end_search();
         match target {
             Target::Command(cmd) => self.palette_command(cmd),
-            Target::Option(_) | Target::ResetOptions | Target::FolderOpt(_) => {}
+            Target::Option(_)
+            | Target::ResetOptions
+            | Target::FolderOpt(_)
+            | Target::Pref(_)
+            | Target::SaveAs(_)
+            | Target::SaveFolder(_)
+            | Target::SaveInvalid(_) => {}
             Target::OpenFolderDialog => self.open_folder_dialog(),
             Target::OpenFile(path) => self.open_file_in_folder(&path),
             Target::Heading(l) => {
@@ -3717,6 +3744,7 @@ impl App {
             Command::ToggleExplorer => self.toggle_explorer(),
             Command::ToggleOutline => self.toggle_outline(),
             Command::FolderSettings => self.folder_settings_palette(),
+            Command::Settings => self.open_palette(Palette::prefs(&self.prefs)),
             Command::ToggleSource => self.toggle_source(),
             Command::CycleViewMode => self.set_mode(self.mode.next()),
             Command::ToggleTheme => self.toggle_theme(),
@@ -3745,6 +3773,19 @@ impl App {
             self.say(format!("Rendering options not saved: {e}"));
         }
         self.relayout();
+    }
+
+    /// Applies a change to the general preferences and saves it.
+    fn change_prefs(&mut self, f: impl FnOnce(&mut Prefs)) {
+        f(&mut self.prefs);
+        let prefs = self.prefs;
+        if let Some(p) = &mut self.palette {
+            p.refresh_prefs(&prefs);
+        }
+        if let Err(e) = Settings::update(|s| prefs.store(s)) {
+            self.say(format!("Settings not saved: {e}"));
+        }
+        self.invalidate();
     }
 
     /// Handles a click while the palette is open: pick an item, or close when outside.
@@ -4801,9 +4842,29 @@ impl App {
         }
     }
 
+    /// Save As. With a folder open (and the note in it or untitled), the path is
+    /// picked in the palette, so this returns false: the note is saved later, when
+    /// the path is chosen.
     fn save_as(&mut self) -> bool {
-        let suggested = self
-            .doc
+        if self.save_palette() {
+            return false;
+        }
+        let suggested = self.suggested_name();
+        let dir = self.doc_dir().or_else(|| self.folder.clone());
+        match platform::save_dialog(
+            self.hwnd,
+            self.doc.path.as_deref(),
+            dir.as_deref(),
+            &suggested,
+        ) {
+            Some(p) => self.write_to(&p),
+            None => false,
+        }
+    }
+
+    /// A file name for an untitled note, from its first line of text.
+    fn suggested_name(&self) -> String {
+        self.doc
             .lines
             .iter()
             .find(|l| !l.trim().is_empty())
@@ -4816,17 +4877,7 @@ impl App {
             })
             .filter(|s| !s.trim().is_empty())
             .map(|s| format!("{}.md", s.trim()))
-            .unwrap_or_else(|| "Untitled.md".into());
-        let dir = self.doc_dir().or_else(|| self.folder.clone());
-        match platform::save_dialog(
-            self.hwnd,
-            self.doc.path.as_deref(),
-            dir.as_deref(),
-            &suggested,
-        ) {
-            Some(p) => self.write_to(&p),
-            None => false,
-        }
+            .unwrap_or_else(|| "Untitled.md".into())
     }
 
     /// Whether the open file's text on disk differs from what it was when read or

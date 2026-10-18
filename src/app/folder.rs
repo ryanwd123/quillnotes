@@ -800,18 +800,20 @@ impl App {
     // File operations
 
     fn delete_path(&mut self, path: &Path) {
-        let what = if path.is_dir() { "folder" } else { "file" };
-        let r = platform::message_box(
-            self.hwnd,
-            &format!(
-                "Move the {what} \u{201c}{}\u{201d} to the Recycle Bin?",
-                name_of(path)
-            ),
-            APP_NAME,
-            MB_YESNO | MB_ICONWARNING,
-        );
-        if r != IDYES {
-            return;
+        if self.prefs.confirm_delete {
+            let what = if path.is_dir() { "folder" } else { "file" };
+            let r = platform::message_box(
+                self.hwnd,
+                &format!(
+                    "Move the {what} \u{201c}{}\u{201d} to the Recycle Bin?",
+                    name_of(path)
+                ),
+                APP_NAME,
+                MB_YESNO | MB_ICONWARNING,
+            );
+            if r != IDYES {
+                return;
+            }
         }
         let rows = self.tree_rows();
         let at = self.tree_sel_row(&rows);
@@ -840,6 +842,59 @@ impl App {
         } else {
             format!("Moved {} to the Recycle Bin", name_of(path))
         });
+    }
+
+    /// Save As with a folder open: picks the path in the palette, starting in the
+    /// note's folder (or the one selected in the explorer). Returns false when the
+    /// Windows dialog is used instead: the setting is off, or the note is not in
+    /// the folder.
+    pub(super) fn save_palette(&mut self) -> bool {
+        let Some(root) = self.folder.clone() else {
+            return false;
+        };
+        let outside = self
+            .doc
+            .path
+            .as_deref()
+            .is_some_and(|p| !workspace::contains(&root, p));
+        if !self.prefs.save_prompt || outside {
+            return false;
+        }
+        let dirs = self
+            .entries
+            .iter()
+            .filter(|e| e.is_dir)
+            .map(|e| workspace::relative(&root, &e.path).replace('/', "\\"))
+            .collect();
+        let dir = self
+            .doc_dir()
+            .or_else(|| self.target_dir())
+            .unwrap_or_else(|| root.clone());
+        let rel = workspace::relative(&root, &dir);
+        let start = if rel.is_empty() {
+            rel
+        } else {
+            format!("{rel}/")
+        };
+        let suggested = match self.doc.path.as_deref() {
+            Some(p) => name_of(p),
+            None => self.suggested_name(),
+        };
+        self.open_palette(Palette::save_as(&root, dirs, &start, &suggested));
+        true
+    }
+
+    /// Enter on the palette's save row: creates any missing folders and saves.
+    pub(super) fn save_in_folder(&mut self, path: &Path) {
+        if let Some(dir) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            return self.say(format!("Could not create {}: {e}", name_of(dir)));
+        }
+        self.close_palette(false);
+        if self.write_to(path) {
+            self.reveal_in_tree(path);
+        }
     }
 
     /// Renames or moves `src` to `target`, following the open file if it moves and
@@ -1383,6 +1438,33 @@ mod tests {
     use super::super::tests::app;
     use super::*;
     use crate::palette::Target;
+
+    #[test]
+    fn save_as_in_a_folder_uses_the_palette() {
+        let root = std::env::temp_dir().join(format!("penmark-savepal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let mut a = app("# Plan\n");
+        a.prefs.save_prompt = true;
+        a.folder = Some(root.clone());
+        a.entries = workspace::scan(&root);
+        assert!(!a.save());
+        let p = a.palette.as_mut().expect("save palette");
+        assert_eq!(p.mode, Mode::SaveAs);
+        assert_eq!(p.visible().0[0].0.label, "Save as Plan.md");
+        p.insert("notes/new\\idea");
+        a.palette_accept();
+        let saved = root.join("notes").join("new").join("idea.md");
+        assert!(a.palette.is_none());
+        assert_eq!(a.doc.path.as_deref(), Some(saved.as_path()));
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "# Plan\n");
+        assert!(!a.doc.is_dirty());
+
+        // Save As starts in the note's folder.
+        a.save_as();
+        assert_eq!(a.palette.as_ref().unwrap().query, "notes/new/");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn search_in_files() {

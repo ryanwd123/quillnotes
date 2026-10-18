@@ -1,4 +1,5 @@
-//! User-adjustable rendering options, persisted in the settings file.
+//! User-adjustable rendering options and general preferences, persisted in the
+//! settings file.
 
 use crate::settings::Settings;
 
@@ -263,6 +264,85 @@ impl Opt {
     }
 }
 
+/// General preferences, listed by "Preferences: Settings".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Prefs {
+    /// Ask before moving an explorer entry to the Recycle Bin.
+    pub confirm_delete: bool,
+    /// With a folder open, Save As picks a path in the palette instead of the
+    /// Windows save dialog.
+    pub save_prompt: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs {
+            confirm_delete: true,
+            save_prompt: true,
+        }
+    }
+}
+
+impl Prefs {
+    pub fn load(s: &Settings) -> Self {
+        let d = Prefs::default();
+        let on = |key: &str, default: bool| s.get(key).map_or(default, |v| v == "on");
+        Prefs {
+            confirm_delete: on("confirm_delete", d.confirm_delete),
+            save_prompt: on("save_prompt", d.save_prompt),
+        }
+    }
+
+    pub fn store(&self, s: &mut Settings) {
+        let on = |b: bool| if b { "on" } else { "off" };
+        s.set("confirm_delete", on(self.confirm_delete));
+        s.set("save_prompt", on(self.save_prompt));
+    }
+}
+
+/// One preference, as listed in the palette.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pref {
+    ConfirmDelete,
+    SavePrompt,
+}
+
+impl Pref {
+    pub const ALL: [Pref; 2] = [Pref::ConfirmDelete, Pref::SavePrompt];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Pref::ConfirmDelete => "Explorer: Confirm before deleting",
+            Pref::SavePrompt => "Save: Choose the path in the palette when a folder is open",
+        }
+    }
+
+    fn flag(self, p: &mut Prefs) -> &mut bool {
+        match self {
+            Pref::ConfirmDelete => &mut p.confirm_delete,
+            Pref::SavePrompt => &mut p.save_prompt,
+        }
+    }
+
+    pub fn value_text(self, p: &Prefs) -> String {
+        on_off(match self {
+            Pref::ConfirmDelete => p.confirm_delete,
+            Pref::SavePrompt => p.save_prompt,
+        })
+    }
+
+    /// Left / Right: off / on.
+    pub fn adjust(self, p: &mut Prefs, steps: i32) {
+        *self.flag(p) = steps > 0;
+    }
+
+    /// Enter / click: toggles.
+    pub fn activate(self, p: &mut Prefs) {
+        let f = self.flag(p);
+        *f = !*f;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +381,19 @@ mod tests {
         // Out-of-range values are clamped.
         s.set("render.list_indent", "1");
         assert_eq!(RenderOptions::load(&s).num(num::LIST_INDENT), 12.0);
+    }
+
+    #[test]
+    fn prefs_toggle_and_round_trip() {
+        let mut p = Prefs::default();
+        assert!(p.confirm_delete && p.save_prompt);
+        Pref::ConfirmDelete.activate(&mut p);
+        Pref::SavePrompt.adjust(&mut p, -1);
+        assert_eq!(Pref::ConfirmDelete.value_text(&p), "☐ Off");
+        let mut s = Settings::default();
+        p.store(&mut s);
+        assert_eq!(s.get("confirm_delete"), Some("off"));
+        assert_eq!(Prefs::load(&s), p);
+        assert_eq!(Prefs::load(&Settings::default()), Prefs::default());
     }
 }

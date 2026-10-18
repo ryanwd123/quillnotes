@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::doc;
 use crate::keymap::{Action, Keymap};
-use crate::options::{Opt, RenderOptions};
+use crate::options::{Opt, Pref, Prefs, RenderOptions};
 use crate::render::PALETTE_ROWS;
 use crate::table::TableCmd;
 use crate::workspace::{self, Entry, FolderOpt, FolderSettings};
@@ -30,6 +30,7 @@ pub enum Command {
     UnfoldHeading,
     UnfoldAll,
     FolderSettings,
+    Settings,
     ChangeFont,
     ChangeCodeFont,
     CodeFontSize,
@@ -115,6 +116,7 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         Some(Action::Run(Command::ToggleSpellCheck)),
         Command::ToggleSpellCheck,
     ),
+    ("Preferences: Open Settings", None, Command::Settings),
     (
         "Preferences: Folder Settings",
         None,
@@ -177,6 +179,13 @@ pub enum Target {
     FolderOpt(FolderOpt),
     /// A heading in the open note, by line.
     Heading(usize),
+    Pref(Pref),
+    /// Save in Folder: save the note at this path.
+    SaveAs(PathBuf),
+    /// Save in Folder: a subfolder, as the query that completes to it.
+    SaveFolder(String),
+    /// Save in Folder: the typed path can't be used, and why.
+    SaveInvalid(String),
 }
 
 pub struct Item {
@@ -212,6 +221,8 @@ pub enum Mode {
     FolderSettings,
     Search,
     Headings,
+    Preferences,
+    SaveAs,
 }
 
 /// A Markdown file searched by "Search in Files".
@@ -221,6 +232,17 @@ pub struct SearchFile {
     pub shown: String,
     pub lines: Vec<String>,
 }
+
+/// Save in Folder: the open folder, its subfolders (relative, `\`-separated) and
+/// the file name used when none is typed.
+struct SaveState {
+    root: PathBuf,
+    dirs: Vec<String>,
+    suggested: String,
+}
+
+/// Characters Windows does not allow in file names (besides separators).
+const BAD_CHARS: &str = ":*?\"<>|";
 
 /// Stop listing search results after this many matching lines.
 pub const MAX_RESULTS: usize = 2000;
@@ -249,6 +271,7 @@ pub struct Palette {
     search: Vec<SearchFile>,
     /// Search mode: matching lines and files, and whether results were cut off.
     pub found: (usize, usize, bool),
+    save: Option<SaveState>,
 }
 
 /// The label for a line matching `q` first at byte `col`: trimmed, starting shortly
@@ -338,6 +361,7 @@ impl Palette {
             restore_font: None,
             search: Vec::new(),
             found: (0, 0, false),
+            save: None,
         };
         p.refilter();
         p
@@ -531,6 +555,176 @@ impl Palette {
         Palette::new(Mode::FolderSettings, items)
     }
 
+    /// The general preferences.
+    pub fn prefs(p: &Prefs) -> Self {
+        let items = Pref::ALL
+            .iter()
+            .map(|&pref| Item::new(pref.label(), pref.value_text(p), Target::Pref(pref)))
+            .collect();
+        Palette::new(Mode::Preferences, items)
+    }
+
+    pub fn refresh_prefs(&mut self, p: &Prefs) {
+        for item in &mut self.items {
+            if let Target::Pref(pref) = item.target {
+                item.detail = pref.value_text(p);
+            }
+        }
+    }
+
+    /// Save in Folder: picks where to save under `root` by typing a path, with `/`
+    /// or `\` between folders (missing ones are created). `dirs` are the folder's
+    /// subfolders, relative to it, offered as completions; `start` is the query to
+    /// begin with and `suggested` the file name used when none is typed.
+    pub fn save_as(root: &Path, dirs: Vec<String>, start: &str, suggested: &str) -> Self {
+        let mut p = Palette::new(Mode::SaveAs, Vec::new());
+        p.save = Some(SaveState {
+            root: root.to_path_buf(),
+            dirs,
+            suggested: suggested.to_string(),
+        });
+        p.insert(start);
+        p
+    }
+
+    /// The separator to show and complete with: `/`, unless the query uses only `\`.
+    fn sep(&self) -> &'static str {
+        if self.query.contains('\\') && !self.query.contains('/') {
+            "\\"
+        } else {
+            "/"
+        }
+    }
+
+    /// Save in Folder: the first row saves at the typed path (`.md` added unless it
+    /// has a text extension); the rest are subfolders completing its last part.
+    fn save_items(&mut self) {
+        self.items.clear();
+        self.filtered.clear();
+        self.selected = 0;
+        self.first = 0;
+        let sep = self.sep();
+        // Taken while the rows are built from it.
+        let Some(s) = self.save.take() else { return };
+        let q = self.query.replace('/', "\\");
+        let (parent, name) = q.rsplit_once('\\').unwrap_or(("", &q));
+        // Doubled or leading separators are ignored.
+        let segs: Vec<&str> = parent
+            .split('\\')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
+        let parent = segs.join("\\");
+        let name = name.trim();
+        let file = if name.is_empty() { &s.suggested } else { name };
+        let rel = if parent.is_empty() {
+            file.to_string()
+        } else {
+            format!("{parent}\\{file}")
+        };
+        let mut path = s.root.join(&rel);
+        let mut shown = rel.replace('\\', sep);
+        if !workspace::is_text(&path) {
+            path.as_mut_os_string().push(".md");
+            shown.push_str(".md");
+        }
+        let problem = if segs.iter().any(|p| *p == "." || *p == "..") {
+            Some("Folders named . or .. are not allowed".to_string())
+        } else if rel.contains(|c| BAD_CHARS.contains(c)) {
+            Some("Names cannot contain : * ? \" < > |".to_string())
+        } else if path.is_dir() {
+            Some(format!("{shown} is a folder"))
+        } else {
+            None
+        };
+        let label = format!("Save as {shown}");
+        self.items.push(match problem {
+            Some(why) => Item::new(label, why.clone(), Target::SaveInvalid(why)),
+            None => {
+                let detail = if path.exists() {
+                    "Replaces the existing file".to_string()
+                } else if !parent.is_empty() && !s.root.join(&parent).is_dir() {
+                    format!("Creates the folder {}", parent.replace('\\', sep))
+                } else {
+                    String::new()
+                };
+                Item::new(label, detail, Target::SaveAs(path))
+            }
+        });
+        self.filtered.push((0, Vec::new()));
+        // Subfolders of the typed folder whose names contain the last part, those
+        // starting with it first. `at` is the match's byte offset in the folder path.
+        let mut dirs: Vec<(bool, &String, usize)> = s
+            .dirs
+            .iter()
+            .filter_map(|d| {
+                let (dp, dn) = d.rsplit_once('\\').unwrap_or(("", d));
+                if dp.to_lowercase() != parent.to_lowercase() {
+                    return None;
+                }
+                let at = if name.is_empty() {
+                    0
+                } else {
+                    doc::find_ci(dn, name, 0)?
+                };
+                Some((at != 0, d, d.len() - dn.len() + at))
+            })
+            .collect();
+        dirs.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+        });
+        for (_, d, at) in dirs {
+            let label = format!("{}{sep}", d.replace('\\', sep));
+            let hits = label[at..at + name.len()]
+                .char_indices()
+                .map(|(b, _)| at + b)
+                .collect();
+            self.filtered.push((self.items.len(), hits));
+            self.items.push(Item::new(
+                label.clone(),
+                "Folder",
+                Target::SaveFolder(label),
+            ));
+        }
+        self.save = Some(s);
+    }
+
+    /// Tab in Save in Folder: completes the highlighted subfolder, or the first one
+    /// matching what was typed; with no name typed yet, fills in the suggested one.
+    pub fn save_complete(&mut self) {
+        let Some(s) = &self.save else { return };
+        let typed = !self
+            .query
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .is_empty();
+        let folder = |i: &Item| match &i.target {
+            Target::SaveFolder(q) => Some(q.clone()),
+            _ => None,
+        };
+        let fill = match self.selected().and_then(folder) {
+            Some(q) => q,
+            None if !typed => {
+                let name = s.suggested.strip_suffix(".md").unwrap_or(&s.suggested);
+                format!("{}{name}", self.query)
+            }
+            None => match self
+                .filtered
+                .get(1)
+                .and_then(|(i, _)| folder(&self.items[*i]))
+            {
+                Some(q) => q,
+                None => return,
+            },
+        };
+        self.query = fill;
+        self.cur = self.query.len();
+        self.refilter();
+    }
+
     pub fn refresh_folder_values(&mut self, f: &FolderSettings) {
         for item in &mut self.items {
             if let Target::FolderOpt(opt) = item.target {
@@ -559,6 +753,8 @@ impl Palette {
             Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles or edits",
             Mode::Search => "Search in Markdown files",
             Mode::Headings => "Go to a heading in this note",
+            Mode::Preferences => "Settings  ·  ←/→ or Enter toggles",
+            Mode::SaveAs => "Save as: type a name, / or \\ for folders, Tab completes",
         }
     }
 
@@ -573,12 +769,17 @@ impl Palette {
             Mode::Search if self.query.trim().is_empty() => "Type to search the folder's notes",
             Mode::Search => "No results",
             Mode::Headings => "No matching headings",
+            Mode::Preferences => "No matching settings",
+            Mode::SaveAs => "",
         }
     }
 
     fn refilter(&mut self) {
         if self.mode == Mode::Search {
             return self.find_in_files();
+        }
+        if self.mode == Mode::SaveAs {
+            return self.save_items();
         }
         let mut scored: Vec<(i32, usize, Vec<usize>)> = self
             .items
@@ -937,6 +1138,74 @@ mod tests {
             .iter()
             .find(|i| i.label == "Font: Change Editor Font");
         assert_eq!(font.unwrap().detail, "F2");
+    }
+
+    #[test]
+    fn save_as_completes_folders_and_builds_paths() {
+        let root = std::env::temp_dir().join(format!("penmark-saveas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("projects").join("work")).unwrap();
+        std::fs::create_dir_all(root.join("daily")).unwrap();
+        std::fs::write(root.join("daily").join("today.md"), "").unwrap();
+        let dirs = vec!["daily".into(), "projects".into(), r"projects\work".into()];
+        let labels = |p: &Palette| -> Vec<String> {
+            p.visible().0.iter().map(|r| r.0.label.clone()).collect()
+        };
+        let target = |p: &Palette| p.selected().unwrap().target.clone();
+
+        // Nothing typed: the suggested name, and the top-level folders.
+        let mut p = Palette::save_as(&root, dirs, "", "Meeting notes.md");
+        assert_eq!(
+            labels(&p),
+            ["Save as Meeting notes.md", "daily/", "projects/"]
+        );
+        assert_eq!(target(&p), Target::SaveAs(root.join("Meeting notes.md")));
+
+        // A partial name lists the folders containing it; Tab completes the first.
+        p.insert("pro");
+        assert_eq!(labels(&p), ["Save as pro.md", "projects/"]);
+        assert_eq!(p.visible().0[1].1, &[0, 1, 2]);
+        p.save_complete();
+        assert_eq!(p.query, "projects/");
+        assert_eq!(labels(&p)[1], "projects/work/");
+        // With no name typed, Tab fills in the suggestion.
+        p.save_complete();
+        assert_eq!(p.query, "projects/Meeting notes");
+
+        // Either slash works; missing folders are created; .md is added.
+        p.clear();
+        p.insert(r"projects\new/sub\idea");
+        assert_eq!(
+            target(&p),
+            Target::SaveAs(root.join(r"projects\new\sub\idea.md"))
+        );
+        assert_eq!(
+            p.selected().unwrap().detail,
+            "Creates the folder projects/new/sub"
+        );
+        // Backslashes only: shown with backslashes.
+        p.clear();
+        p.insert(r"daily\today");
+        assert_eq!(labels(&p)[0], r"Save as daily\today.md");
+        assert_eq!(p.selected().unwrap().detail, "Replaces the existing file");
+        // A text extension is kept.
+        p.clear();
+        p.insert("list.txt");
+        assert_eq!(target(&p), Target::SaveAs(root.join("list.txt")));
+        // Picking a folder row completes into it.
+        p.clear();
+        p.insert("projects/w");
+        p.move_by(1);
+        assert_eq!(target(&p), Target::SaveFolder("projects/work/".into()));
+        p.save_complete();
+        assert_eq!(p.query, "projects/work/");
+
+        for bad in ["../up", "a:b"] {
+            p.clear();
+            p.insert(bad);
+            assert!(matches!(target(&p), Target::SaveInvalid(_)), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

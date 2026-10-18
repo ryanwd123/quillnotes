@@ -109,7 +109,8 @@ and scroll in that file, and the `Alt+Left` history of files before it.
   from it, `Ctrl+0` to focus it) shows the folder tree, skipping hidden folders such
   as `.git` and `node_modules`. Click or
   press `Enter` to open a file; non-text files open in their usual app. `Delete` moves
-  to the Recycle Bin after a confirmation. `F2` renames, and a name like
+  to the Recycle Bin after a confirmation (turn it off in **Preferences: Open
+  Settings**). `F2` renames, and a name like
   `archive/old.md` moves the file. `Ctrl+X` / `Ctrl+V` or drag and drop move files
   and folders. Right-click for New File, New Folder, Rename, Delete and Reveal in File
   Explorer. If the open file is moved or renamed, the editor follows it, and when other
@@ -118,6 +119,13 @@ and scroll in that file, and the `Alt+Left` history of files before it.
   explorer focused, `A` starts a new file and `Shift+A` a new folder; the header has
   buttons for both, and a funnel that shows only Markdown files (hiding `data`
   folders and everything else).
+* With a folder open, **Save As** (and saving a new note) asks for the path in the
+  palette instead of the Windows dialog. It starts in the note's folder; type a name,
+  with `/` or `\` between folders. Missing folders are created, and `.md` is added
+  unless the name has a text extension. The folder's subfolders are listed as you
+  type: `Tab` (or picking one) completes the highlighted folder, or with no name typed
+  yet fills in the suggested one. A note outside the folder still uses the Windows
+  dialog, and **Preferences: Open Settings** turns the palette off.
 * **Preferences: Folder Settings** in the palette holds per-folder settings: autosave
   on or off, and the delay in seconds after the last edit. With autosave on, switching
   files, closing the window, and signing out save instead of asking. Folder settings
@@ -260,6 +268,9 @@ mouse) to select, `Enter` to run, and `Esc` to close. Settings are saved to
 * **Font: Code Font Size** and **Preferences: UI Font Size** open the rendering
   options at that setting: code text relative to the text around it, and the size of
   the status bar, explorer, outline, palette and menus.
+* **Preferences: Open Settings** lists general settings, toggled with `Enter` or
+  `Left`/`Right`: confirm before deleting from the explorer, and choose the save path
+  in the palette when a folder is open. Both are on by default.
 * **View: Rendering Options** lists every option with its current value. Type to
   filter, `Left`/`Right` to adjust (`Shift` for bigger steps), and `Enter` to
   toggle. Changes apply and save immediately. The options are:
@@ -334,7 +345,7 @@ use `Ctrl+O` / `Ctrl+R`.
 | `src/highlight.rs` | Syntax highlighting for fenced code: a table of languages and a tokenizer with per-line state. Unit-tested. |
 | `src/spell.rs` | Spell check: which parts of a line are prose, mapping the Windows checker's results back to text. Unit-tested. |
 | `src/theme.rs` | Light and dark color palettes, overridden by `theme.ini`. Unit-tested. |
-| `src/options.rs` | Rendering options (bullets, heading lines, spacing): defaults, ranges, persistence. Unit-tested. |
+| `src/options.rs` | Rendering options (bullets, heading lines, spacing) and general preferences: defaults, ranges, persistence. Unit-tested. |
 | `src/platform.rs` | Clipboard (text, files, images), PNG encoding, file dialogs, message boxes, processes, shell, theme detection. |
 | `src/main.rs` | Window class, message loop, message dispatch. |
 

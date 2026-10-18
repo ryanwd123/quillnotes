@@ -400,6 +400,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
     ),
     (
         "Preferences",
+        "settings",
+        Action::Run(Command::Settings),
+        "",
+    ),
+    (
+        "Preferences",
         "folder_settings",
         Action::Run(Command::FolderSettings),
         "",
