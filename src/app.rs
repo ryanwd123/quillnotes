@@ -323,6 +323,21 @@ fn rfind_ci(hay: &str, needle: &str, before: usize) -> Option<usize> {
         .find(|&i| hay.is_char_boundary(i) && h[i..i + n.len()].eq_ignore_ascii_case(n))
 }
 
+/// Whether Windows reserves `stem` for a device (`CON`, `NUL`, `COM1`, ...), which
+/// it does with any extension, so `CON.md` can't be created either.
+fn is_reserved_name(stem: &str) -> bool {
+    let base = stem
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (base.len() == 4
+            && (base.starts_with("COM") || base.starts_with("LPT"))
+            && base.as_bytes()[3].is_ascii_digit())
+}
+
 fn slug(s: &str) -> String {
     s.trim()
         .to_lowercase()
@@ -4887,14 +4902,20 @@ impl App {
             .iter()
             .find(|l| !l.trim().is_empty())
             .map(|l| {
-                l.trim_start_matches(['#', ' ', '>', '-'])
-                    .chars()
-                    .filter(|c| !"\\/:*?\"<>|".contains(*c))
+                let l = l.trim_start_matches(['#', ' ', '>', '-', '*', '+']);
+                let l = ["[ ] ", "[x] ", "[X] "]
+                    .iter()
+                    .find_map(|b| l.strip_prefix(b))
+                    .unwrap_or(l);
+                l.chars()
+                    .filter(|c| !c.is_control() && !"\\/:*?\"<>|".contains(*c))
                     .take(60)
                     .collect::<String>()
             })
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| format!("{}.md", s.trim()))
+            // Windows drops a trailing dot or space from a name.
+            .map(|s| s.trim().trim_end_matches(['.', ' ']).to_string())
+            .filter(|s| !s.is_empty() && !is_reserved_name(s))
+            .map(|s| format!("{s}.md"))
             .unwrap_or_else(|| "Untitled.md".into())
     }
 
@@ -5451,6 +5472,22 @@ mod tests {
         a.undo(true);
         assert_eq!(a.doc.lines, ["one", "two", "three"]);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn suggested_names_are_valid_windows_file_names() {
+        let name = |text: &str| app(text).suggested_name();
+        assert_eq!(name("\n# Plan: v2?\n"), "Plan v2.md");
+        assert_eq!(name("- [ ] buy milk"), "buy milk.md");
+        assert_eq!(name("* Ideas..."), "Ideas.md");
+        assert_eq!(name("1. Ideas"), "1. Ideas.md");
+        assert_eq!(name("a\ttab"), "atab.md");
+        assert_eq!(name("# CON"), "Untitled.md");
+        assert_eq!(name("nul.notes"), "Untitled.md");
+        assert_eq!(name("lpt1"), "Untitled.md");
+        assert_eq!(name("Console"), "Console.md");
+        assert_eq!(name("COM10"), "COM10.md");
+        assert_eq!(name(""), "Untitled.md");
     }
 
     #[test]
