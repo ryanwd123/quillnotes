@@ -1,8 +1,9 @@
 # Builds the Windows wheel and publishes it to PyPI with trusted publishing
 # (no API token stored in GitHub).
-#   - Push a tag like v0.1.0 to publish to PyPI.
+#   - Push a tag like v0.1.0 to publish to PyPI, then create a GitHub Release
+#     with quillnotes.exe attached.
 #   - Run the workflow by hand (Actions tab -> Release -> Run workflow) to
-#     publish to TestPyPI instead.
+#     only build, as a check before tagging.
 name: Release
 
 on:
@@ -36,23 +37,17 @@ jobs:
           name: wheels
           path: dist
 
-  publish-testpypi:
-    if: github.event_name == 'workflow_dispatch'
-    needs: build
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
+      # Take the exe from the wheel so the release download is the same binary
+      # pip installs. It goes in its own artifact so it isn't uploaded to PyPI.
+      - name: Extract quillnotes.exe from the wheel
+        shell: bash
+        run: |
+          python -c "import glob, zipfile; z = zipfile.ZipFile(glob.glob('dist/*.whl')[0]); n = next(n for n in z.namelist() if n.endswith('/scripts/quillnotes.exe')); open('quillnotes.exe', 'wb').write(z.read(n))"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: wheels
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          # Lets test runs be repeated without bumping the version.
-          skip-existing: true
+          name: exe
+          path: quillnotes.exe
 
   publish-pypi:
     if: github.ref_type == 'tag'
@@ -67,3 +62,17 @@ jobs:
           name: wheels
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: exe
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" quillnotes.exe --repo "$GITHUB_REPOSITORY" --title "QuillNotes $GITHUB_REF_NAME" --generate-notes
