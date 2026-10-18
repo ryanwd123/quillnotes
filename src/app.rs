@@ -5381,6 +5381,8 @@ mod tests {
     pub(super) fn app(text: &str) -> App {
         let mut a = App::new(View::new(false).unwrap());
         a.doc = Document::from_bytes(text.as_bytes(), None).0;
+        // Tests share one settings file; another test may have saved View mode.
+        a.mode = ViewMode::default();
         a
     }
 
