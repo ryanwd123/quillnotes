@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]
 pub struct Settings {
@@ -58,7 +59,16 @@ impl Settings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, serialize(&self.values))
+        // Write a temp file and rename it over the old one, so a crash mid-write
+        // can't leave settings.ini empty. The process id keeps two windows apart,
+        // the counter two writes in one process (tests run in parallel).
+        static WRITES: AtomicUsize = AtomicUsize::new(0);
+        let n = WRITES.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("ini.{}-{n}.tmp", std::process::id()));
+        std::fs::write(&tmp, serialize(&self.values))?;
+        std::fs::rename(&tmp, &path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
     }
 }
 
