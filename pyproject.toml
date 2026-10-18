@@ -23,5 +23,10 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[project.urls]
+Homepage = "https://github.com/ryanwd123/quillnotes"
+Issues = "https://github.com/ryanwd123/quillnotes/issues"
+Releases = "https://github.com/ryanwd123/quillnotes/releases"
+
 [tool.maturin]
 bindings = "bin"

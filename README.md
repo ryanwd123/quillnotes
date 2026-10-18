@@ -8,7 +8,7 @@ DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs).
 
 ## Install
 Currently Windows only. 
-- Download the Windows portable executable from releases. 
+- Download the Windows portable executable from [releases](https://github.com/ryanwd123/quillnotes/releases).
 - Alternatively, install with pipx: `pipx install quillnotes`
 
 ## How it works
@@ -31,7 +31,7 @@ Supported syntax: ATX headings; paragraphs; bold, italic, strikethrough, `==high
 
 ## Keyboard
 
-Shortcuts follow VS Code's defaults where they don't clash with Markdown formatting: `Ctrl+I` and `Ctrl+K` stay italic and link, as in other Markdown editors, and bold is `Ctrl+Shift+B` so that `Ctrl+B` can toggle the explorer as in VS Code. The full list is [`assets/help.md`](assets/help.md), shown rendered by **Help: Keyboard Shortcuts** in the command palette. Shortcuts can be changed in `keymap.ini` (see [Command palette](#command-palette)). The highlights:
+Shortcuts follow VS Code's defaults where they don't clash with Markdown formatting: `Ctrl+I` and `Ctrl+K` stay italic and link, as in other Markdown editors, and bold is `Ctrl+Shift+B` so that `Ctrl+B` can toggle the explorer as in VS Code. The full list is [`assets/help.md`](https://github.com/ryanwd123/quillnotes/blob/main/assets/help.md), shown rendered by **Help: Keyboard Shortcuts** in the command palette. Shortcuts can be changed in `keymap.ini` (see [Command palette](#command-palette)). The highlights:
 
 | | |
 | --- | --- |
@@ -200,4 +200,4 @@ Math rendering, footnote rendering, setext headings, reference-style link resolu
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/ryanwd123/quillnotes/blob/main/LICENSE).
