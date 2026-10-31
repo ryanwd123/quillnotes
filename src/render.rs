@@ -63,8 +63,10 @@ pub enum Ink {
     CodeComment,
     CodeNumber,
     CodeType,
+    FindMatch,
+    FindCurrent,
 }
-pub const INK_COUNT: usize = 34;
+pub const INK_COUNT: usize = 36;
 
 /// Each `Ink`'s name in theme.ini.
 pub const INK_NAMES: [&str; INK_COUNT] = [
@@ -102,6 +104,8 @@ pub const INK_NAMES: [&str; INK_COUNT] = [
     "code_comment",
     "code_number",
     "code_type",
+    "find_match",
+    "find_current",
 ];
 
 pub const DARK: [u32; INK_COUNT] = [
@@ -109,14 +113,14 @@ pub const DARK: [u32; INK_COUNT] = [
     0x80264F78, 0xFFE6E6E6, 0xFF161616, 0xFF8E8E8E, 0xFF3C3C3C, 0xFF232528, 0x70857000, 0xFF5AA9FF,
     0x40FFFFFF, 0xFF4F8EF7, 0xFF3FB950, 0xFFD29922, 0xFFF85149, 0xFFA371F7, 0xFF252629, 0xFF2F4058,
     0x24000000, 0xFF1E3550, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8, 0xFF569CD6, 0xFFCE9178, 0xFF6A9955,
-    0xFFB5CEA8, 0xFF4EC9B0,
+    0xFFB5CEA8, 0xFF4EC9B0, 0x70E2C12E, 0xB0C8702A,
 ];
 pub const LIGHT: [u32; INK_COUNT] = [
     0xFFFFFFFF, 0xFF24292F, 0xFF101418, 0xFF9AA0A6, 0xFF0969DA, 0xFFF4F5F7, 0xFFEEF0F2, 0xFFD0D7DE,
     0x6699C8FF, 0xFF111111, 0xFFF3F3F3, 0xFF6A6A6A, 0xFFE1E4E8, 0xFFF6F8FA, 0x80FFE066, 0xFF0969DA,
     0x40000000, 0xFF0969DA, 0xFF1A7F37, 0xFF9A6700, 0xFFCF222E, 0xFF8250DF, 0xFFFFFFFF, 0xFFE3ECF8,
     0x0C000000, 0xFFDDEEFF, 0xFF000000, 0xFFC6F6C6, 0xFFA8EEA8, 0xFF0000FF, 0xFFA31515, 0xFF008000,
-    0xFF098658, 0xFF267F99,
+    0xFF098658, 0xFF267F99, 0x99FFD000, 0xC0FF9632,
 ];
 
 fn color(argb: u32) -> D2D1_COLOR_F {
@@ -157,6 +161,8 @@ const SIDEBAR_ROW_H: f32 = 24.0;
 const SIDEBAR_INDENT: f32 = 14.0;
 const HEADER_H: f32 = 30.0;
 const OUTLINE_W: f32 = 240.0;
+const FIND_W: f32 = 440.0;
+const FIND_ROW_H: f32 = 30.0;
 
 /// Size of a code fence's text in Live 2, relative to body text.
 const FENCE_SCALE: f32 = 0.5;
@@ -667,6 +673,34 @@ pub struct PopupView<'a> {
 /// Number of palette items visible at once.
 pub const PALETTE_ROWS: usize = 10;
 
+/// The find widget at the top right of the editor area.
+pub struct FindView<'a> {
+    pub find: &'a str,
+    /// The replacement, while replacing.
+    pub replace: Option<&'a str>,
+    /// The field with the keyboard (true for the replacement) and its caret.
+    pub caret: Option<(bool, usize)>,
+    /// "2 of 5", "No results", ...
+    pub count: &'a str,
+    pub no_match: bool,
+}
+
+/// A part of the find widget, for painting and mouse clicks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FindPart {
+    Panel,
+    /// Shows or hides the replace row.
+    Toggle,
+    Find,
+    Replace,
+    Count,
+    Prev,
+    Next,
+    Close,
+    ReplaceOne,
+    ReplaceAll,
+}
+
 pub struct Status<'a> {
     pub left: &'a str,
     pub right: &'a str,
@@ -720,6 +754,9 @@ pub struct View {
     pub fold_gen: u64,
     /// Misspelled byte ranges by line, underlined when painted.
     pub spelling: HashMap<usize, Vec<std::ops::Range<usize>>>,
+    /// Find matches by line while the find widget is open, and the one selected.
+    pub find_hits: HashMap<usize, Vec<std::ops::Range<usize>>>,
+    pub find_current: Option<(usize, std::ops::Range<usize>)>,
     /// The highlighting state after each code line, by line, language and state
     /// before it, so unchanged code is not tokenized again.
     code_states: HashMap<u64, highlight::State>,
@@ -815,6 +852,8 @@ impl View {
                 links_gen: 0,
                 colors: (LIGHT, DARK),
                 spelling: HashMap::new(),
+                find_hits: HashMap::new(),
+                find_current: None,
                 folds: HashSet::new(),
                 fold_gen: 0,
                 code_states: HashMap::new(),
@@ -923,6 +962,54 @@ impl View {
     /// Height of the document viewport.
     pub fn view_h(&self) -> f32 {
         self.h - self.status_h() - self.header_h()
+    }
+
+    /// Where each part of the find widget goes (one row, or two with the
+    /// replace row), hung from the top right of the document viewport. The
+    /// panel comes first; later parts are drawn over it.
+    pub fn find_rects(&self, replace: bool) -> Vec<(FindPart, D2D_RECT_F)> {
+        let k = self.ui();
+        let (row_h, pad, bw, gap) = (FIND_ROW_H * k, 4.0 * k, 24.0 * k, 4.0 * k);
+        let h = if replace { 2.0 } else { 1.0 } * row_h + 2.0 * pad;
+        // Clear of the scrollbar.
+        let right = (self.right() - 16.0 * k).floor();
+        let left = (right - FIND_W * k).max(self.inset() + 8.0 * k).floor();
+        let top = self.header_h();
+        let mut v = vec![
+            (FindPart::Panel, rect(left, top, right, top + h)),
+            (
+                FindPart::Toggle,
+                rect(left + pad, top + pad, left + pad + 18.0 * k, top + h - pad),
+            ),
+        ];
+        let (y0, y1) = (top + pad + 3.0 * k, top + pad + row_h - 3.0 * k);
+        let mut x = right - pad;
+        for part in [FindPart::Close, FindPart::Next, FindPart::Prev] {
+            v.push((part, rect(x - bw, y0, x, y1)));
+            x -= bw;
+        }
+        let count = rect(x - 76.0 * k, y0, x - gap, y1);
+        let find = rect(left + pad + 18.0 * k + gap, y0, count.left - gap, y1);
+        v.push((FindPart::Count, count));
+        v.push((FindPart::Find, find));
+        if replace {
+            let (y0, y1) = (y0 + row_h, y1 + row_h);
+            let one = find.right + 6.0 * k;
+            let all = one + 62.0 * k + gap;
+            v.push((FindPart::Replace, rect(find.left, y0, find.right, y1)));
+            v.push((FindPart::ReplaceOne, rect(one, y0, one + 62.0 * k, y1)));
+            v.push((FindPart::ReplaceAll, rect(all, y0, all + 36.0 * k, y1)));
+        }
+        v
+    }
+
+    /// The part of the find widget at window point (x, y), if any.
+    pub fn find_part_at(&self, replace: bool, x: f32, y: f32) -> Option<FindPart> {
+        self.find_rects(replace)
+            .into_iter()
+            .rev()
+            .find(|(_, r)| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            .map(|(p, _)| p)
     }
 
     /// Code font size relative to the text it is in.
@@ -2433,6 +2520,7 @@ impl View {
         sidebar: Option<&SidebarView>,
         header: &HeaderView,
         outline: Option<&OutlineView>,
+        find: Option<&FindView>,
     ) {
         if self.ensure_target(hwnd).is_err() {
             return;
@@ -2527,6 +2615,9 @@ impl View {
                 self.paint_outline(&rt, o);
             }
             self.paint_status(&rt, status);
+            if let Some(f) = find {
+                self.paint_find(&rt, f);
+            }
             self.popup_geom = None;
             if let Some(p) = popup {
                 self.paint_popup(&rt, p, scroll);
@@ -2617,8 +2708,13 @@ impl View {
             match &row.vis {
                 Vis::Text(tb) => {
                     let (ox, oy) = (row.x, row.y + row.top);
+                    // The selected find match is drawn as a match instead.
+                    let on_match = self
+                        .find_current
+                        .as_ref()
+                        .is_some_and(|(l, r)| sel == (Pos::new(*l, r.start), Pos::new(*l, r.end)));
                     // Selection.
-                    if sel.0 != sel.1 && i >= sel.0.line && i <= sel.1.line {
+                    if sel.0 != sel.1 && i >= sel.0.line && i <= sel.1.line && !on_match {
                         let a = if i == sel.0.line { sel.0.col } else { 0 };
                         let b = if i == sel.1.line {
                             sel.1.col
@@ -2669,6 +2765,7 @@ impl View {
                             rt.FillRoundedRectangle(&rr, self.brush(ink));
                         }
                     }
+                    self.paint_find_hits(rt, i, tb, ox, oy);
                     rt.DrawTextLayout(
                         v2(ox, oy),
                         &tb.layout,
@@ -2849,6 +2946,7 @@ impl View {
                                 );
                             }
                         }
+                        self.paint_find_hits(rt, i, &cell.tb, ox, oy);
                         rt.DrawTextLayout(
                             v2(ox, oy),
                             &cell.tb.layout,
@@ -2891,6 +2989,202 @@ impl View {
                     }
                 }
                 Vis::None => {}
+            }
+        }
+    }
+
+    /// Highlights the find matches on line `i` in `tb` (a line, or a table cell
+    /// whose layout maps to the same line), drawn at (ox, oy).
+    fn paint_find_hits(
+        &self,
+        rt: &ID2D1HwndRenderTarget,
+        i: usize,
+        tb: &TextBox,
+        ox: f32,
+        oy: f32,
+    ) {
+        let Some(hits) = self.find_hits.get(&i) else {
+            return;
+        };
+        for r in hits {
+            let (a, b) = (tb.s2d(r.start), tb.s2d(r.end));
+            if b <= a {
+                continue;
+            }
+            let current = self.find_current.as_ref() == Some(&(i, r.clone()));
+            let ink = if current {
+                Ink::FindCurrent
+            } else {
+                Ink::FindMatch
+            };
+            for m in tb.rects(a, b) {
+                let rr = D2D1_ROUNDED_RECT {
+                    rect: rect(
+                        ox + m.left,
+                        oy + m.top,
+                        ox + m.left + m.width,
+                        oy + m.top + m.height,
+                    ),
+                    radiusX: 2.0,
+                    radiusY: 2.0,
+                };
+                unsafe { rt.FillRoundedRectangle(&rr, self.brush(ink)) };
+            }
+        }
+    }
+
+    /// The find widget: the query (and replacement) fields, the match count and
+    /// the buttons, like VS Code's.
+    unsafe fn paint_find(&mut self, rt: &ID2D1HwndRenderTarget, f: &FindView) {
+        let k = self.ui();
+        let ui = self.format(Family::Ui, 13.0, 400);
+        let small = self.format(Family::Ui, 12.0, 400);
+        let replace = f.replace.is_some();
+        let line = |a: (f32, f32), b: (f32, f32), ink: Ink| unsafe {
+            rt.DrawLine(v2(a.0, a.1), v2(b.0, b.1), self.brush(ink), 1.3 * k, None);
+        };
+        for (part, r) in self.find_rects(replace) {
+            let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+            let icon = Ink::StatusText;
+            unsafe {
+                match part {
+                    FindPart::Panel => {
+                        for s in 1..=3 {
+                            let o = s as f32 * 1.5;
+                            let rr = D2D1_ROUNDED_RECT {
+                                rect: rect(r.left - o, r.top, r.right + o, r.bottom + o + 2.0),
+                                radiusX: 6.0 + o,
+                                radiusY: 6.0 + o,
+                            };
+                            rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
+                        }
+                        let rr = D2D1_ROUNDED_RECT {
+                            rect: r,
+                            radiusX: 6.0,
+                            radiusY: 6.0,
+                        };
+                        rt.FillRoundedRectangle(&rr, self.brush(Ink::PaletteBg));
+                        rt.DrawRoundedRectangle(&rr, self.brush(Ink::Rule), 1.0, None);
+                    }
+                    FindPart::Toggle => {
+                        let d = 3.5 * k;
+                        if replace {
+                            line((cx - d, cy - d / 2.0), (cx, cy + d / 2.0), icon);
+                            line((cx, cy + d / 2.0), (cx + d, cy - d / 2.0), icon);
+                        } else {
+                            line((cx - d / 2.0, cy - d), (cx + d / 2.0, cy), icon);
+                            line((cx + d / 2.0, cy), (cx - d / 2.0, cy + d), icon);
+                        }
+                    }
+                    FindPart::Find | FindPart::Replace => {
+                        let in_replace = part == FindPart::Replace;
+                        let text = if in_replace {
+                            f.replace.unwrap_or("")
+                        } else {
+                            f.find
+                        };
+                        let caret = f.caret.filter(|c| c.0 == in_replace).map(|c| c.1);
+                        let rr = D2D1_ROUNDED_RECT {
+                            rect: r,
+                            radiusX: 3.0,
+                            radiusY: 3.0,
+                        };
+                        rt.FillRoundedRectangle(&rr, self.brush(Ink::Bg));
+                        let border = if caret.is_some() {
+                            Ink::Accent
+                        } else {
+                            Ink::Rule
+                        };
+                        rt.DrawRoundedRectangle(&rr, self.brush(border), 1.0, None);
+                        let (shown, ink) = match (text.is_empty(), in_replace) {
+                            (true, false) => ("Find", Ink::Dim),
+                            (true, true) => ("Replace", Ink::Dim),
+                            _ => (text, Ink::Text),
+                        };
+                        let (tx, tw) = (r.left + 6.0 * k, r.right - r.left - 12.0 * k);
+                        rt.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED);
+                        if let Some(l) = self.panel_text(shown, &ui, tw, r.bottom - r.top) {
+                            rt.DrawTextLayout(
+                                v2(tx, r.top),
+                                &l,
+                                self.brush(ink),
+                                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                            );
+                            if let Some(cur) = caret {
+                                let i = text[..cur.min(text.len())].encode_utf16().count() as u32;
+                                let (mut x, mut y) = (0.0, 0.0);
+                                let mut m = DWRITE_HIT_TEST_METRICS::default();
+                                let _ = l.HitTestTextPosition(i, false, &mut x, &mut y, &mut m);
+                                rt.FillRectangle(
+                                    &rect(tx + x, r.top + y, tx + x + 1.5, r.top + y + m.height),
+                                    self.brush(Ink::Caret),
+                                );
+                            }
+                        }
+                        rt.PopAxisAlignedClip();
+                    }
+                    FindPart::Count => {
+                        let ink = if f.no_match {
+                            Ink::Danger
+                        } else {
+                            Ink::StatusText
+                        };
+                        if let Some(l) =
+                            self.panel_text(f.count, &small, r.right - r.left, r.bottom - r.top)
+                        {
+                            rt.DrawTextLayout(
+                                v2(r.left, r.top),
+                                &l,
+                                self.brush(ink),
+                                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            );
+                        }
+                    }
+                    FindPart::Prev | FindPart::Next => {
+                        let (d, s) = (4.0 * k, if part == FindPart::Prev { -1.0 } else { 1.0 });
+                        line((cx, cy - 5.0 * k * s), (cx, cy + 5.0 * k * s), icon);
+                        line(
+                            (cx - d, cy + (5.0 * k - d) * s),
+                            (cx, cy + 5.0 * k * s),
+                            icon,
+                        );
+                        line(
+                            (cx + d, cy + (5.0 * k - d) * s),
+                            (cx, cy + 5.0 * k * s),
+                            icon,
+                        );
+                    }
+                    FindPart::Close => {
+                        let d = 4.0 * k;
+                        line((cx - d, cy - d), (cx + d, cy + d), icon);
+                        line((cx - d, cy + d), (cx + d, cy - d), icon);
+                    }
+                    FindPart::ReplaceOne | FindPart::ReplaceAll => {
+                        let rr = D2D1_ROUNDED_RECT {
+                            rect: r,
+                            radiusX: 3.0,
+                            radiusY: 3.0,
+                        };
+                        rt.FillRoundedRectangle(&rr, self.brush(Ink::TableHeader));
+                        rt.DrawRoundedRectangle(&rr, self.brush(Ink::Rule), 1.0, None);
+                        let label = if part == FindPart::ReplaceOne {
+                            "Replace"
+                        } else {
+                            "All"
+                        };
+                        if let Some(l) =
+                            self.panel_text(label, &small, r.right - r.left, r.bottom - r.top)
+                        {
+                            let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                            rt.DrawTextLayout(
+                                v2(r.left, r.top),
+                                &l,
+                                self.brush(Ink::Text),
+                                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            );
+                        }
+                    }
+                }
             }
         }
     }

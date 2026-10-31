@@ -22,8 +22,8 @@ use crate::options::{Prefs, RenderOptions};
 use crate::palette::{Command, Mode, Palette, Target};
 use crate::platform;
 use crate::render::{
-    HeaderView, OutlineView, PaletteItem, PaletteView, PopupView, SidebarButton, Status, TableUi,
-    View, ViewMode,
+    FindPart, FindView, HeaderView, OutlineView, PaletteItem, PaletteView, PopupView,
+    SidebarButton, Status, TableUi, View, ViewMode,
 };
 use crate::settings::Settings;
 use crate::slash::{self, SlashCmd};
@@ -215,6 +215,8 @@ pub struct App {
     prompt: Option<Prompt>,
     find_query: String,
     replace_query: String,
+    /// Matches of `find_query`, for the find widget: (doc version, query, matches).
+    find_cache: (u64, String, Vec<Pos>),
     drag: Drag,
     last_click: (u32, i32, i32, u32),
     high_surrogate: Option<u16>,
@@ -396,6 +398,7 @@ impl App {
             prompt: None,
             find_query: String::new(),
             replace_query: String::new(),
+            find_cache: (0, String::new(), Vec::new()),
             drag: Drag::None,
             last_click: (0, 0, 0, 0),
             high_surrogate: None,
@@ -2376,10 +2379,10 @@ impl App {
         self.prompt.as_ref().is_some_and(|p| p.focused)
     }
 
-    /// A click in the status bar focuses an open find prompt; a click anywhere
-    /// else leaves it open but hands the keyboard back, and closes a go-to-line
-    /// prompt. Returns true when the click was on the status bar prompt.
-    fn prompt_click(&mut self, y: f32) -> bool {
+    /// A click on the find widget acts there; a click anywhere else leaves it
+    /// open but hands the keyboard back. A click off a go-to-line prompt in the
+    /// status bar closes it. Returns true when the click was taken.
+    fn prompt_click(&mut self, x: f32, y: f32) -> bool {
         let on_status = y >= self.view.h - self.view.status_h();
         let Some(p) = &mut self.prompt else {
             return false;
@@ -2387,23 +2390,65 @@ impl App {
         if p.path.is_some() {
             return false;
         }
-        if on_status {
-            if !p.focused {
-                // Searching resumes from wherever the caret is now.
-                p.focused = true;
-                p.cur = p.text.len();
-                p.origin = (self.anchor, self.cursor, self.scroll);
-                self.invalidate();
-            }
-            return true;
-        }
         if p.kind.finds() {
+            let replace = p.kind == PromptKind::Replace;
+            if let Some(part) = self.view.find_part_at(replace, x, y) {
+                self.find_widget_click(part);
+                return true;
+            }
             p.focused = false;
+        } else if on_status {
+            return true;
         } else {
             self.prompt = None;
         }
         self.invalidate();
         false
+    }
+
+    /// A click on a part of the find widget.
+    fn find_widget_click(&mut self, part: FindPart) {
+        let (anchor, cursor, scroll) = (self.anchor, self.cursor, self.scroll);
+        let Some(p) = &mut self.prompt else { return };
+        if !p.focused {
+            // Searching resumes from wherever the caret is now.
+            p.focused = true;
+            p.cur = p.text.len();
+            p.origin = (anchor, cursor, scroll);
+        }
+        // Puts the keyboard in the find field, or the replacement field.
+        let field = |p: &mut Prompt, replace: bool| {
+            if p.in_replace != replace {
+                std::mem::swap(&mut p.text, &mut p.other);
+                p.in_replace = replace;
+            }
+            p.cur = p.text.len();
+        };
+        match part {
+            FindPart::Toggle if p.kind == PromptKind::Replace => {
+                field(p, false);
+                p.kind = PromptKind::Find;
+            }
+            FindPart::Toggle => p.kind = PromptKind::Replace,
+            FindPart::Find => field(p, false),
+            FindPart::Replace => field(p, true),
+            FindPart::Prev => self.find_next(false),
+            FindPart::Next => self.find_next(true),
+            FindPart::Close => self.prompt = None,
+            FindPart::ReplaceOne => self.replace_one(),
+            FindPart::ReplaceAll => self.replace_all(),
+            FindPart::Panel | FindPart::Count => {}
+        }
+        self.invalidate();
+    }
+
+    /// Matches of the find query, kept until the document or query changes.
+    fn find_matches(&mut self) -> &[Pos] {
+        if self.find_cache.0 != self.doc.version || self.find_cache.1 != self.find_query {
+            let all = find_all(&self.doc.lines, &self.find_query);
+            self.find_cache = (self.doc.version, self.find_query.clone(), all);
+        }
+        &self.find_cache.2
     }
 
     fn prompt_changed(&mut self) {
@@ -2572,14 +2617,20 @@ impl App {
                 }
             }
         }
+        // The find widget shows the count itself; F3 without it says it here.
+        let widget = self.prompt.as_ref().is_some_and(|p| p.kind.finds());
         match found {
             Some(p) => {
                 self.set_sel(p, Pos::new(p.line, p.col + q.len()));
-                let all = find_all(&self.doc.lines, &q);
-                let index = all.iter().position(|&m| m == p).map_or(0, |i| i + 1);
-                self.message = Some((format!("{index} of {}", all.len()), Instant::now()));
+                if !widget {
+                    let all = self.find_matches();
+                    let index = all.iter().position(|&m| m == p).map_or(0, |i| i + 1);
+                    let text = format!("{index} of {}", all.len());
+                    self.message = Some((text, Instant::now()));
+                }
             }
-            None => self.message = Some(("No matches".into(), Instant::now())),
+            None if !widget => self.message = Some(("No matches".into(), Instant::now())),
+            None => {}
         }
         self.changed(false);
     }
@@ -3956,46 +4007,20 @@ impl App {
                 "Ln {}, Col {col}     {words}     {eol}",
                 self.cursor.line + 1
             );
-            prompt_text = self.prompt.as_ref().map(|p| {
-                if p.kind == PromptKind::Replace {
-                    let (find, repl) = if p.in_replace {
-                        (&p.other, &p.text)
-                    } else {
-                        (&p.text, &p.other)
-                    };
-                    let head = format!("Find: {find}      Replace: ");
-                    let cur = p.focused.then_some(if p.in_replace {
-                        head.len() + p.cur
-                    } else {
-                        "Find: ".len() + p.cur
-                    });
-                    let extra = self
-                        .message
-                        .as_ref()
-                        .map(|m| format!("      {}", m.0))
-                        .unwrap_or_default();
-                    return (format!("{head}{repl}{extra}"), cur);
-                }
+            prompt_text = self.prompt.as_ref().filter(|p| !p.kind.finds()).map(|p| {
                 let label = match p.kind {
-                    PromptKind::Find | PromptKind::Replace => "Find: ",
-                    PromptKind::GoTo => "Go to line: ",
+                    // Find prompts were left out: they show in the find widget.
+                    PromptKind::Find | PromptKind::Replace | PromptKind::GoTo => "Go to line: ",
                     PromptKind::FolderText(workspace::FolderOpt::DailyTemplate) => {
                         "Daily note template (a note in the folder, empty for none): "
                     }
                     PromptKind::FolderText(_) => "Daily notes folder (empty for the top folder): ",
                 };
-                let extra = if p.kind.finds() {
-                    self.message
-                        .as_ref()
-                        .map(|m| format!("      {}", m.0))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
                 let cur = p.focused.then_some(label.len() + p.cur);
-                (format!("{label}{}{extra}", p.text), cur)
+                (format!("{label}{}", p.text), cur)
             });
         }
+        let find_count = self.update_find_hits();
         let status = Status {
             left: &status_left,
             right: &status_right,
@@ -4129,6 +4154,20 @@ impl App {
             hover: self.outline_hover,
             scroll: self.outline_scroll,
         });
+        let find = self.prompt.as_ref().filter(|p| p.kind.finds()).map(|p| {
+            let (find, repl) = if p.in_replace {
+                (&p.other, &p.text)
+            } else {
+                (&p.text, &p.other)
+            };
+            FindView {
+                find,
+                replace: (p.kind == PromptKind::Replace).then_some(repl.as_str()),
+                caret: p.focused.then_some((p.in_replace, p.cur)),
+                count: &find_count.0,
+                no_match: find_count.1,
+            }
+        });
         let infos = std::mem::take(&mut self.infos);
         self.view.paint(
             self.hwnd,
@@ -4145,8 +4184,39 @@ impl App {
             sidebar.as_ref(),
             &header,
             outline.as_ref(),
+            find.as_ref(),
         );
         self.infos = infos;
+    }
+
+    /// Gives the view the find matches to highlight while the find widget is
+    /// open. Returns its count text ("2 of 5") and whether nothing matches.
+    fn update_find_hits(&mut self) -> (String, bool) {
+        self.view.find_hits.clear();
+        self.view.find_current = None;
+        if !self.prompt.as_ref().is_some_and(|p| p.kind.finds()) || self.find_query.is_empty() {
+            return (String::new(), false);
+        }
+        let current = self.selection_matches().then(|| self.sel().0);
+        let n = self.find_query.len();
+        self.find_matches();
+        let mut index = None;
+        for (i, m) in self.find_cache.2.iter().enumerate() {
+            self.view
+                .find_hits
+                .entry(m.line)
+                .or_default()
+                .push(m.col..m.col + n);
+            if Some(*m) == current {
+                index = Some(i + 1);
+                self.view.find_current = Some((m.line, m.col..m.col + n));
+            }
+        }
+        match (self.find_cache.2.len(), index) {
+            (0, _) => ("No results".into(), true),
+            (total, Some(i)) => (format!("{i} of {total}"), false),
+            (total, None) => (format!("? of {total}"), false),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -4170,7 +4240,7 @@ impl App {
         if self.view.over_mode(dx, dy) {
             return self.set_mode(self.mode.next());
         }
-        if self.prompt_click(dy) {
+        if self.prompt_click(dx, dy) {
             return;
         }
         if self.over_explorer(dx, dy) {
@@ -5677,27 +5747,94 @@ mod tests {
         assert_eq!(a.find_query, "t");
         // A click in the document (the hit test needs a window, so call the
         // part of on_mouse_down under test) keeps the prompt but types there.
-        a.prompt_click(100.0);
+        a.prompt_click(100.0, 100.0);
         assert!(a.prompt.is_some() && !a.prompt_focused());
         a.set_sel(Pos::new(1, 0), Pos::new(1, 0));
         a.on_char('x' as u16);
         assert_eq!(a.doc.lines[1], "xthree");
         assert_eq!(a.find_query, "t");
-        // A click on the status bar hands the keyboard back to the prompt.
-        let y = (a.view.h - a.view.status_h() / 2.0) as i32;
-        a.on_mouse_down(20, y);
+        // A click on the find widget hands the keyboard back to it.
+        let part = |a: &App, part: FindPart| {
+            let r = a
+                .view
+                .find_rects(true)
+                .into_iter()
+                .find(|r| r.0 == part)
+                .unwrap()
+                .1;
+            (
+                ((r.left + r.right) / 2.0) as i32,
+                ((r.top + r.bottom) / 2.0) as i32,
+            )
+        };
+        let (x, y) = part(&a, FindPart::Find);
+        a.on_mouse_down(x, y);
         assert!(a.prompt_focused());
         a.on_char('h' as u16);
         assert_eq!(a.find_query, "th");
         assert_eq!(a.doc.lines[1], "xthree");
         // Escape in the document closes it.
-        a.prompt_click(100.0);
+        a.prompt_click(100.0, 100.0);
         assert!(a.on_key(VK_ESCAPE.0));
         assert!(a.prompt.is_none());
         // A go-to-line prompt closes on a click instead.
         a.open_prompt(PromptKind::GoTo);
-        a.prompt_click(100.0);
+        a.prompt_click(100.0, 100.0);
         assert!(a.prompt.is_none());
+    }
+
+    #[test]
+    fn find_widget_counts_highlights_and_buttons() {
+        let mut a = app("cat Cat
+dog cat");
+        let click = |a: &mut App, part: FindPart| {
+            let replace = a.prompt.as_ref().unwrap().kind == PromptKind::Replace;
+            let r = a
+                .view
+                .find_rects(replace)
+                .into_iter()
+                .find(|r| r.0 == part)
+                .unwrap()
+                .1;
+            a.on_mouse_down(
+                ((r.left + r.right) / 2.0) as i32,
+                ((r.top + r.bottom) / 2.0) as i32,
+            );
+        };
+        a.open_prompt(PromptKind::Find);
+        for c in "cat".chars() {
+            a.on_char(c as u16);
+        }
+        assert_eq!(a.update_find_hits(), ("1 of 3".to_string(), false));
+        assert_eq!(a.view.find_hits[&0], [0..3, 4..7]);
+        assert_eq!(a.view.find_hits[&1], [4..7]);
+        assert_eq!(a.view.find_current, Some((0, 0..3)));
+        // The status bar no longer shows the count.
+        assert!(a.message.is_none());
+        click(&mut a, FindPart::Next);
+        assert_eq!(a.sel(), (Pos::new(0, 4), Pos::new(0, 7)));
+        click(&mut a, FindPart::Prev);
+        assert_eq!(a.sel(), (Pos::new(0, 0), Pos::new(0, 3)));
+        a.set_sel(Pos::new(1, 0), Pos::new(1, 0));
+        assert_eq!(a.update_find_hits().0, "? of 3");
+
+        // The toggle shows the replace row; its buttons replace.
+        click(&mut a, FindPart::Toggle);
+        assert!(a.prompt.as_ref().unwrap().kind == PromptKind::Replace);
+        click(&mut a, FindPart::Replace);
+        for c in "cow".chars() {
+            a.on_char(c as u16);
+        }
+        a.set_sel(Pos::new(0, 0), Pos::new(0, 3));
+        click(&mut a, FindPart::ReplaceOne);
+        assert_eq!(a.doc.lines, ["cow Cat", "dog cat"]);
+        click(&mut a, FindPart::ReplaceAll);
+        assert_eq!(a.doc.lines, ["cow cow", "dog cow"]);
+        assert_eq!(a.update_find_hits(), ("No results".to_string(), true));
+        click(&mut a, FindPart::Close);
+        assert!(a.prompt.is_none());
+        a.update_find_hits();
+        assert!(a.view.find_hits.is_empty());
     }
 
     #[test]
