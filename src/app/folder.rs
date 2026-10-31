@@ -1137,7 +1137,11 @@ impl App {
             return self.say("Open a folder first (Ctrl+R)");
         };
         let rel = workspace::relative(&root, &dir);
-        let start = if rel.is_empty() { rel } else { format!("{rel}/") };
+        let start = if rel.is_empty() {
+            rel
+        } else {
+            format!("{rel}/")
+        };
         let dirs = self.folder_dirs(None);
         self.open_palette(Palette::new_item(folder, &root, dirs, &start));
     }
@@ -1673,7 +1677,10 @@ mod tests {
         // Starts on the path, caret before the extension.
         a.rename_prompt(&file);
         let p = a.palette.as_mut().unwrap();
-        assert_eq!((p.mode, p.query.as_str(), p.cur), (Mode::Rename, "sub/old.md", 7));
+        assert_eq!(
+            (p.mode, p.query.as_str(), p.cur),
+            (Mode::Rename, "sub/old.md", 7)
+        );
         p.backspace(true);
         p.insert("new");
         assert_eq!(p.query, "sub/new.md");

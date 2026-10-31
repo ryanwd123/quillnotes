@@ -603,7 +603,11 @@ impl Palette {
 
     /// New File / New Folder in the explorer, typed as for Save in Folder.
     pub fn new_item(folder: bool, root: &Path, dirs: Vec<String>, start: &str) -> Self {
-        let mode = if folder { Mode::NewFolder } else { Mode::NewFile };
+        let mode = if folder {
+            Mode::NewFolder
+        } else {
+            Mode::NewFile
+        };
         Palette::path(mode, root, dirs, start, "", None)
     }
 
