@@ -186,6 +186,11 @@ pub enum Target {
     SaveFolder(String),
     /// Save in Folder: the typed path can't be used, and why.
     SaveInvalid(String),
+    /// New File / New Folder from the explorer: create it at this path.
+    NewFile(PathBuf),
+    NewFolder(PathBuf),
+    /// Rename (or move) the first path to the second.
+    Rename(PathBuf, PathBuf),
 }
 
 pub struct Item {
@@ -223,6 +228,20 @@ pub enum Mode {
     Headings,
     Preferences,
     SaveAs,
+    NewFile,
+    NewFolder,
+    Rename,
+}
+
+impl Mode {
+    /// Picks a path in the open folder by typing it (Save in Folder and the
+    /// explorer's new / rename dialogs).
+    pub fn picks_path(self) -> bool {
+        matches!(
+            self,
+            Mode::SaveAs | Mode::NewFile | Mode::NewFolder | Mode::Rename
+        )
+    }
 }
 
 /// A Markdown file searched by "Search in Files".
@@ -233,12 +252,14 @@ pub struct SearchFile {
     pub lines: Vec<String>,
 }
 
-/// Save in Folder: the open folder, its subfolders (relative, `\`-separated) and
-/// the file name used when none is typed.
+/// A path palette: the open folder, its subfolders (relative, `\`-separated), the
+/// file name used when none is typed (none when empty), and for Rename the entry
+/// being renamed.
 struct SaveState {
     root: PathBuf,
     dirs: Vec<String>,
     suggested: String,
+    from: Option<PathBuf>,
 }
 
 /// Characters Windows does not allow in file names (besides separators).
@@ -577,11 +598,43 @@ impl Palette {
     /// subfolders, relative to it, offered as completions; `start` is the query to
     /// begin with and `suggested` the file name used when none is typed.
     pub fn save_as(root: &Path, dirs: Vec<String>, start: &str, suggested: &str) -> Self {
-        let mut p = Palette::new(Mode::SaveAs, Vec::new());
+        Palette::path(Mode::SaveAs, root, dirs, start, suggested, None)
+    }
+
+    /// New File / New Folder in the explorer, typed as for Save in Folder.
+    pub fn new_item(folder: bool, root: &Path, dirs: Vec<String>, start: &str) -> Self {
+        let mode = if folder { Mode::NewFolder } else { Mode::NewFile };
+        Palette::path(mode, root, dirs, start, "", None)
+    }
+
+    /// Rename `from` by editing its path in the folder (another folder moves it),
+    /// with the caret before the extension, like Explorer.
+    pub fn rename(root: &Path, dirs: Vec<String>, from: &Path) -> Self {
+        let start = workspace::relative(root, from);
+        let mut p = Palette::path(Mode::Rename, root, dirs, &start, "", Some(from));
+        let name = start.rsplit('/').next().unwrap_or("");
+        if !from.is_dir()
+            && let Some(dot) = name.rfind('.').filter(|&i| i > 0)
+        {
+            p.cur = start.len() - name.len() + dot;
+        }
+        p
+    }
+
+    fn path(
+        mode: Mode,
+        root: &Path,
+        dirs: Vec<String>,
+        start: &str,
+        suggested: &str,
+        from: Option<&Path>,
+    ) -> Self {
+        let mut p = Palette::new(mode, Vec::new());
         p.save = Some(SaveState {
             root: root.to_path_buf(),
             dirs,
             suggested: suggested.to_string(),
+            from: from.map(Path::to_path_buf),
         });
         p.insert(start);
         p
@@ -624,31 +677,61 @@ impl Palette {
         };
         let mut path = s.root.join(&rel);
         let mut shown = rel.replace('\\', sep);
-        if !workspace::is_text(&path) {
+        let add_md = match self.mode {
+            Mode::SaveAs => !workspace::is_text(&path),
+            Mode::NewFile => path.extension().is_none(),
+            _ => false,
+        };
+        if add_md && !file.is_empty() {
             path.as_mut_os_string().push(".md");
             shown.push_str(".md");
         }
-        let problem = if segs.iter().any(|p| *p == "." || *p == "..") {
+        // Renaming to the same path, or changing only its case, is allowed.
+        let unchanged = s
+            .from
+            .as_deref()
+            .is_some_and(|f| workspace::same_path(f, &path));
+        let problem = if file.is_empty() {
+            Some("Type a name".to_string())
+        } else if segs.iter().any(|p| *p == "." || *p == "..") {
             Some("Folders named . or .. are not allowed".to_string())
         } else if rel.contains(|c| BAD_CHARS.contains(c)) {
             Some("Names cannot contain : * ? \" < > |".to_string())
-        } else if path.is_dir() {
+        } else if self.mode == Mode::SaveAs && path.is_dir() {
             Some(format!("{shown} is a folder"))
+        } else if self.mode != Mode::SaveAs && !unchanged && path.exists() {
+            Some(format!("{shown} already exists"))
+        } else if let Some(f) = s.from.as_deref().filter(|f| f.is_dir())
+            && !unchanged
+            && workspace::contains(f, &path)
+        {
+            Some("A folder can't be moved into itself".to_string())
         } else {
             None
         };
-        let label = format!("Save as {shown}");
+        let label = match self.mode {
+            Mode::NewFile => format!("Create {shown}"),
+            Mode::NewFolder => format!("Create folder {shown}"),
+            Mode::Rename => format!("Rename to {shown}"),
+            _ => format!("Save as {shown}"),
+        };
         self.items.push(match problem {
             Some(why) => Item::new(label, why.clone(), Target::SaveInvalid(why)),
             None => {
-                let detail = if path.exists() {
+                let detail = if path.exists() && !unchanged {
                     "Replaces the existing file".to_string()
                 } else if !parent.is_empty() && !s.root.join(&parent).is_dir() {
                     format!("Creates the folder {}", parent.replace('\\', sep))
                 } else {
                     String::new()
                 };
-                Item::new(label, detail, Target::SaveAs(path))
+                let target = match (self.mode, &s.from) {
+                    (Mode::NewFile, _) => Target::NewFile(path),
+                    (Mode::NewFolder, _) => Target::NewFolder(path),
+                    (Mode::Rename, Some(from)) => Target::Rename(from.clone(), path),
+                    _ => Target::SaveAs(path),
+                };
+                Item::new(label, detail, target)
             }
         });
         self.filtered.push((0, Vec::new()));
@@ -707,7 +790,7 @@ impl Palette {
         };
         let fill = match self.selected().and_then(folder) {
             Some(q) => q,
-            None if !typed => {
+            None if !typed && !s.suggested.is_empty() => {
                 let name = s.suggested.strip_suffix(".md").unwrap_or(&s.suggested);
                 format!("{}{name}", self.query)
             }
@@ -755,6 +838,9 @@ impl Palette {
             Mode::Headings => "Go to a heading in this note",
             Mode::Preferences => "Settings  ·  ←/→ or Enter toggles",
             Mode::SaveAs => "Save as: type a name, / or \\ for folders, Tab completes",
+            Mode::NewFile => "New file: type a name, / or \\ for folders, Tab completes",
+            Mode::NewFolder => "New folder: type a name, / or \\ for subfolders",
+            Mode::Rename => "Rename: edit the name, or its folders to move it",
         }
     }
 
@@ -770,7 +856,7 @@ impl Palette {
             Mode::Search => "No results",
             Mode::Headings => "No matching headings",
             Mode::Preferences => "No matching settings",
-            Mode::SaveAs => "",
+            Mode::SaveAs | Mode::NewFile | Mode::NewFolder | Mode::Rename => "",
         }
     }
 
@@ -778,7 +864,7 @@ impl Palette {
         if self.mode == Mode::Search {
             return self.find_in_files();
         }
-        if self.mode == Mode::SaveAs {
+        if self.mode.picks_path() {
             return self.save_items();
         }
         let mut scored: Vec<(i32, usize, Vec<usize>)> = self

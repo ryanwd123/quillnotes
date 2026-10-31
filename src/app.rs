@@ -55,11 +55,6 @@ enum PromptKind {
     /// Find with a replacement: `text` is the field being edited, `other` the other.
     Replace,
     GoTo,
-    /// Rename (or move, with a relative path) the explorer entry `Prompt::path`.
-    Rename,
-    /// Create a file or folder inside the folder `Prompt::path`.
-    NewFile,
-    NewFolder,
     /// A text folder setting, such as the daily notes folder (`Prompt::path` is the
     /// open folder).
     FolderText(workspace::FolderOpt),
@@ -70,7 +65,7 @@ struct Prompt {
     text: String,
     cur: usize,
     origin: (Pos, Pos, f32),
-    /// The file or folder a rename / new-item prompt acts on.
+    /// The folder a folder setting's prompt acts on.
     path: Option<PathBuf>,
     /// False while a find prompt stays open but the keyboard is in the
     /// document or explorer (after a click there).
@@ -1002,9 +997,8 @@ impl App {
             if self.prompt_key(vk, ctrl, shift) {
                 return true;
             }
-            // A file-name prompt owns the keyboard, even when opened from the
-            // explorer: its keys must not reach the explorer (where A would start
-            // another new file) or the document behind it.
+            // A folder setting's prompt owns the keyboard: its keys must not reach
+            // the explorer (where A would start a new file) or the document.
             if self.prompt.as_ref().is_some_and(|p| p.path.is_some())
                 && !alt
                 && !self.opens_palette(vk, ctrl, shift)
@@ -2478,9 +2472,7 @@ impl App {
                 }
                 kind => {
                     let p = self.prompt.take().unwrap();
-                    if let Some(path) = p.path {
-                        self.path_prompt_done(kind, path, &p.text);
-                    }
+                    self.path_prompt_done(kind, &p.text);
                 }
             },
             VK_BACK => {
@@ -3620,7 +3612,7 @@ impl App {
             VK_ESCAPE if search && !p.query.is_empty() => p.clear(),
             VK_ESCAPE => return self.close_palette(true),
             VK_RETURN => return self.palette_accept(),
-            VK_TAB if p.mode == Mode::SaveAs => p.save_complete(),
+            VK_TAB if p.mode.picks_path() => p.save_complete(),
             VK_UP => p.move_by(-1),
             VK_DOWN => p.move_by(1),
             VK_PRIOR => p.move_by(-page),
@@ -3681,6 +3673,9 @@ impl App {
             }
             Target::SaveInvalid(why) => return self.say(why),
             Target::SaveAs(path) => return self.save_in_folder(&path),
+            Target::NewFile(path) => return self.create_file(&path),
+            Target::NewFolder(path) => return self.create_folder(&path),
+            Target::Rename(from, to) => return self.rename_entry(&from, &to),
             _ => {}
         }
         let mode = self.palette.take().map(|p| p.mode);
@@ -3694,7 +3689,10 @@ impl App {
             | Target::Pref(_)
             | Target::SaveAs(_)
             | Target::SaveFolder(_)
-            | Target::SaveInvalid(_) => {}
+            | Target::SaveInvalid(_)
+            | Target::NewFile(_)
+            | Target::NewFolder(_)
+            | Target::Rename(..) => {}
             Target::OpenFolderDialog => self.open_folder_dialog(),
             Target::OpenFile(path) => self.open_file_in_folder(&path),
             Target::Heading(l) => {
@@ -3981,9 +3979,6 @@ impl App {
                 let label = match p.kind {
                     PromptKind::Find | PromptKind::Replace => "Find: ",
                     PromptKind::GoTo => "Go to line: ",
-                    PromptKind::Rename => "Rename to (a/b.md moves it): ",
-                    PromptKind::NewFile => "New file: ",
-                    PromptKind::NewFolder => "New folder: ",
                     PromptKind::FolderText(workspace::FolderOpt::DailyTemplate) => {
                         "Daily note template (a note in the folder, empty for none): "
                     }

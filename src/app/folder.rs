@@ -868,12 +868,7 @@ impl App {
         if !self.prefs.save_prompt || outside {
             return false;
         }
-        let dirs = self
-            .entries
-            .iter()
-            .filter(|e| e.is_dir)
-            .map(|e| workspace::relative(&root, &e.path).replace('/', "\\"))
-            .collect();
+        let dirs = self.folder_dirs(None);
         let dir = self
             .doc_dir()
             .or_else(|| self.target_dir())
@@ -909,7 +904,8 @@ impl App {
     /// offering to update links to it. Returns None when it failed, else text to add
     /// to the status message (about links updated).
     fn rename_to(&mut self, src: &Path, target: &Path) -> Option<String> {
-        if target.exists() {
+        // A change of case only renames the same file.
+        if target.exists() && !workspace::same_path(src, target) {
             self.say(format!(
                 "{} already exists",
                 workspace::relative(self.folder.as_deref().unwrap_or(Path::new("")), target)
@@ -1113,80 +1109,88 @@ impl App {
         self.move_into(&src, &dest);
     }
 
-    fn rename_prompt(&mut self, path: &Path) {
-        let name = name_of(path);
-        // Caret before the extension, like Explorer.
-        let cur = if path.is_dir() {
-            name.len()
-        } else {
-            name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len())
+    /// The open folder's subfolders, relative and `\`-separated, for completing
+    /// paths in the palette; leaving out `skip` and the folders inside it.
+    fn folder_dirs(&self, skip: Option<&Path>) -> Vec<String> {
+        let Some(root) = self.folder.as_deref() else {
+            return Vec::new();
         };
-        self.open_path_prompt(PromptKind::Rename, path.to_path_buf(), name, cur);
+        self.entries
+            .iter()
+            .filter(|e| e.is_dir && !skip.is_some_and(|s| workspace::contains(s, &e.path)))
+            .map(|e| workspace::relative(root, &e.path).replace('/', "\\"))
+            .collect()
     }
 
+    /// Rename (or move) `path`, by editing its path in the palette.
+    fn rename_prompt(&mut self, path: &Path) {
+        let Some(root) = self.folder.clone() else {
+            return;
+        };
+        let dirs = self.folder_dirs(Some(path));
+        self.open_palette(Palette::rename(&root, dirs, path));
+    }
+
+    /// New file or folder: typed in the palette, starting in the selected folder.
     pub(super) fn new_item_prompt(&mut self, folder: bool) {
-        let Some(dir) = self.target_dir() else {
+        let (Some(root), Some(dir)) = (self.folder.clone(), self.target_dir()) else {
             return self.say("Open a folder first (Ctrl+R)");
         };
-        let kind = if folder {
-            PromptKind::NewFolder
-        } else {
-            PromptKind::NewFile
-        };
-        self.open_path_prompt(kind, dir, String::new(), 0);
+        let rel = workspace::relative(&root, &dir);
+        let start = if rel.is_empty() { rel } else { format!("{rel}/") };
+        let dirs = self.folder_dirs(None);
+        self.open_palette(Palette::new_item(folder, &root, dirs, &start));
     }
 
-    /// Enter in the rename / new file / new folder prompt.
-    pub(super) fn path_prompt_done(&mut self, kind: PromptKind, path: PathBuf, text: &str) {
+    /// Enter in a folder setting's prompt.
+    pub(super) fn path_prompt_done(&mut self, kind: PromptKind, text: &str) {
         if let PromptKind::FolderText(opt) = kind {
             self.change_folder_settings(|f| opt.set_text(f, text));
-            return self.say(format!(
+            self.say(format!(
                 "{}: {}",
                 opt.label(),
                 opt.value_text(&self.folder_settings)
             ));
         }
-        let name = text.trim().replace('/', "\\");
-        if name.is_empty() {
+    }
+
+    /// Enter on the palette's create row: makes the empty note (and any missing
+    /// folders) and opens it.
+    pub(super) fn create_file(&mut self, target: &Path) {
+        self.close_palette(false);
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(target, "") {
+            return self.say(format!("Could not create {}: {e}", name_of(target)));
+        }
+        self.rescan();
+        self.open_file_in_folder(target);
+        // Ready to write in, as after opening a file from the explorer.
+        self.tree_focus = false;
+    }
+
+    pub(super) fn create_folder(&mut self, target: &Path) {
+        self.close_palette(false);
+        if let Err(e) = std::fs::create_dir_all(target) {
+            return self.say(format!("Could not create {}: {e}", name_of(target)));
+        }
+        self.rescan();
+        self.reveal_in_tree(target);
+    }
+
+    /// Enter on the palette's rename row.
+    pub(super) fn rename_entry(&mut self, src: &Path, target: &Path) {
+        self.close_palette(false);
+        if src == target {
             return;
         }
-        match kind {
-            PromptKind::Rename => {
-                let target = path.parent().unwrap_or(Path::new("")).join(&name);
-                if target != path
-                    && let Some(links) = self.rename_to(&path, &target)
-                {
-                    self.say(format!("Renamed to {name}{links}"));
-                }
-            }
-            PromptKind::NewFile => {
-                let mut target = path.join(&name);
-                if target.extension().is_none() {
-                    target.set_extension("md");
-                }
-                if target.exists() {
-                    return self.say(format!("{} already exists", name_of(&target)));
-                }
-                if let Some(parent) = target.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::write(&target, "") {
-                    return self.say(format!("Could not create {}: {e}", name_of(&target)));
-                }
-                self.rescan();
-                self.open_file_in_folder(&target);
-                // Ready to write in, as after opening a file from the explorer.
-                self.tree_focus = false;
-            }
-            PromptKind::NewFolder => {
-                let target = path.join(&name);
-                if let Err(e) = std::fs::create_dir_all(&target) {
-                    return self.say(format!("Could not create {name}: {e}"));
-                }
-                self.rescan();
-                self.reveal_in_tree(&target);
-            }
-            _ => {}
+        if let Some(links) = self.rename_to(src, target) {
+            let root = self.folder.clone().unwrap_or_default();
+            self.say(format!(
+                "Renamed to {}{links}",
+                workspace::relative(&root, target)
+            ));
         }
     }
 
@@ -1607,35 +1611,97 @@ mod tests {
     }
 
     #[test]
-    fn new_file_prompt_takes_keys_from_explorer() {
+    fn new_file_dialog_takes_keys_from_explorer() {
         let root = std::env::temp_dir().join(format!("quillnotes-newfile-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
 
-        // A in the explorer starts a new file; the next A types into its name.
+        // A in the explorer starts a new file in the palette, in the selected
+        // folder; the next A types into its name.
         let mut a = app("");
         a.folder = Some(root.clone());
+        a.entries = workspace::scan(&root);
         a.explorer = true;
         a.tree_focus = true;
+        a.tree_sel = Some(root.join("sub"));
         // A key press: the key, then the character it types.
         let press = |a: &mut App, vk: VIRTUAL_KEY, c: u8| {
             a.on_key(vk.0);
             a.on_char(c as u16);
         };
         press(&mut a, VK_A, b'a');
-        assert_eq!(a.prompt.as_ref().unwrap().text, "");
+        let p = a.palette.as_ref().expect("new file palette");
+        assert_eq!((p.mode, p.query.as_str()), (Mode::NewFile, "sub/"));
         press(&mut a, VK_A, b'a');
         press(&mut a, VK_B, b'b');
-        assert_eq!(a.prompt.as_ref().unwrap().text, "ab");
-        // Up / Down stay in the prompt instead of moving the explorer.
-        assert!(a.on_key(VK_DOWN.0));
+        let p = a.palette.as_ref().unwrap();
+        assert_eq!(p.visible().0[0].0.label, "Create sub/ab.md");
         assert!(a.on_key(VK_RETURN.0));
 
         // The new file opens with the editor focused.
-        let file = root.join("ab.md");
+        let file = root.join("sub").join("ab.md");
         assert!(file.exists());
         assert_eq!(a.doc.path.as_deref(), Some(file.as_path()));
-        assert!(a.prompt.is_none() && !a.tree_focus);
+        assert!(a.palette.is_none() && !a.tree_focus);
+
+        // Making it again is refused in the palette.
+        a.new_item_prompt(false);
+        a.palette.as_mut().unwrap().insert("ab");
+        a.palette_accept();
+        assert!(a.palette.is_some());
+
+        // New folder, with a missing parent created too.
+        a.close_palette(true);
+        a.new_item_prompt(true);
+        a.palette.as_mut().unwrap().insert("x/y");
+        a.palette_accept();
+        assert!(root.join("sub").join("x").join("y").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_dialog_renames_and_moves() {
+        let root = std::env::temp_dir().join(format!("quillnotes-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let file = root.join("sub").join("old.md");
+        std::fs::write(&file, "x").unwrap();
+        let mut a = app("");
+        a.folder = Some(root.clone());
+        a.entries = workspace::scan(&root);
+
+        // Starts on the path, caret before the extension.
+        a.rename_prompt(&file);
+        let p = a.palette.as_mut().unwrap();
+        assert_eq!((p.mode, p.query.as_str(), p.cur), (Mode::Rename, "sub/old.md", 7));
+        p.backspace(true);
+        p.insert("new");
+        assert_eq!(p.query, "sub/new.md");
+        a.palette_accept();
+        assert!(a.palette.is_none());
+        let renamed = root.join("sub").join("new.md");
+        assert!(renamed.exists() && !file.exists());
+
+        // Editing the folders moves it.
+        a.rename_prompt(&renamed);
+        let p = a.palette.as_mut().unwrap();
+        p.home();
+        p.delete();
+        p.delete();
+        p.delete();
+        p.delete();
+        assert_eq!(p.query, "new.md");
+        a.palette_accept();
+        assert!(root.join("new.md").exists());
+
+        // A folder can't move into itself.
+        a.rename_prompt(&root.join("sub"));
+        let p = a.palette.as_mut().unwrap();
+        p.insert("/in");
+        assert!(matches!(
+            p.selected().unwrap().target,
+            Target::SaveInvalid(_)
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
