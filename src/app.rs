@@ -1,6 +1,7 @@
 //! Editor state and input handling.
 
 mod folder;
+mod link;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -237,6 +238,7 @@ pub struct App {
     /// Set while Search in Files is open (see app/folder.rs).
     search_origin: Option<folder::SearchOrigin>,
     slash: Option<SlashMenu>,
+    link_edit: Option<link::LinkEdit>,
     cells: Option<CellSel>,
     /// Mouse position (client DIPs) while over the window, for table controls.
     mouse: Option<(f32, f32)>,
@@ -411,6 +413,7 @@ impl App {
             folds: (None, Vec::new()),
             search_origin: None,
             slash: None,
+            link_edit: None,
             cells: None,
             mouse: None,
             table_hover: (false, None, None),
@@ -943,6 +946,9 @@ impl App {
             self.show_search_origin();
             return;
         }
+        if self.link_edit.is_some() {
+            return self.link_char(&s);
+        }
         if let Some(p) = &mut self.prompt
             && p.focused
         {
@@ -994,6 +1000,13 @@ impl App {
                 return false;
             }
             self.palette_key(VIRTUAL_KEY(vk), ctrl, shift);
+            return true;
+        }
+        if self.link_edit.is_some() {
+            if alt {
+                return false;
+            }
+            self.link_key(key, ctrl);
             return true;
         }
         if self.prompt_focused() {
@@ -1182,7 +1195,7 @@ impl App {
             Action::Code => self.toggle_wrap("`"),
             Action::Strikethrough => self.toggle_wrap("~~"),
             Action::Highlight => self.toggle_wrap("=="),
-            Action::Link => self.make_link(),
+            Action::Link => self.link_command(),
             Action::Heading(level) => self.set_heading(level),
             Action::BulletList => self.set_list(ListStyle::Bullet),
             Action::NumberedList => self.set_list(ListStyle::Ordered),
@@ -1467,11 +1480,12 @@ impl App {
         let (a, b) = self.sel();
         match key {
             VK_LEFT => {
+                let floor = self.caret_floor(c.line);
                 let p = if !shift && a != b {
                     a
                 } else if c.col > 0 && self.image_unit(c.line) {
                     Pos::new(c.line, 0)
-                } else if c.col == 0 {
+                } else if c.col <= floor {
                     if c.line == 0 {
                         c
                     } else {
@@ -1482,6 +1496,7 @@ impl App {
                 } else {
                     Pos::new(c.line, doc::prev_boundary(&line, c.col))
                 };
+                let p = self.snap(p, false);
                 self.move_to(p, shift);
             }
             VK_RIGHT => {
@@ -1500,6 +1515,7 @@ impl App {
                 } else {
                     Pos::new(c.line, doc::next_boundary(&line, c.col))
                 };
+                let p = self.snap(p, true);
                 self.move_to(p, shift);
             }
             VK_UP | VK_DOWN if ctrl => {
@@ -1517,8 +1533,11 @@ impl App {
                 return;
             }
             VK_HOME => {
+                let floor = self.caret_floor(c.line);
                 let p = if ctrl {
                     Pos::default()
+                } else if floor > 0 {
+                    Pos::new(c.line, floor)
                 } else {
                     let content = self.info(c.line).content.min(line.len());
                     Pos::new(
@@ -1604,39 +1623,61 @@ impl App {
         self.goal_x = Some(gx);
     }
 
+    /// Deletes `d` on line `l`, leaving the caret at `col` where it shows: hidden
+    /// syntax between it and `d` stays on its side.
+    fn delete_in_line(&mut self, l: usize, d: std::ops::Range<usize>, col: usize) {
+        self.doc
+            .replace(Pos::new(l, d.start), Pos::new(l, d.end), "");
+        let col = if col >= d.end {
+            col - d.len()
+        } else {
+            col.min(d.start)
+        };
+        let p = Pos::new(l, col);
+        self.set_sel(p, p);
+    }
+
     fn backspace(&mut self, word: bool) {
         let (a, b) = self.sel();
         let unit = a == b && a.col > 0 && self.image_unit(a.line);
+        // Live 2 hides inline syntax while editing, so Backspace acts on what
+        // shows: it steps over hidden delimiters to the character before them.
+        let steady = (a == b && !unit && !word)
+            .then(|| self.steady_inline(a.line))
+            .flatten();
+        let col = steady
+            .as_ref()
+            .map_or(a.col, |inl| markdown::skip_hidden(inl, a.col, false));
         self.begin(EditKind::Delete);
         if a != b {
             self.insert("");
-        } else if a.col == 0 {
+        } else if col == 0 {
             if a.line > 0 {
                 let p = Pos::new(a.line - 1, self.doc.line_len(a.line - 1));
-                self.doc.replace(p, a, "");
+                self.doc.replace(p, Pos::new(a.line, 0), "");
                 self.set_sel(p, p);
             }
         } else {
             let info = self.info(a.line);
             let line = &self.doc.lines[a.line];
-            let start = if unit {
-                0
+            let d = if unit {
+                0..a.col
             } else if word {
-                doc::prev_word(line, a.col)
-            } else if a.col == info.content
+                doc::prev_word(line, a.col)..a.col
+            } else if col == info.content
                 && matches!(info.kind, Kind::List { .. } | Kind::Heading(_))
                 && !self.source()
             {
                 // Remove the list marker / heading hashes in one go.
-                info.qend
-            } else if a.col == info.qend && info.quote > 0 && !self.source() {
-                markdown::strip_quotes(line, info.quote - 1).1
+                info.qend..col
+            } else if col == info.qend && info.quote > 0 && !self.source() {
+                markdown::strip_quotes(line, info.quote - 1).1..col
+            } else if let Some(inl) = &steady {
+                markdown::visible_delete(line, inl, col, false)
             } else {
-                doc::prev_boundary(line, a.col)
+                doc::prev_boundary(line, col)..col
             };
-            let p = Pos::new(a.line, start);
-            self.doc.replace(p, a, "");
-            self.set_sel(p, p);
+            self.delete_in_line(a.line, d, a.col);
         }
         self.commit();
     }
@@ -1644,25 +1685,34 @@ impl App {
     fn delete_forward(&mut self, word: bool) {
         let (a, b) = self.sel();
         let unit = a == b && a.col == 0 && self.image_unit(a.line);
+        let steady = (a == b && !unit && !word)
+            .then(|| self.steady_inline(a.line))
+            .flatten();
+        let col = steady
+            .as_ref()
+            .map_or(a.col, |inl| markdown::skip_hidden(inl, a.col, true));
         self.begin(EditKind::Delete);
         if a != b {
             self.insert("");
         } else {
             let line = &self.doc.lines[a.line];
-            let end = if a.col >= line.len() {
+            if col >= line.len() {
                 if a.line + 1 < self.doc.lines.len() {
-                    Pos::new(a.line + 1, 0)
-                } else {
-                    a
+                    let end = Pos::new(a.line, line.len());
+                    self.doc.replace(end, Pos::new(a.line + 1, 0), "");
                 }
-            } else if unit {
-                Pos::new(a.line, line.len())
-            } else if word {
-                Pos::new(a.line, doc::next_word(line, a.col))
             } else {
-                Pos::new(a.line, doc::next_boundary(line, a.col))
-            };
-            self.doc.replace(a, end, "");
+                let d = if unit {
+                    0..line.len()
+                } else if word {
+                    a.col..doc::next_word(line, a.col)
+                } else if let Some(inl) = &steady {
+                    markdown::visible_delete(line, inl, col, true)
+                } else {
+                    a.col..doc::next_boundary(line, a.col)
+                };
+                self.delete_in_line(a.line, d, a.col);
+            }
         }
         self.commit();
     }
@@ -2198,6 +2248,45 @@ impl App {
         }
         self.ensure_layout();
         self.view.is_image(line)
+    }
+
+    /// In Live 2, line `l`'s inline syntax as rendered while edited, or None where
+    /// the line shows its syntax.
+    fn steady_inline(&mut self, l: usize) -> Option<markdown::Inline> {
+        if self.mode != ViewMode::Live2 {
+            return None;
+        }
+        let info = self.info(l);
+        if !matches!(info.kind, Kind::Para | Kind::Heading(_) | Kind::List { .. }) {
+            return None;
+        }
+        let line = &self.doc.lines[l];
+        Some(markdown::parse_inline(
+            line,
+            info.content.min(line.len()),
+            line.len(),
+        ))
+    }
+
+    /// `p` moved to where the caret can stop in Live 2: not inside hidden syntax
+    /// (see [`markdown::caret_runs`]) or a list marker drawn as a bullet or checkbox.
+    fn snap(&mut self, p: Pos, forward: bool) -> Pos {
+        let runs = self
+            .steady_inline(p.line)
+            .map_or(Vec::new(), |inl| markdown::caret_runs(&inl));
+        let col = markdown::snap_col(&runs, p.col, forward);
+        Pos::new(p.line, col.max(self.caret_floor(p.line)))
+    }
+
+    /// The first column the caret shows at on line `l`: in Live 2, a list item's
+    /// text, after its marker.
+    fn caret_floor(&mut self, l: usize) -> usize {
+        let info = self.info(l);
+        if self.mode == ViewMode::Live2 && matches!(info.kind, Kind::List { .. }) {
+            info.content.min(self.doc.line_len(l))
+        } else {
+            0
+        }
     }
 
     fn delete_lines(&mut self) {
@@ -3147,13 +3236,16 @@ impl App {
         }
     }
 
-    /// Right-click: copy the code under the mouse, or in a table, place the caret in
-    /// the cell and show the table menu.
+    /// Right-click: copy the code or link under the mouse, or in a table, place the
+    /// caret in the cell and show the table menu.
     pub fn on_right_click(&mut self, x: i32, y: i32) {
         if self.palette.is_some() {
             return;
         }
         self.slash = None;
+        if self.link_edit.take().is_some() {
+            self.invalidate();
+        }
         let (dx, dy) = self.to_dip(x, y);
         if self.over_explorer(dx, dy) {
             return self.tree_right_click(dy, x, y);
@@ -3168,12 +3260,9 @@ impl App {
             return self.table_menu(x, y);
         }
         let infos = self.infos.clone();
-        let p = self.doc.clamp(
-            self.view
-                .hit(&self.doc.lines, &infos, dx, dy + self.scroll)
-                .pos,
-        );
-        if self.spell_menu(p, x, y) || self.copy_code(p) {
+        let hit = self.view.hit(&self.doc.lines, &infos, dx, dy + self.scroll);
+        let p = self.doc.clamp(hit.pos);
+        if self.spell_menu(p, x, y) || self.copy_code(p) || self.copy_link(hit.link) {
             return;
         }
         if self.cell_at(p).is_none() {
@@ -4029,6 +4118,7 @@ impl App {
         };
         let caret = self.caret_on
             && self.focused
+            && self.link_edit.is_none()
             && !self.prompt_focused()
             && self.palette.is_none()
             && !self.tree_focus;
@@ -4180,6 +4270,7 @@ impl App {
             &status,
             palette.as_ref(),
             popup.as_ref(),
+            self.link_edit.as_ref().map(|e| e.view()).as_ref(),
             self.mouse.filter(|_| self.palette.is_none()),
             sidebar.as_ref(),
             &header,
@@ -4232,6 +4323,9 @@ impl App {
         self.cells = None;
         if self.palette.is_some() {
             self.palette_click(dx, dy);
+            return;
+        }
+        if self.link_click(dx, dy) {
             return;
         }
         if self.slash.is_some() && self.slash_click(dx, dy) {
@@ -5509,7 +5603,8 @@ mod tests {
 
     #[test]
     fn reloads_a_clean_file_changed_on_disk() {
-        let path = std::env::temp_dir().join(format!("quillnotes-reload-{}.md", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("quillnotes-reload-{}.md", std::process::id()));
         std::fs::write(&path, "one\ntwo\nthree").unwrap();
         let mut a = app("");
         a.read_path(&path);
@@ -5917,5 +6012,60 @@ italic =",
         a.run_action(Action::Bold);
         // A whitespace-only selection is wrapped as is.
         assert_eq!(a.doc.lines, ["a**  **b"]);
+    }
+
+    #[test]
+    fn live2_caret_steps_over_hidden_syntax() {
+        // `[` is 2..3, `](http://x)` 4..15.
+        let mut a = app("a [b](http://x) c");
+        a.set_sel(Pos::new(0, 4), Pos::new(0, 4));
+        a.nav_key(VK_RIGHT, false, false);
+        assert_eq!(a.cursor, Pos::new(0, 15));
+        a.nav_key(VK_LEFT, false, false);
+        assert_eq!(a.cursor, Pos::new(0, 4));
+        a.nav_key(VK_LEFT, false, false);
+        a.nav_key(VK_LEFT, false, false);
+        assert_eq!(a.cursor, Pos::new(0, 2));
+        // Source mode stops at every character.
+        a.mode = ViewMode::Source;
+        a.set_sel(Pos::new(0, 4), Pos::new(0, 4));
+        a.nav_key(VK_RIGHT, false, false);
+        assert_eq!(a.cursor, Pos::new(0, 5));
+    }
+
+    #[test]
+    fn live2_deletes_what_shows() {
+        let mut a = app("a [bc](u) d");
+        a.set_sel(Pos::new(0, 9), Pos::new(0, 9));
+        a.backspace(false);
+        assert_eq!(a.doc.lines, ["a [b](u) d"]);
+        assert_eq!(a.cursor, Pos::new(0, 8));
+        // Emptying the link removes it.
+        a.backspace(false);
+        assert_eq!(a.doc.lines, ["a  d"]);
+        assert_eq!(a.cursor, Pos::new(0, 2));
+        let mut a = app("x **bold**");
+        a.set_sel(Pos::new(0, 2), Pos::new(0, 2));
+        a.delete_forward(false);
+        assert_eq!(a.doc.lines, ["x **old**"]);
+        assert_eq!(a.cursor, Pos::new(0, 2));
+        let mut a = app("&amp;b");
+        a.set_sel(Pos::new(0, 5), Pos::new(0, 5));
+        a.backspace(false);
+        assert_eq!(a.doc.lines, ["b"]);
+    }
+
+    #[test]
+    fn live2_caret_stays_off_list_markers() {
+        let mut a = app("x
+- [ ] task");
+        a.set_sel(Pos::new(1, 6), Pos::new(1, 6));
+        a.nav_key(VK_LEFT, false, false);
+        assert_eq!(a.cursor, Pos::new(0, 1));
+        a.nav_key(VK_RIGHT, false, false);
+        assert_eq!(a.cursor, Pos::new(1, 6));
+        a.set_sel(Pos::new(1, 8), Pos::new(1, 8));
+        a.nav_key(VK_HOME, false, false);
+        assert_eq!(a.cursor, Pos::new(1, 6));
     }
 }

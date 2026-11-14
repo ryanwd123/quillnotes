@@ -273,9 +273,6 @@ enum Syntax {
     Hidden,
     /// Being edited: every delimiter shown, dimmed.
     Shown,
-    /// Being edited in Live 2: formatting delimiters (`**`, `*`, `~~`, `==`, `` ` ``)
-    /// hidden, the rest shown dimmed.
-    Steady,
 }
 
 /// A laid-out run of text (one line, or one table cell) with its mapping back to source.
@@ -511,6 +508,9 @@ pub struct Row {
     x: f32,
     vis: Vis,
     active: bool,
+    /// List markers are drawn as bullets, numbers and checkboxes: when rendered,
+    /// and in Live 2 while edited too.
+    marks: bool,
     /// Row of the table whose cells are being edited.
     grid: bool,
     /// Inside a folded heading's section: not shown.
@@ -670,6 +670,24 @@ pub struct PopupView<'a> {
     pub selected: usize,
 }
 
+/// The link editor (Ctrl+K), hung below the line with the link.
+pub struct LinkView<'a> {
+    /// Where it hangs from: the link's start, or the caret.
+    pub at: Pos,
+    pub text: &'a str,
+    pub url: &'a str,
+    /// The field with the keyboard (true for the URL) and its caret.
+    pub caret: (bool, usize),
+}
+
+/// Where the link editor was last drawn: the panel and its text and URL fields.
+#[derive(Clone, Copy)]
+pub struct LinkGeom {
+    pub panel: D2D_RECT_F,
+    pub text: D2D_RECT_F,
+    pub url: D2D_RECT_F,
+}
+
 /// Number of palette items visible at once.
 pub const PALETTE_ROWS: usize = 10;
 
@@ -723,6 +741,7 @@ pub struct View {
     /// Formats for font-picker previews, by family name.
     preview_formats: HashMap<String, IDWriteTextFormat>,
     pub palette_geom: Option<PaletteGeom>,
+    pub link_geom: Option<LinkGeom>,
     pub popup_geom: Option<PaletteGeom>,
     pub grid_geom: Option<TableGeom>,
     /// Where dragged files would be inserted.
@@ -837,6 +856,7 @@ impl View {
                 formats: HashMap::new(),
                 preview_formats: HashMap::new(),
                 palette_geom: None,
+                link_geom: None,
                 popup_geom: None,
                 grid_geom: None,
                 cell_sel: None,
@@ -1141,7 +1161,9 @@ impl View {
     }
 
     fn all_fonts(&self) -> Option<&IDWriteFontCollection> {
-        self.all_fonts.get_or_init(|| merged_fonts(&self.dw)).as_ref()
+        self.all_fonts
+            .get_or_init(|| merged_fonts(&self.dw))
+            .as_ref()
     }
 
     /// The collection to find `family` in: the system one (`None`) unless only the
@@ -1307,7 +1329,6 @@ impl View {
         let hidden: &[std::ops::Range<usize>] = match syntax {
             Syntax::Hidden => &inl.hidden,
             Syntax::Shown => &[],
-            Syntax::Steady => &inl.fmt,
         };
         let active = syntax != Syntax::Hidden;
         let subs: &[(std::ops::Range<usize>, String)] = if active { &[] } else { &inl.subs };
@@ -1742,6 +1763,7 @@ impl View {
                 x: lx,
                 vis: Vis::None,
                 active: act,
+                marks: !act || (steady && matches!(info.kind, Kind::List { .. })),
                 grid: in_grid,
                 hidden: false,
             };
@@ -1862,10 +1884,11 @@ impl View {
                             inline: bool,
                             pad: (f32, f32),
                             old: &mut HashMap<u64, Rc<TextBox>>| {
+                let marks = row.marks;
                 // Shown range starts at `from`; `[from, content)` is a dimmed syntax prefix.
                 let (from, content) = if source {
                     (0, 0)
-                } else if act {
+                } else if act && !marks {
                     (0, info.content)
                 } else if heading_hashes {
                     (info.marker, info.content)
@@ -1882,17 +1905,26 @@ impl View {
                     }
                 )
                 .then_some(info.marker);
-                // Live 2 keeps formatting delimiters hidden while editing, so text
-                // does not shift as the caret enters a line.
-                let syntax = match (act, steady) {
-                    (false, _) => Syntax::Hidden,
-                    (true, false) => Syntax::Shown,
-                    (true, true) => Syntax::Steady,
+                // Live 2 keeps inline syntax hidden while editing, so text does not
+                // shift as the caret enters a line.
+                let syntax = if act && !steady {
+                    Syntax::Shown
+                } else {
+                    Syntax::Hidden
                 };
                 let tb = this.cached_box(old, key, w0, |this| {
-                    let mut tb = this
-                        .make_box(line, from, line.len(), content, st, syntax, inline, w0, bullet);
-                    if let (false, Kind::List { ordered: true, .. }) = (act, info.kind) {
+                    let mut tb = this.make_box(
+                        line,
+                        from,
+                        line.len(),
+                        content,
+                        st,
+                        syntax,
+                        inline,
+                        w0,
+                        bullet,
+                    );
+                    if let (true, Kind::List { ordered: true, .. }) = (marks, info.kind) {
                         let end = line[info.marker..]
                             .find(['.', ')'])
                             .map(|p| info.marker + p + 1)
@@ -2468,7 +2500,7 @@ impl View {
                     (res.link, res.link_title, res.link_start) =
                         (Some(l.2.clone()), l.3.clone(), l.0);
                 }
-                if !row.active
+                if row.marks
                     && let Kind::List { task: Some(_), .. } = infos[i].kind
                 {
                     let s = self.base();
@@ -2516,6 +2548,7 @@ impl View {
         status: &Status,
         palette: Option<&PaletteView>,
         popup: Option<&PopupView>,
+        link: Option<&LinkView>,
         mouse: Option<(f32, f32)>,
         sidebar: Option<&SidebarView>,
         header: &HeaderView,
@@ -2621,6 +2654,10 @@ impl View {
             self.popup_geom = None;
             if let Some(p) = popup {
                 self.paint_popup(&rt, p, scroll);
+            }
+            self.link_geom = None;
+            if let Some(l) = link {
+                self.paint_link(&rt, l, scroll);
             }
             if let Some((x, y, text)) = self.tooltip.clone() {
                 self.paint_tooltip(&rt, x, y, &text);
@@ -2812,7 +2849,7 @@ impl View {
                         }
                     }
 
-                    if !row.active
+                    if row.marks
                         && let Kind::List { ordered, task } = info.kind
                     {
                         let cy = oy + tb.baseline - base * 0.3;
@@ -3078,50 +3115,13 @@ impl View {
                     }
                     FindPart::Find | FindPart::Replace => {
                         let in_replace = part == FindPart::Replace;
-                        let text = if in_replace {
-                            f.replace.unwrap_or("")
+                        let (text, empty) = if in_replace {
+                            (f.replace.unwrap_or(""), "Replace")
                         } else {
-                            f.find
+                            (f.find, "Find")
                         };
                         let caret = f.caret.filter(|c| c.0 == in_replace).map(|c| c.1);
-                        let rr = D2D1_ROUNDED_RECT {
-                            rect: r,
-                            radiusX: 3.0,
-                            radiusY: 3.0,
-                        };
-                        rt.FillRoundedRectangle(&rr, self.brush(Ink::Bg));
-                        let border = if caret.is_some() {
-                            Ink::Accent
-                        } else {
-                            Ink::Rule
-                        };
-                        rt.DrawRoundedRectangle(&rr, self.brush(border), 1.0, None);
-                        let (shown, ink) = match (text.is_empty(), in_replace) {
-                            (true, false) => ("Find", Ink::Dim),
-                            (true, true) => ("Replace", Ink::Dim),
-                            _ => (text, Ink::Text),
-                        };
-                        let (tx, tw) = (r.left + 6.0 * k, r.right - r.left - 12.0 * k);
-                        rt.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED);
-                        if let Some(l) = self.panel_text(shown, &ui, tw, r.bottom - r.top) {
-                            rt.DrawTextLayout(
-                                v2(tx, r.top),
-                                &l,
-                                self.brush(ink),
-                                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                            );
-                            if let Some(cur) = caret {
-                                let i = text[..cur.min(text.len())].encode_utf16().count() as u32;
-                                let (mut x, mut y) = (0.0, 0.0);
-                                let mut m = DWRITE_HIT_TEST_METRICS::default();
-                                let _ = l.HitTestTextPosition(i, false, &mut x, &mut y, &mut m);
-                                rt.FillRectangle(
-                                    &rect(tx + x, r.top + y, tx + x + 1.5, r.top + y + m.height),
-                                    self.brush(Ink::Caret),
-                                );
-                            }
-                        }
-                        rt.PopAxisAlignedClip();
+                        self.paint_field(rt, r, text, empty, caret, &ui);
                     }
                     FindPart::Count => {
                         let ink = if f.no_match {
@@ -3189,6 +3189,143 @@ impl View {
         }
     }
 
+    /// A one-line text field in `r` showing `text` (or `empty`, dimmed), outlined
+    /// and with a caret at byte `caret` while it has the keyboard.
+    unsafe fn paint_field(
+        &self,
+        rt: &ID2D1HwndRenderTarget,
+        r: D2D_RECT_F,
+        text: &str,
+        empty: &str,
+        caret: Option<usize>,
+        format: &IDWriteTextFormat,
+    ) {
+        let k = self.ui();
+        let rr = D2D1_ROUNDED_RECT {
+            rect: r,
+            radiusX: 3.0,
+            radiusY: 3.0,
+        };
+        let border = if caret.is_some() {
+            Ink::Accent
+        } else {
+            Ink::Rule
+        };
+        let (shown, ink) = if text.is_empty() {
+            (empty, Ink::Dim)
+        } else {
+            (text, Ink::Text)
+        };
+        let (tx, tw) = (r.left + 6.0 * k, r.right - r.left - 12.0 * k);
+        unsafe {
+            rt.FillRoundedRectangle(&rr, self.brush(Ink::Bg));
+            rt.DrawRoundedRectangle(&rr, self.brush(border), 1.0, None);
+            rt.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED);
+            if let Some(l) = self.panel_text(shown, format, tw, r.bottom - r.top) {
+                rt.DrawTextLayout(
+                    v2(tx, r.top),
+                    &l,
+                    self.brush(ink),
+                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                );
+                if let Some(cur) = caret {
+                    let i = text[..cur.min(text.len())].encode_utf16().count() as u32;
+                    let (mut x, mut y) = (0.0, 0.0);
+                    let mut m = DWRITE_HIT_TEST_METRICS::default();
+                    let _ = l.HitTestTextPosition(i, false, &mut x, &mut y, &mut m);
+                    rt.FillRectangle(
+                        &rect(tx + x, r.top + y, tx + x + 1.5, r.top + y + m.height),
+                        self.brush(Ink::Caret),
+                    );
+                }
+            }
+            rt.PopAxisAlignedClip();
+        }
+    }
+
+    /// Top-left (window coordinates) of a `w` x `h` panel hung below the caret
+    /// line at `at`, or above it when it would not fit.
+    fn below_line(&self, at: Pos, w: f32, h: f32, scroll: f32) -> Option<(f32, f32)> {
+        let (cx, cy, ch) = self.caret_rect(at)?;
+        let (head, view_h) = (self.header_h(), self.view_h());
+        let (cy, ch) = (cy - scroll + head, ch.max(self.base()));
+        let top = if cy + ch + 4.0 + h <= head + view_h || cy - 4.0 - h < head {
+            cy + ch + 4.0
+        } else {
+            cy - 4.0 - h
+        };
+        let left = (cx - 12.0).clamp(8.0, (self.w - w - 8.0).max(8.0));
+        Some((left, top))
+    }
+
+    /// A floating panel with a soft shadow.
+    unsafe fn paint_panel(&self, rt: &ID2D1HwndRenderTarget, r: D2D_RECT_F) {
+        unsafe {
+            for k in 1..=3 {
+                let o = k as f32 * 1.5;
+                let rr = D2D1_ROUNDED_RECT {
+                    rect: rect(r.left - o, r.top - o + 2.0, r.right + o, r.bottom + o + 2.0),
+                    radiusX: 6.0 + o,
+                    radiusY: 6.0 + o,
+                };
+                rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
+            }
+            let panel = D2D1_ROUNDED_RECT {
+                rect: r,
+                radiusX: 6.0,
+                radiusY: 6.0,
+            };
+            rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
+            rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+        }
+    }
+
+    /// The link editor: a "Text" and a "URL" field.
+    unsafe fn paint_link(&mut self, rt: &ID2D1HwndRenderTarget, l: &LinkView, scroll: f32) {
+        let k = self.ui();
+        let (pw, row_h, pad, label_w) = (420.0 * k, FIND_ROW_H * k, 6.0 * k, 44.0 * k);
+        let pw = pw.min(self.w - 16.0);
+        let ph = 2.0 * row_h + 2.0 * pad;
+        let Some((left, top)) = self.below_line(l.at, pw, ph, scroll) else {
+            return;
+        };
+        let panel = rect(left, top, left + pw, top + ph);
+        let field = |row: f32| {
+            let y = top + pad + row * row_h;
+            rect(
+                left + pad + label_w,
+                y + 3.0 * k,
+                left + pw - pad,
+                y + row_h - 3.0 * k,
+            )
+        };
+        let geom = LinkGeom {
+            panel,
+            text: field(0.0),
+            url: field(1.0),
+        };
+        self.link_geom = Some(geom);
+        let ui = self.format(Family::Ui, 13.0, 400);
+        let small = self.format(Family::Ui, 12.0, 400);
+        unsafe {
+            self.paint_panel(rt, panel);
+            for (row, label) in ["Text", "URL"].into_iter().enumerate() {
+                let y = top + pad + row as f32 * row_h;
+                if let Some(t) = self.panel_text(label, &small, label_w - 6.0 * k, row_h) {
+                    rt.DrawTextLayout(
+                        v2(left + pad + 4.0 * k, y),
+                        &t,
+                        self.brush(Ink::StatusText),
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+            }
+            let caret = |url: bool| (l.caret.0 == url).then_some(l.caret.1);
+            self.paint_field(rt, geom.text, l.text, "Link text", caret(false), &ui);
+            self.paint_field(rt, geom.url, l.url, "URL, or [[note]]", caret(true), &ui);
+        }
+    }
+
     fn preview_format(&mut self, family: &str, size: f32) -> IDWriteTextFormat {
         if let Some(f) = self.preview_formats.get(family) {
             return f.clone();
@@ -3212,9 +3349,6 @@ impl View {
 
     /// Draws a menu below the caret line at `p.at`, or above it when it would not fit.
     unsafe fn paint_popup(&mut self, rt: &ID2D1HwndRenderTarget, p: &PopupView, scroll: f32) {
-        let Some((cx, cy, ch)) = self.caret_rect(p.at) else {
-            return;
-        };
         let k = self.ui();
         let (pw, hint_w) = if p.wide {
             (360.0, 140.0)
@@ -3223,14 +3357,9 @@ impl View {
         };
         let (pw, item_h, pad, hint_w) = (pw * k, 30.0 * k, 4.0 * k, hint_w * k);
         let ph = p.items.len() as f32 * item_h + 2.0 * pad;
-        let (head, view_h) = (self.header_h(), self.view_h());
-        let (cy, ch) = (cy - scroll + head, ch.max(self.base()));
-        let top = if cy + ch + 4.0 + ph <= head + view_h || cy - 4.0 - ph < head {
-            cy + ch + 4.0
-        } else {
-            cy - 4.0 - ph
+        let Some((left, top)) = self.below_line(p.at, pw, ph, scroll) else {
+            return;
         };
-        let left = (cx - 12.0).clamp(8.0, (self.w - pw - 8.0).max(8.0));
         let (right, bottom) = (left + pw, top + ph);
         self.popup_geom = Some(PaletteGeom {
             left,
@@ -3243,22 +3372,7 @@ impl View {
         let label_f = self.format(Family::Ui, 14.0, 400);
         let hint_f = self.format(Family::Mono, 12.5 * k, 400);
         unsafe {
-            for k in 1..=3 {
-                let o = k as f32 * 1.5;
-                let rr = D2D1_ROUNDED_RECT {
-                    rect: rect(left - o, top - o + 2.0, right + o, bottom + o + 2.0),
-                    radiusX: 6.0 + o,
-                    radiusY: 6.0 + o,
-                };
-                rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
-            }
-            let panel = D2D1_ROUNDED_RECT {
-                rect: rect(left, top, right, bottom),
-                radiusX: 6.0,
-                radiusY: 6.0,
-            };
-            rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
-            rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+            self.paint_panel(rt, rect(left, top, right, bottom));
             let mut y = top + pad;
             for (i, item) in p.items.iter().enumerate() {
                 if i == p.selected {

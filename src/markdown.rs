@@ -549,11 +549,9 @@ pub enum Style {
 
 #[derive(Default, Debug)]
 pub struct Inline {
-    /// Delimiters hidden when the line is rendered (shown dimmed while editing).
+    /// Delimiters hidden when the line is rendered (shown dimmed while editing,
+    /// except in Live 2).
     pub hidden: Vec<Range<usize>>,
-    /// The delimiters among `hidden` of code, bold, italic, strikethrough and
-    /// highlight spans, which Live 2 hides while editing too.
-    pub fmt: Vec<Range<usize>>,
     pub spans: Vec<(Range<usize>, Style)>,
     /// Visible label range, link target, and title (empty if none).
     pub links: Vec<(Range<usize>, String, String)>,
@@ -583,7 +581,6 @@ pub fn parse_inline(s: &str, start: usize, end: usize) -> Inline {
     let mut out = Inline::default();
     parse_range(s, start, end, &mut out);
     out.hidden.sort_by_key(|r| r.start);
-    out.fmt.sort_by_key(|r| r.start);
     out.spans.sort_by_key(|r| r.0.start);
     out.subs.sort_by_key(|r| r.0.start);
     out
@@ -790,10 +787,8 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                     }
                 }
                 if let Some(j) = found {
-                    for r in [i..i + n, j..j + n] {
-                        out.hidden.push(r.clone());
-                        out.fmt.push(r);
-                    }
+                    out.hidden.push(i..i + n);
+                    out.hidden.push(j..j + n);
                     out.spans.push((i + n..j, Style::Code));
                     i = j + n;
                 } else {
@@ -1012,10 +1007,8 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
                 (_, 2) => Style::Bold,
                 _ => Style::Italic,
             };
-            for r in [open_r.clone(), close_r.clone()] {
-                out.hidden.push(r.clone());
-                out.fmt.push(r);
-            }
+            out.hidden.push(open_r.clone());
+            out.hidden.push(close_r.clone());
             out.spans.push((open_r.end..close_r.start, style));
             delims[oi].hi -= use_n;
             delims[ci].lo += use_n;
@@ -1024,6 +1017,175 @@ fn parse_range(s: &str, start: usize, end: usize, out: &mut Inline) {
             }
         }
     }
+}
+
+/// The source ranges whose inside the caret skips where inline syntax is hidden
+/// while editing (Live 2): runs of hidden delimiters, and entities shown as one
+/// character. The caret stops at either end of each.
+pub fn caret_runs(inl: &Inline) -> Vec<Range<usize>> {
+    let mut runs = hidden_runs(inl);
+    runs.extend(inl.subs.iter().map(|s| s.0.clone()));
+    runs
+}
+
+/// Runs of hidden delimiters, those next to each other merged.
+fn hidden_runs(inl: &Inline) -> Vec<Range<usize>> {
+    let mut runs: Vec<Range<usize>> = Vec::new();
+    for r in &inl.hidden {
+        match runs.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => runs.push(r.clone()),
+        }
+    }
+    runs
+}
+
+/// `col` moved past the hidden syntax right before it (`forward`: after it).
+pub fn skip_hidden(inl: &Inline, col: usize, forward: bool) -> usize {
+    let runs = hidden_runs(inl);
+    let run = runs.iter().find(|r| {
+        if forward {
+            r.start == col
+        } else {
+            r.end == col
+        }
+    });
+    match run {
+        Some(r) if forward => r.end,
+        Some(r) => r.start,
+        None => col,
+    }
+}
+
+/// What Backspace (`forward`: Delete) at `col`, past any hidden syntax, removes
+/// where inline syntax is hidden: the character there, an entity whole, and a
+/// span or link it would leave empty, with its syntax.
+pub fn visible_delete(s: &str, inl: &Inline, col: usize, forward: bool) -> Range<usize> {
+    let sub = inl.subs.iter().find(|(r, _)| {
+        if forward {
+            r.start == col
+        } else {
+            r.end == col
+        }
+    });
+    let d = match sub {
+        Some((r, _)) => r.clone(),
+        None if forward => col..crate::doc::next_boundary(s, col),
+        None => crate::doc::prev_boundary(s, col)..col,
+    };
+    delete_range(inl, d)
+}
+
+/// `col` moved out of the inside of a caret run: to its end when moving forward,
+/// else to its start.
+pub fn snap_col(runs: &[Range<usize>], col: usize, forward: bool) -> usize {
+    match runs.iter().find(|r| r.start < col && col < r.end) {
+        Some(r) if forward => r.end,
+        Some(r) => r.start,
+        None => col,
+    }
+}
+
+/// `content` with the hidden delimiters right before and after it.
+fn with_delims(inl: &Inline, content: &Range<usize>) -> Range<usize> {
+    let start = inl.hidden.iter().find(|h| h.end == content.start);
+    let end = inl.hidden.iter().find(|h| h.start == content.end);
+    start.map_or(content.start, |h| h.start)..end.map_or(content.end, |h| h.end)
+}
+
+/// What deleting the visible text `d` removes: `d`, or the whole span or link
+/// that would be left empty and invisible (so `**a**` goes with its `a`).
+pub fn delete_range(inl: &Inline, mut d: Range<usize>) -> Range<usize> {
+    while let Some((r, _)) = inl
+        .spans
+        .iter()
+        .find(|(r, st)| *r == d && !matches!(st, Style::Image | Style::Command | Style::Comment))
+    {
+        let outer = with_delims(inl, r);
+        if outer == d {
+            break;
+        }
+        d = outer;
+    }
+    d
+}
+
+/// A link in a line of source.
+#[derive(Debug, PartialEq)]
+pub struct LinkAt {
+    /// The whole link, syntax included.
+    pub range: Range<usize>,
+    /// Its text, as source.
+    pub text: Range<usize>,
+    /// Its URL, or `[[note]]` for a wiki link.
+    pub target: String,
+    pub title: String,
+    /// A bare URL, with no syntax around it.
+    pub bare: bool,
+}
+
+/// The link at or touching byte `col` of `s` (whose inline syntax is `inl`).
+pub fn link_at(s: &str, inl: &Inline, col: usize) -> Option<LinkAt> {
+    inl.links.iter().find_map(|(shown, target, title)| {
+        // A command link's shown text starts with its `[`, drawn as its glyph.
+        let command = crate::command::glyph(target).is_some();
+        let before = shown.start.checked_sub(1).map(|i| s.as_bytes()[i]);
+        let bare = !command && !matches!(before, Some(b'<' | b'[' | b'|'));
+        let (range, text) = if bare {
+            (shown.clone(), shown.clone())
+        } else if command {
+            let end = with_delims(inl, shown).end;
+            (shown.start..end, shown.start + 1..shown.end)
+        } else {
+            (with_delims(inl, shown), shown.clone())
+        };
+        (range.start <= col && col <= range.end).then(|| LinkAt {
+            range,
+            text,
+            target: target.clone(),
+            title: title.clone(),
+            bare,
+        })
+    })
+}
+
+/// Markdown for a link showing `text` that goes to `url`: a wiki link when `url`
+/// is `[[note]]`, an autolink (`bare`: a bare URL) when the text is the URL.
+pub fn link_markdown(text: &str, url: &str, title: &str, bare: bool) -> String {
+    let url = url.trim();
+    let text = if text.trim().is_empty() { url } else { text };
+    if let Some(name) = url.strip_prefix("[[").and_then(|u| u.strip_suffix("]]")) {
+        return if text == url || text == name {
+            format!("[[{name}]]")
+        } else {
+            format!("[[{name}|{text}]]")
+        };
+    }
+    let web = ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| url.starts_with(p));
+    if text == url && web && title.is_empty() && !url.contains(' ') {
+        return if bare {
+            url.to_string()
+        } else {
+            format!("<{url}>")
+        };
+    }
+    let opens = url.matches('(').count();
+    let dest = if url.contains(' ')
+        || opens != url.matches(')').count()
+        || crate::command::glyph(url).is_some()
+    {
+        format!("<{url}>")
+    } else {
+        url.to_string()
+    };
+    let title = if title.is_empty() {
+        String::new()
+    } else {
+        format!(" \"{}\"", title.replace('"', "'"))
+    };
+    format!("[{text}]({dest}{title})")
 }
 
 /// The text of `s[start..]` as rendered: delimiters removed, entities decoded, and
@@ -1132,17 +1294,74 @@ mod tests {
     }
 
     #[test]
-    fn formatting_delimiters() {
-        let fmt = |s: &str| without(s, &parse_inline(s, 0, s.len()).fmt);
+    fn caret_runs_skip_hidden_syntax() {
+        let s = "a **b** [c](http://x) &amp;";
+        let runs = caret_runs(&parse_inline(s, 0, s.len()));
+        assert_eq!(runs, vec![2..4, 5..7, 8..9, 10..21, 22..27]);
+        assert_eq!(snap_col(&runs, 3, true), 4);
+        assert_eq!(snap_col(&runs, 15, false), 10);
+        assert_eq!(snap_col(&runs, 23, true), 27);
+        assert_eq!(snap_col(&runs, 9, true), 9);
+        // Delimiters next to each other are one run.
+        let s = "[**a**](u)";
+        assert_eq!(caret_runs(&parse_inline(s, 0, s.len())), vec![0..3, 4..10]);
+    }
+
+    #[test]
+    fn deleting_the_last_visible_character_takes_its_syntax() {
+        let del = |s: &str, d: Range<usize>| delete_range(&parse_inline(s, 0, s.len()), d);
+        assert_eq!(del("**a** b", 2..3), 0..5);
+        assert_eq!(del("[**a**](u)", 3..4), 0..10);
+        assert_eq!(del("[ab](u)", 2..3), 2..3);
+        assert_eq!(del("`x`", 1..2), 0..3);
+        assert_eq!(del("[[N]]", 2..3), 0..5);
+    }
+
+    #[test]
+    fn finds_the_link_at_a_column() {
+        let at = |s: &str, col: usize| link_at(s, &parse_inline(s, 0, s.len()), col);
+        let s = r#"see [the docs](https://x.y "T") now"#;
+        assert_eq!(at(s, 3), None);
+        let l = at(s, 31).unwrap();
+        assert_eq!((l.range, l.text), (4..31, 5..13));
         assert_eq!(
-            fmt("**b** *i* ~~s~~ ==m== `c` and ***bi***"),
-            "b i s m c and bi"
+            (l.target.as_str(), l.title.as_str(), l.bare),
+            ("https://x.y", "T", false)
         );
-        // Link, wiki link, escape and autolink syntax is not formatting.
+        let l = at("[[Note|alias]]", 9).unwrap();
         assert_eq!(
-            fmt(r"[**a**](u) [[P|x]] \* <https://a.b>"),
-            r"[a](u) [[P|x]] \* <https://a.b>"
+            (l.range, l.text, l.target.as_str()),
+            (0..14, 7..12, "[[Note]]")
         );
+        let l = at("go https://a.com/x now", 5).unwrap();
+        assert_eq!((l.range, l.bare), (3..18, true));
+        let l = at("<https://a.b>", 0).unwrap();
+        assert_eq!((l.range, l.bare), (0..13, false));
+        // A bare URL ends where it does, not at the bold's closing delimiter.
+        assert_eq!(at("**see https://x.com/a**", 8).unwrap().range, 6..21);
+    }
+
+    #[test]
+    fn writes_links() {
+        assert_eq!(
+            link_markdown("docs", "https://x", "", false),
+            "[docs](https://x)"
+        );
+        assert_eq!(link_markdown("", "https://x", "", false), "<https://x>");
+        assert_eq!(
+            link_markdown("https://x", "https://x", "", true),
+            "https://x"
+        );
+        assert_eq!(
+            link_markdown("alias", "[[Note]]", "", false),
+            "[[Note|alias]]"
+        );
+        assert_eq!(link_markdown("Note", "[[Note]]", "", false), "[[Note]]");
+        assert_eq!(
+            link_markdown("f", "my file.md", "", false),
+            "[f](<my file.md>)"
+        );
+        assert_eq!(link_markdown("a", "u", "T", false), r#"[a](u "T")"#);
     }
 
     #[test]
