@@ -139,7 +139,7 @@ To work with a table as Markdown text, select from outside it into it (for examp
 * **Font: Change Editor Font** lists every installed font, with each name drawn in its own typeface. The document previews the highlighted font live. `Enter` keeps it and `Esc` reverts. Code blocks and inline code stay monospace.
 * **Font: Change Code Font** does the same for code blocks and inline code, listing monospaced fonts first.
 * **Font: Code Font Size** and **Preferences: UI Font Size** open the rendering options at that setting: code text relative to the text around it, and the size of the status bar, explorer, outline, palette and menus.
-* **Preferences: Open Settings** lists general settings, toggled with `Enter` or `Left`/`Right`: confirm before deleting from the explorer, and choose the save path in the palette when a folder is open. Both are on by default.
+* **Preferences: Open Settings** lists general settings, toggled with `Enter` or `Left`/`Right`: confirm before deleting from the explorer, and choose the save path in the palette when a folder is open (both on by default). **Popups: Frame style** cycles how the palette, find widget, link editor and menus are framed: a soft shadow (the default), a plain border, a bold border or an accent-colored border.
 * **View: Rendering Options** lists every option with its current value. Type to filter, `Left`/`Right` to adjust (`Shift` for bigger steps), and `Enter` to toggle. Changes apply and save immediately. The options are:
   * bullet style (dot or dash);
   * always show the `#` markers on headings (dimmed, in the margin), not only while editing the heading;

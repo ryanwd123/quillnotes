@@ -361,6 +361,7 @@ impl App {
             view.set_code_font(font);
         }
         view.set_options(RenderOptions::load(&settings));
+        view.popup_style = Prefs::load(&settings).popup_style;
         let explorer = settings.get("explorer") != Some("off");
         if let Some(pct) = settings.get("zoom").and_then(|z| z.parse::<f32>().ok()) {
             view.zoom = clamp_zoom(pct / 100.0);
@@ -3943,6 +3944,7 @@ impl App {
         if let Some(p) = &mut self.palette {
             p.refresh_prefs(&prefs);
         }
+        self.view.popup_style = prefs.popup_style;
         if let Err(e) = Settings::update(|s| prefs.store(s)) {
             self.say(format!("Settings not saved: {e}"));
         }

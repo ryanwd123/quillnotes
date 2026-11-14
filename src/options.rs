@@ -264,6 +264,54 @@ impl Opt {
     }
 }
 
+/// How floating popups (palette, find, link editor, pickers) are framed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PopupStyle {
+    /// A soft drop shadow under a thin border.
+    #[default]
+    Shadow,
+    /// A thin border, no shadow.
+    Border,
+    /// A heavier border, no shadow.
+    BoldBorder,
+    /// A thin border in the accent color, no shadow.
+    AccentBorder,
+}
+
+impl PopupStyle {
+    pub const ALL: [PopupStyle; 4] = [
+        PopupStyle::Shadow,
+        PopupStyle::Border,
+        PopupStyle::BoldBorder,
+        PopupStyle::AccentBorder,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            PopupStyle::Shadow => "shadow",
+            PopupStyle::Border => "border",
+            PopupStyle::BoldBorder => "bold_border",
+            PopupStyle::AccentBorder => "accent_border",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            PopupStyle::Shadow => "Shadow",
+            PopupStyle::Border => "Border",
+            PopupStyle::BoldBorder => "Bold border",
+            PopupStyle::AccentBorder => "Accent border",
+        }
+    }
+
+    /// The style `steps` away, wrapping around.
+    fn cycle(self, steps: i32) -> Self {
+        let n = Self::ALL.len() as i32;
+        let i = Self::ALL.iter().position(|&s| s == self).unwrap_or(0) as i32;
+        Self::ALL[(i + steps).rem_euclid(n) as usize]
+    }
+}
+
 /// General preferences, listed by "Preferences: Settings".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Prefs {
@@ -272,6 +320,7 @@ pub struct Prefs {
     /// With a folder open, Save As picks a path in the palette instead of the
     /// Windows save dialog.
     pub save_prompt: bool,
+    pub popup_style: PopupStyle,
 }
 
 impl Default for Prefs {
@@ -279,6 +328,7 @@ impl Default for Prefs {
         Prefs {
             confirm_delete: true,
             save_prompt: true,
+            popup_style: PopupStyle::default(),
         }
     }
 }
@@ -290,6 +340,10 @@ impl Prefs {
         Prefs {
             confirm_delete: on("confirm_delete", d.confirm_delete),
             save_prompt: on("save_prompt", d.save_prompt),
+            popup_style: s
+                .get("popup_style")
+                .and_then(|v| PopupStyle::ALL.into_iter().find(|p| p.key() == v))
+                .unwrap_or(d.popup_style),
         }
     }
 
@@ -297,6 +351,7 @@ impl Prefs {
         let on = |b: bool| if b { "on" } else { "off" };
         s.set("confirm_delete", on(self.confirm_delete));
         s.set("save_prompt", on(self.save_prompt));
+        s.set("popup_style", self.popup_style.key());
     }
 }
 
@@ -305,41 +360,51 @@ impl Prefs {
 pub enum Pref {
     ConfirmDelete,
     SavePrompt,
+    PopupStyle,
 }
 
 impl Pref {
-    pub const ALL: [Pref; 2] = [Pref::ConfirmDelete, Pref::SavePrompt];
+    pub const ALL: [Pref; 3] = [Pref::ConfirmDelete, Pref::SavePrompt, Pref::PopupStyle];
 
     pub fn label(self) -> &'static str {
         match self {
             Pref::ConfirmDelete => "Explorer: Confirm before deleting",
             Pref::SavePrompt => "Save: Choose the path in the palette when a folder is open",
+            Pref::PopupStyle => "Popups: Frame style",
         }
     }
 
-    fn flag(self, p: &mut Prefs) -> &mut bool {
+    /// The on/off switch behind a toggle preference.
+    fn flag(self, p: &mut Prefs) -> Option<&mut bool> {
         match self {
-            Pref::ConfirmDelete => &mut p.confirm_delete,
-            Pref::SavePrompt => &mut p.save_prompt,
+            Pref::ConfirmDelete => Some(&mut p.confirm_delete),
+            Pref::SavePrompt => Some(&mut p.save_prompt),
+            Pref::PopupStyle => None,
         }
     }
 
     pub fn value_text(self, p: &Prefs) -> String {
-        on_off(match self {
-            Pref::ConfirmDelete => p.confirm_delete,
-            Pref::SavePrompt => p.save_prompt,
-        })
+        match self {
+            Pref::ConfirmDelete => on_off(p.confirm_delete),
+            Pref::SavePrompt => on_off(p.save_prompt),
+            Pref::PopupStyle => format!("‹ {} ›", p.popup_style.name()),
+        }
     }
 
-    /// Left / Right: off / on.
+    /// Left / Right: off / on, or the previous / next choice.
     pub fn adjust(self, p: &mut Prefs, steps: i32) {
-        *self.flag(p) = steps > 0;
+        match self.flag(p) {
+            Some(f) => *f = steps > 0,
+            None => p.popup_style = p.popup_style.cycle(steps),
+        }
     }
 
-    /// Enter / click: toggles.
+    /// Enter / click: toggles, or moves to the next choice.
     pub fn activate(self, p: &mut Prefs) {
-        let f = self.flag(p);
-        *f = !*f;
+        match self.flag(p) {
+            Some(f) => *f = !*f,
+            None => p.popup_style = p.popup_style.cycle(1),
+        }
     }
 }
 
@@ -397,5 +462,23 @@ mod tests {
         assert_eq!(s.get("confirm_delete"), Some("off"));
         assert_eq!(Prefs::load(&s), p);
         assert_eq!(Prefs::load(&Settings::default()), Prefs::default());
+    }
+
+    #[test]
+    fn popup_style_cycles_and_round_trips() {
+        let mut p = Prefs::default();
+        assert_eq!(p.popup_style, PopupStyle::Shadow);
+        Pref::PopupStyle.adjust(&mut p, -1);
+        assert_eq!(p.popup_style, PopupStyle::AccentBorder);
+        Pref::PopupStyle.adjust(&mut p, 1);
+        Pref::PopupStyle.activate(&mut p);
+        assert_eq!(p.popup_style, PopupStyle::Border);
+        assert_eq!(Pref::PopupStyle.value_text(&p), "‹ Border ›");
+        let mut s = Settings::default();
+        p.store(&mut s);
+        assert_eq!(s.get("popup_style"), Some("border"));
+        assert_eq!(Prefs::load(&s), p);
+        s.set("popup_style", "bogus");
+        assert_eq!(Prefs::load(&s).popup_style, PopupStyle::Shadow);
     }
 }

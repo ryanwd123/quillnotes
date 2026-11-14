@@ -23,7 +23,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::doc::Pos;
 use crate::highlight::{self, Tok};
 use crate::markdown::{self, Align, Kind, LineInfo, Style};
-use crate::options::{RenderOptions, num};
+use crate::options::{PopupStyle, RenderOptions, num};
 use crate::platform;
 use crate::table;
 
@@ -780,6 +780,8 @@ pub struct View {
     /// before it, so unchanged code is not tokenized again.
     code_states: HashMap<u64, highlight::State>,
     opts: RenderOptions,
+    /// How floating popups are framed.
+    pub popup_style: PopupStyle,
     body_font: HSTRING,
     mono_font: HSTRING,
     boxes: HashMap<u64, Rc<TextBox>>,
@@ -878,6 +880,7 @@ impl View {
                 fold_gen: 0,
                 code_states: HashMap::new(),
                 opts: RenderOptions::default(),
+                popup_style: PopupStyle::default(),
                 body_font: HSTRING::from("Segoe UI"),
                 mono_font: HSTRING::from(mono),
                 boxes: HashMap::new(),
@@ -3085,24 +3088,8 @@ impl View {
             let icon = Ink::StatusText;
             unsafe {
                 match part {
-                    FindPart::Panel => {
-                        for s in 1..=3 {
-                            let o = s as f32 * 1.5;
-                            let rr = D2D1_ROUNDED_RECT {
-                                rect: rect(r.left - o, r.top, r.right + o, r.bottom + o + 2.0),
-                                radiusX: 6.0 + o,
-                                radiusY: 6.0 + o,
-                            };
-                            rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
-                        }
-                        let rr = D2D1_ROUNDED_RECT {
-                            rect: r,
-                            radiusX: 6.0,
-                            radiusY: 6.0,
-                        };
-                        rt.FillRoundedRectangle(&rr, self.brush(Ink::PaletteBg));
-                        rt.DrawRoundedRectangle(&rr, self.brush(Ink::Rule), 1.0, None);
-                    }
+                    // Hangs from the top edge, so no shadow above it.
+                    FindPart::Panel => self.paint_frame(rt, r, 6.0, 3, 2.0, true),
                     FindPart::Toggle => {
                         let d = 3.5 * k;
                         if replace {
@@ -3258,25 +3245,47 @@ impl View {
         Some((left, top))
     }
 
-    /// A floating panel with a soft shadow.
+    /// A floating panel framed in the chosen popup style.
     unsafe fn paint_panel(&self, rt: &ID2D1HwndRenderTarget, r: D2D_RECT_F) {
+        unsafe { self.paint_frame(rt, r, 6.0, 3, 2.0, false) }
+    }
+
+    /// A popup's background and frame. The shadow style draws `layers` soft
+    /// rings dropped by `drop`; `flush_top` keeps them off the top edge.
+    unsafe fn paint_frame(
+        &self,
+        rt: &ID2D1HwndRenderTarget,
+        r: D2D_RECT_F,
+        radius: f32,
+        layers: u32,
+        drop: f32,
+        flush_top: bool,
+    ) {
+        let (border, width) = match self.popup_style {
+            PopupStyle::Shadow | PopupStyle::Border => (Ink::Rule, 1.0),
+            PopupStyle::BoldBorder => (Ink::Dim, 2.0),
+            PopupStyle::AccentBorder => (Ink::Accent, 1.0),
+        };
         unsafe {
-            for k in 1..=3 {
-                let o = k as f32 * 1.5;
-                let rr = D2D1_ROUNDED_RECT {
-                    rect: rect(r.left - o, r.top - o + 2.0, r.right + o, r.bottom + o + 2.0),
-                    radiusX: 6.0 + o,
-                    radiusY: 6.0 + o,
-                };
-                rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
+            if self.popup_style == PopupStyle::Shadow {
+                for k in 1..=layers {
+                    let o = k as f32 * 1.5;
+                    let top = if flush_top { r.top } else { r.top - o + drop };
+                    let rr = D2D1_ROUNDED_RECT {
+                        rect: rect(r.left - o, top, r.right + o, r.bottom + o + drop),
+                        radiusX: radius + o,
+                        radiusY: radius + o,
+                    };
+                    rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
+                }
             }
             let panel = D2D1_ROUNDED_RECT {
                 rect: r,
-                radiusX: 6.0,
-                radiusY: 6.0,
+                radiusX: radius,
+                radiusY: radius,
             };
             rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
-            rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+            rt.DrawRoundedRectangle(&panel, self.brush(border), width, None);
         }
     }
 
@@ -3465,24 +3474,8 @@ impl View {
                     self.brush(Ink::Rule),
                 );
             }
-            // Soft shadow, panel, border.
-            for k in (1..=4).filter(|_| !p.docked) {
-                let o = k as f32 * 1.5;
-                let rr = D2D1_ROUNDED_RECT {
-                    rect: rect(left - o, top - o + 3.0, right + o, bottom + o + 3.0),
-                    radiusX: 8.0 + o,
-                    radiusY: 8.0 + o,
-                };
-                rt.FillRoundedRectangle(&rr, self.brush(Ink::Shadow));
-            }
-            let panel = D2D1_ROUNDED_RECT {
-                rect: rect(left, top, right, bottom),
-                radiusX: 8.0,
-                radiusY: 8.0,
-            };
             if !p.docked {
-                rt.FillRoundedRectangle(&panel, self.brush(Ink::PaletteBg));
-                rt.DrawRoundedRectangle(&panel, self.brush(Ink::Rule), 1.0, None);
+                self.paint_frame(rt, rect(left, top, right, bottom), 8.0, 4, 3.0, false);
             }
 
             // Query input with caret (placeholder when empty).
