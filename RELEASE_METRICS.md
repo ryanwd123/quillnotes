@@ -12,6 +12,7 @@ Machine: Intel i7-13700K, 64 GB RAM, Windows 11 Pro 22631.
 | Version | Date | Commit | Binary size | Startup (median, min–max) | Private | Working set | Idle CPU / 10 s | Threads | Handles |
 |---------|------|--------|-------------|---------------------------|---------|-------------|-----------------|---------|---------|
 | 0.2.0 | 2026-11-07 | `84f5a44` | 991,232 B (968 KiB) | 55.9 ms (52.5–129.0) | 17.6 MB | 37.6 MB | 15.6 ms | 17 | 280 |
+| 0.3.0 | 2026-11-14 | `0332c4d` | 1,001,472 B (978 KiB) | 43.4 ms (42.1–137.0) | 17.1 MB | 34.9 MB | 15.6 ms | 20 | 278 |
 
 Notes:
-- The first startup run is a cold start (129 ms). The other runs are warm.
+- The first startup run is a cold start (129 ms in 0.2.0, 137 ms in 0.3.0). The other runs are warm.
