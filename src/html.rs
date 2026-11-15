@@ -76,7 +76,7 @@ pub fn document(lines: &[String], doc_dir: Option<&Path>) -> String {
                         w.end_para();
                         w.lists_to(level);
                         if level > 0 && !blank {
-                            w.out.push_str("<br>\n");
+                            // After a sub-list or code block: no break needed.
                             w.para = Some(("", level));
                         } else {
                             w.out.push_str("<p>");
@@ -486,8 +486,8 @@ mod tests {
     #[test]
     fn nested_lists() {
         assert_eq!(
-            html("- a\n  - [x] b\n  - [ ] c\n- d\n\n  more\n\n3. e\n4. f"),
-            "<ul>\n<li>a<ul>\n<li>\u{2611} b</li>\n<li>\u{2610} c</li>\n</ul>\n</li>\n\
+            html("- a\n  - [x] b\n  - [ ] c\n    - c2\n- d\n\n  more\n\n3. e\n4. f"),
+            "<ul>\n<li>a<ul>\n<li>\u{2611} b</li>\n<li>\u{2610} c<ul>\n<li>c2</li>\n</ul>\n</li>\n</ul>\n</li>\n\
              <li>d<p>more</p>\n</li>\n</ul>\n<ol start=\"3\">\n<li>e</li>\n<li>f</li>\n</ol>\n"
         );
     }
