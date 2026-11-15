@@ -506,7 +506,6 @@ impl Palette {
         p
     }
 
-    /// Recent folders, with "Open Folder..." first.
     /// The open note's headings, (line, level, text), indented by level; starting on
     /// `current` (an index into `headings`).
     pub fn headings(headings: &[(usize, u8, String)], current: Option<usize>) -> Self {
@@ -530,6 +529,7 @@ impl Palette {
         p
     }
 
+    /// Recent folders, with "Open Folder..." first.
     pub fn folders(recent: &[PathBuf], current: Option<&Path>) -> Self {
         let same = |a: &Path, b: &Path| workspace::contains(a, b) && workspace::contains(b, a);
         let mut items = vec![Item::new(
@@ -565,6 +565,22 @@ impl Palette {
         let start = if first_is_current { 2 } else { 1 };
         p.select(start.min(p.filtered.len().saturating_sub(1)));
         p
+    }
+
+    /// Recent folders: drops the highlighted folder from the list, keeping the
+    /// query and the highlight's row, and returns it.
+    pub fn remove_folder(&mut self) -> Option<PathBuf> {
+        let &(i, _) = self.filtered.get(self.selected)?;
+        let Target::SwitchFolder(path) = &self.items[i].target else {
+            return None;
+        };
+        let path = path.clone();
+        let (selected, first) = (self.selected, self.first);
+        self.items.remove(i);
+        self.refilter();
+        self.first = first.min(self.filtered.len().saturating_sub(self.rows));
+        self.select(selected);
+        Some(path)
     }
 
     /// The open folder's settings.
@@ -836,7 +852,7 @@ impl Palette {
             Mode::CodeFonts => "Choose the font for code",
             Mode::Options => "Filter options  ·  ←/→ adjust (Shift for more)  ·  Enter toggles",
             Mode::Files => "Go to file by name (add a folder name to narrow it down)",
-            Mode::Folders => "Open a recent folder",
+            Mode::Folders => "Open a recent folder  ·  Shift+Del removes it from the list",
             Mode::FolderSettings => "Folder settings  ·  ←/→ adjust  ·  Enter toggles or edits",
             Mode::Search => "Search in Markdown files",
             Mode::Headings => "Go to a heading in this note",
@@ -1074,6 +1090,38 @@ mod tests {
         assert_eq!(p.selected().map(|i| i.label.as_str()), Some("    Goals"));
         p.insert("ri");
         assert_eq!(p.selected().map(|i| &i.target), Some(&Target::Heading(9)));
+    }
+
+    #[test]
+    fn removes_recent_folders() {
+        let recent: Vec<PathBuf> = [r"C:\a", r"C:\b", r"C:\c"].map(PathBuf::from).into();
+        let mut p = Palette::folders(&recent, None);
+        assert_eq!(p.remove_folder(), Some(PathBuf::from(r"C:\a")));
+        // The highlight stays on the same row, now the next folder.
+        assert_eq!(
+            p.selected().map(|i| &i.target),
+            Some(&Target::SwitchFolder(PathBuf::from(r"C:\b")))
+        );
+        // Removing the last row moves the highlight up.
+        p.move_by(1);
+        assert_eq!(p.remove_folder(), Some(PathBuf::from(r"C:\c")));
+        assert_eq!(p.visible().0.len(), 2);
+        assert_eq!(
+            p.selected().map(|i| &i.target),
+            Some(&Target::SwitchFolder(PathBuf::from(r"C:\b")))
+        );
+        // A filtered list keeps its query.
+        p.insert("b");
+        assert_eq!(p.remove_folder(), Some(PathBuf::from(r"C:\b")));
+        assert_eq!(p.query, "b");
+        // "Open Folder..." can't be removed.
+        p.clear();
+        assert_eq!(
+            p.selected().map(|i| &i.target),
+            Some(&Target::OpenFolderDialog)
+        );
+        assert_eq!(p.remove_folder(), None);
+        assert_eq!(p.visible().0.len(), 1);
     }
 
     #[test]

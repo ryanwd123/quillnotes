@@ -3741,6 +3741,13 @@ impl App {
             let steps = if key == VK_LEFT { -1 } else { 1 };
             return self.change_prefs(|x| pref.adjust(x, steps));
         }
+        if p.mode == Mode::Folders && key == VK_DELETE && shift && !ctrl {
+            if let Some(dir) = p.remove_folder() {
+                self.save_setting(|s| workspace::remove_recent(s, &dir));
+                self.say(format!("Removed {} from recent folders", dir.display()));
+            }
+            return self.palette_changed();
+        }
         // The key that opened the command palette or the search closes it.
         if bound == Some(Action::Palette)
             || (bound == Some(Action::SearchFiles) && p.mode == Mode::Search)
