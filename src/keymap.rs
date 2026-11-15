@@ -213,6 +213,12 @@ const ACTIONS: &[(&str, &str, Action, &str)] = &[
     ("Editing", "redo", Action::Redo, "Ctrl+Y, Ctrl+Shift+Z"),
     ("Editing", "select_all", Action::SelectAll, "Ctrl+A"),
     ("Editing", "copy", Action::Copy, "Ctrl+C"),
+    (
+        "Editing",
+        "copy_as_html",
+        Action::Run(Command::CopyHtml),
+        "Ctrl+Shift+C",
+    ),
     ("Editing", "cut", Action::Cut, "Ctrl+X"),
     ("Editing", "paste", Action::Paste, "Ctrl+V"),
     ("Editing", "find", Action::Find, "Ctrl+F"),

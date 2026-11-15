@@ -53,6 +53,7 @@ Shortcuts follow VS Code's defaults where they don't clash with Markdown formatt
 | `Alt+Up/Down`, `Shift+Alt+Up/Down`, `Ctrl+Shift+K` | Move, copy, delete lines |
 | `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |
 | `Ctrl+/` | Toggle comment |
+| `Ctrl+Shift+C` | Copy as HTML (the selection, or the whole note) |
 | `Ctrl+Shift+V`, `Ctrl+Shift+T`, `Ctrl+=`/`-`/`Numpad0` | Source mode, theme, zoom (5% steps) |
 | `Ctrl+W`, `Ctrl+Shift+W`, `Ctrl+Q` | Close file, close window, quit (close every window) |
 
@@ -81,6 +82,7 @@ The zoom level and the window's size, position and maximized state are remembere
 * Typing `#` in the `[[` list takes the highlighted note and lists its headings in order (`[[#` lists this note's); picking one completes `[[note#Heading]]`. Clicking such a link, `[[#Heading]]` or `file.md#heading` opens the note at that heading, matched as an anchor (ignoring case, spaces and punctuation).
 * With a folder open, dropping files on a note copies them into a `data` folder next to it and links them with a relative path, at the drop caret that follows the mouse. Images are linked as images on a line of their own, so they render. Files already inside the folder are linked where they are. `Ctrl+V` does the same for files copied in File Explorer, and saves a copied image as `data/pasted-<date-time>.png`. Without a folder, dropping a file opens it.
 * Right-click a link to copy its URL. Right-click a code block or inline code to copy it; `Ctrl+C` with nothing selected does the same while the cursor is in code.
+* `Ctrl+Shift+C` (**Edit: Copy as HTML**) copies the selection, or the whole note when nothing is selected, as HTML: pasting into email, Word or a web editor keeps the headings, lists, tables, code blocks, links and images (local images as `file:` links). Plain-text editors get the HTML source. Comments and front matter are left out, and wiki links become their text.
 * `Ctrl+Shift+O` shows the document's headings in a panel on the right. The heading the cursor is under is highlighted, and clicking one jumps to it. Below the headings, **Backlinks** lists the folder's other notes that link to this one (`[[wiki]]` or relative `.md` links, not those in code) with the linking line; click one to open it there.
 
 ### Command links

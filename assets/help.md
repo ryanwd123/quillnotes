@@ -96,6 +96,7 @@ Hover a table to get **+** buttons for a new row or column. Select from outside 
 | `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert a line below / above |
 | `Ctrl+C` / `Ctrl+X` | Copy / cut (the whole line when nothing is selected; in code, `Ctrl+C` copies the code block or inline code) |
 | Right-click code | Copy the code block or inline code |
+| `Ctrl+Shift+C` | Copy as HTML (the selection, or the whole note), to paste formatted into email, Word or a web editor |
 | `Enter` | New line, continuing lists and quotes |
 | `Shift+Enter` | New line without continuing the list |
 

@@ -26,6 +26,7 @@ pub enum Command {
     ToggleExplorer,
     ToggleOutline,
     ToggleSpellCheck,
+    CopyHtml,
     FoldHeading,
     UnfoldHeading,
     UnfoldAll,
@@ -90,6 +91,11 @@ const COMMANDS: &[(&str, Option<Action>, Command)] = &[
         Command::NextDailyNote,
     ),
     ("File: Quit (Close All Windows)", None, Command::Quit),
+    (
+        "Edit: Copy as HTML",
+        Some(Action::Run(Command::CopyHtml)),
+        Command::CopyHtml,
+    ),
     (
         "View: Toggle Explorer",
         Some(Action::ToggleExplorer),

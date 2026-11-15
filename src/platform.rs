@@ -66,25 +66,74 @@ pub fn get_clipboard(hwnd: HWND) -> Option<String> {
 }
 
 pub fn set_clipboard(hwnd: HWND, text: &str) {
-    let wide: Vec<u16> = text
-        .replace('\n', "\r\n")
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
     unsafe {
         if OpenClipboard(Some(hwnd)).is_err() {
             return;
         }
         let _ = EmptyClipboard();
-        if let Ok(hg) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) {
-            let p = GlobalLock(hg) as *mut u16;
+        put_text(text);
+        let _ = CloseClipboard();
+    }
+}
+
+/// Puts an HTML fragment on the clipboard as "HTML Format" (what rich editors
+/// paste), with `text` as the plain text.
+pub fn set_clipboard_html(hwnd: HWND, html: &str, text: &str) {
+    unsafe {
+        let format = RegisterClipboardFormatW(w!("HTML Format"));
+        if format == 0 || OpenClipboard(Some(hwnd)).is_err() {
+            return;
+        }
+        let _ = EmptyClipboard();
+        put_text(text);
+        let mut data = cf_html(html).into_bytes();
+        data.push(0);
+        put_bytes(format, &data);
+        let _ = CloseClipboard();
+    }
+}
+
+/// The CF_HTML header and document around `fragment`. Its offsets count UTF-8 bytes.
+fn cf_html(fragment: &str) -> String {
+    const HEADER: &str = "Version:0.9\r\nStartHTML:{0}\r\nEndHTML:{1}\r\n\
+                          StartFragment:{2}\r\nEndFragment:{3}\r\n";
+    let pre = "<html><body>\r\n<!--StartFragment-->";
+    let post = "<!--EndFragment-->\r\n</body></html>";
+    // Each offset is written as 10 digits, the width of its `{n}` placeholder plus 7.
+    let start_html = HEADER.len() + 4 * 7;
+    let start_frag = start_html + pre.len();
+    let end_frag = start_frag + fragment.len();
+    let end_html = end_frag + post.len();
+    let header = HEADER
+        .replace("{0}", &format!("{start_html:010}"))
+        .replace("{1}", &format!("{end_html:010}"))
+        .replace("{2}", &format!("{start_frag:010}"))
+        .replace("{3}", &format!("{end_frag:010}"));
+    format!("{header}{pre}{fragment}{post}")
+}
+
+/// Adds `text` to the open clipboard as Unicode text.
+unsafe fn put_text(text: &str) {
+    let wide: Vec<u16> = text
+        .replace('\n', "\r\n")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let bytes = unsafe { std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2) };
+    unsafe { put_bytes(CF_UNICODETEXT.0 as u32, bytes) };
+}
+
+/// Adds `data` to the open clipboard in `format`.
+unsafe fn put_bytes(format: u32, data: &[u8]) {
+    unsafe {
+        if let Ok(hg) = GlobalAlloc(GMEM_MOVEABLE, data.len()) {
+            let p = GlobalLock(hg) as *mut u8;
             if !p.is_null() {
-                std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                std::ptr::copy_nonoverlapping(data.as_ptr(), p, data.len());
                 let _ = GlobalUnlock(hg);
-                let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hg.0)));
+                let _ = SetClipboardData(format, Some(HANDLE(hg.0)));
             }
         }
-        let _ = CloseClipboard();
     }
 }
 
@@ -664,5 +713,23 @@ impl SpellChecker {
     /// Stops flagging `word` until QuillNotes closes.
     pub fn ignore(&self, word: &str) {
         let _ = unsafe { self.0.Ignore(&HSTRING::from(word)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cf_html_offsets() {
+        let frag = "<p>caf\u{e9} \u{2611}</p>";
+        let doc = cf_html(frag);
+        let offset = |key: &str| -> usize {
+            let at = doc.find(key).unwrap() + key.len();
+            doc[at..at + 10].parse().unwrap()
+        };
+        assert!(doc[offset("StartHTML:")..].starts_with("<html>"));
+        assert_eq!(offset("EndHTML:"), doc.len());
+        assert_eq!(&doc[offset("StartFragment:")..offset("EndFragment:")], frag);
     }
 }

@@ -6,6 +6,7 @@ mod command;
 mod doc;
 mod dragdrop;
 mod highlight;
+mod html;
 mod keymap;
 mod markdown;
 mod options;

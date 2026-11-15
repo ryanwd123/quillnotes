@@ -17,6 +17,7 @@ use windows::core::{HSTRING, PCWSTR};
 use crate::attach;
 use crate::command::{self as cmd, Mode as CmdMode, Window as CmdWindow};
 use crate::doc::{self, DiskChange, Document, EditKind, Pos, find_all, find_ci};
+use crate::html;
 use crate::keymap::{self, Action, Chord, Keymap};
 use crate::markdown::{self, Align, Kind, LineInfo};
 use crate::options::{Prefs, RenderOptions};
@@ -2374,6 +2375,36 @@ impl App {
         }
     }
 
+    /// Ctrl+Shift+C: copies the selection, or the whole document, as HTML for
+    /// pasting into rich editors (the HTML source is the plain-text version).
+    fn copy_html(&mut self) {
+        let (a, b) = self.sel();
+        let dir = self.doc_dir();
+        let (html, what) = if a.line == b.line && a != b {
+            // Part of one line: just its inline formatting, so no paragraph comes with it.
+            let line = &self.doc.lines[a.line];
+            (
+                html::inline(line, a.col, b.col, dir.as_deref()),
+                "the selection",
+            )
+        } else if a != b {
+            let lines: Vec<String> = self
+                .doc
+                .text_range(a, b)
+                .split('\n')
+                .map(String::from)
+                .collect();
+            (html::document(&lines, dir.as_deref()), "the selection")
+        } else {
+            (
+                html::document(&self.doc.lines, dir.as_deref()),
+                "the document",
+            )
+        };
+        platform::set_clipboard_html(self.hwnd, &html, &html);
+        self.say(format!("Copied {what} as HTML"));
+    }
+
     fn paste(&mut self) {
         // Files copied in Explorer, or an image, when there is no text to paste.
         if !platform::clipboard_has_text() {
@@ -3921,6 +3952,7 @@ impl App {
             Command::WriteKeymap => self.write_keymap(),
             Command::WriteTheme => self.write_theme(),
             Command::ToggleSpellCheck => self.toggle_spell_check(),
+            Command::CopyHtml => self.copy_html(),
             Command::Quit => platform::close_all_windows(),
             Command::Help => {
                 if let Ok(exe) = std::env::current_exe() {
