@@ -168,6 +168,9 @@ pub struct ListMarker {
     pub indent_cols: usize,
     pub marker: usize,
     pub content: usize,
+    /// Where the item's content starts for nesting: before a task checkbox, so
+    /// `  - b` under `- [ ] a` is a sub-item.
+    pub item: usize,
     pub ordered: bool,
     pub task: Option<bool>,
 }
@@ -209,6 +212,7 @@ pub fn list_marker(s: &str) -> Option<ListMarker> {
     } else {
         i + 1
     };
+    let item = content;
     let mut task = None;
     let t = &b[content.min(b.len())..];
     if content > after_marker
@@ -230,6 +234,7 @@ pub fn list_marker(s: &str) -> Option<ListMarker> {
         indent_cols: cols,
         marker: ws,
         content,
+        item,
         ordered,
         task,
     })
@@ -481,7 +486,7 @@ pub fn classify(lines: &[String]) -> Vec<LineInfo> {
                 stack.pop();
             }
             let level = stack.len().min(u8::MAX as usize) as u8;
-            let content_cols = m.indent_cols + (m.content - m.marker).min(rest.len() - m.marker);
+            let content_cols = m.indent_cols + (m.item - m.marker).min(rest.len() - m.marker);
             stack.push((m.indent_cols, content_cols.max(m.indent_cols + 2)));
             let mut info = LineInfo::new(
                 Kind::List {
@@ -1449,6 +1454,17 @@ mod tests {
         assert_eq!(k[13], Kind::Table { row: 1 });
         assert_eq!(k[14], Kind::Table { row: 2 });
         assert_eq!(k[15], Kind::Para);
+    }
+
+    #[test]
+    fn nesting_under_tasks() {
+        // A task's checkbox is part of its text, so sub-items and continuation
+        // lines nest from the marker's content column, as under a plain item.
+        let doc = lines("- [ ] a\n  - b\n    - [x] c\n      - d\n  more\n- e");
+        let levels: Vec<u8> = classify(&doc).iter().map(|i| i.level).collect();
+        assert_eq!(levels, [0, 1, 2, 3, 1, 0]);
+        assert_eq!(classify(&doc)[4].kind, Kind::Para);
+        assert_eq!(classify(&doc)[0].content, 6);
     }
 
     #[test]
