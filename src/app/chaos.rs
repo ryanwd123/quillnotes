@@ -11,6 +11,10 @@
 //! cargo test chaos -- --nocapture
 //! ```
 //!
+//! `QUILL_CHAOS_MEMORY = 50000` prints the process's memory, handles and GDI/USER
+//! objects every 50,000 steps, to spot leaks over a long session. Run the chaos
+//! test alone then, as other tests share the process.
+//!
 //! A plain `cargo test` runs two fixed seeds, so it gives the same result every
 //! time. To hunt for new bugs, `QUILL_CHAOS_RUNS = 20` runs that many seeds taken
 //! from the clock.
@@ -96,6 +100,103 @@ enum Ev {
     Disk(Disk),
 }
 
+/// Counts the Rust heap in test builds, so a memory report can tell growth in the
+/// app's own data from growth inside Direct2D, DirectWrite and other system code.
+struct CountingAlloc;
+
+static HEAP: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        HEAP.fetch_add(layout.size(), Ordering::Relaxed);
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        HEAP.fetch_sub(layout.size(), Ordering::Relaxed);
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
+        HEAP.fetch_add(new, Ordering::Relaxed);
+        HEAP.fetch_sub(layout.size(), Ordering::Relaxed);
+        unsafe { std::alloc::System.realloc(ptr, layout, new) }
+    }
+}
+
+#[global_allocator]
+static ALLOC: CountingAlloc = CountingAlloc;
+
+/// Process counters, read straight from kernel32 and user32 so tests need no more
+/// `windows` features.
+#[repr(C)]
+#[derive(Default)]
+struct MemoryCounters {
+    cb: u32,
+    page_faults: u32,
+    peak_working_set: usize,
+    working_set: usize,
+    quota_peak_paged: usize,
+    quota_paged: usize,
+    quota_peak_nonpaged: usize,
+    quota_nonpaged: usize,
+    pagefile: usize,
+    peak_pagefile: usize,
+    private: usize,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetCurrentProcess() -> isize;
+    fn K32GetProcessMemoryInfo(process: isize, counters: *mut MemoryCounters, cb: u32) -> i32;
+    fn GetProcessHandleCount(process: isize, count: *mut u32) -> i32;
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetGuiResources(process: isize, flags: u32) -> u32;
+}
+
+/// Private bytes, working set, kernel handles, GDI objects and USER objects.
+fn process_usage() -> (usize, usize, u32, u32, u32) {
+    unsafe {
+        let me = GetCurrentProcess();
+        let mut m = MemoryCounters {
+            cb: std::mem::size_of::<MemoryCounters>() as u32,
+            ..Default::default()
+        };
+        K32GetProcessMemoryInfo(me, &mut m, m.cb);
+        let mut handles = 0;
+        GetProcessHandleCount(me, &mut handles);
+        (
+            m.private,
+            m.working_set,
+            handles,
+            GetGuiResources(me, 0),
+            GetGuiResources(me, 1),
+        )
+    }
+}
+
+fn memory_report(seed: u64, step: usize, a: &App, root: &Path) {
+    let (private, ws, handles, gdi, user) = process_usage();
+    let notes: u64 = files(root)
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    let open: usize = a.doc.lines.iter().map(|l| l.len() + 1).sum();
+    let mb = |b: usize| b as f64 / 1_048_576.0;
+    println!(
+        "chaos seed {seed} memory at step {step:>8}: private {:6.1} MB (Rust heap {:5.1}), \
+         working set {:6.1} MB, \
+         handles {handles:5}, GDI {gdi:4}, USER {user:4}, notes {:6.1} KB, open note {:6.1} KB",
+        mb(private),
+        mb(HEAP.load(Ordering::Relaxed)),
+        mb(ws),
+        notes as f64 / 1024.0,
+        open as f64 / 1024.0,
+    );
+}
+
 /// What the watchdog sees of the worker.
 struct Progress {
     step: AtomicUsize,
@@ -130,10 +231,12 @@ const PNG: &[u8] = &[
 ];
 
 fn write_corpus(root: &Path, rng: &mut Rng) {
+    // Errors are ignored: a virus scanner or the search indexer may hold a file
+    // just written (error 32), and a missing note is fine.
     let w = |rel: &str, bytes: &[u8]| {
         let p = root.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, bytes).unwrap();
+        let _ = std::fs::create_dir_all(p.parent().unwrap());
+        let _ = std::fs::write(p, bytes);
     };
     w("welcome.md", include_str!("../../sample.md").as_bytes());
     w("help.md", include_str!("../../assets/help.md").as_bytes());
@@ -447,6 +550,16 @@ fn apply(a: &mut App, ev: &Ev, root: &Path, size: &mut (u32, u32)) {
                 Disk::Rename(n, to) => at(*n).map(|p| std::fs::rename(&p, p.with_file_name(to))),
                 Disk::Create(name, s) => Some(std::fs::write(root.join(name), s)),
             };
+            // Deletes and truncations empty the folder over a long run; put the
+            // notes back so it keeps exercising real ones.
+            let total: u64 = files(root)
+                .iter()
+                .filter_map(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .sum();
+            if total < 40 * 1024 {
+                write_corpus(root, &mut Rng(total | 1));
+            }
             // Coming back to the window is when the app looks at the disk.
             a.on_focus(false);
             a.on_focus(true);
@@ -598,6 +711,10 @@ fn run(seed: u64, steps: usize, progress: &Progress) -> Vec<(Duration, String)> 
     a.on_focus(true);
 
     let mut slow: Vec<(Duration, String)> = Vec::new();
+    let report_every = env("QUILL_CHAOS_MEMORY").map(|n| n.max(1) as usize);
+    if report_every.is_some() {
+        memory_report(seed, 0, &a, &root);
+    }
     for step in 0..steps {
         let ev = next_event(&mut rng, &a, &root, size);
         let desc = format!("{step}: {ev:?}");
@@ -622,6 +739,9 @@ fn run(seed: u64, steps: usize, progress: &Progress) -> Vec<(Duration, String)> 
             panic!("seed {seed}, step {step}: {e}");
         }
         progress.step.store(step + 1, Ordering::Relaxed);
+        if report_every.is_some_and(|n| (step + 1) % n == 0) {
+            memory_report(seed, step + 1, &a, &root);
+        }
     }
 
     unsafe {
