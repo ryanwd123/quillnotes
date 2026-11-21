@@ -185,6 +185,10 @@ struct NavEntry {
 }
 
 const NAV_MAX: usize = 50;
+/// Longer lines are not spell checked: Windows' checker takes ~20 ms per KB, and a
+/// line is checked again after every edit to it, so a 50 KB line stalled typing
+/// for a second per key.
+const SPELL_MAX_LINE: usize = 4096;
 
 #[derive(Clone, Copy)]
 enum Drag {
@@ -1289,6 +1293,9 @@ impl App {
     }
 
     fn check_line(&mut self, l: usize) -> Vec<std::ops::Range<usize>> {
+        if self.doc.lines[l].len() > SPELL_MAX_LINE {
+            return Vec::new();
+        }
         let Some(text) = spell::prose(&self.doc.lines[l], &self.infos[l]) else {
             return Vec::new();
         };
