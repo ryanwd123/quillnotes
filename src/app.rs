@@ -2,6 +2,8 @@
 
 mod folder;
 mod link;
+#[cfg(test)]
+mod chaos;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

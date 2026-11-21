@@ -773,6 +773,10 @@ pub struct View {
     pub fold_gen: u64,
     /// Misspelled byte ranges by line, underlined when painted.
     pub spelling: HashMap<usize, Vec<std::ops::Range<usize>>>,
+    /// The last paint's EndDraw error, for the chaos test: a frame that fails to
+    /// draw leaves the window showing an old one.
+    #[cfg(test)]
+    pub draw_error: Option<windows::core::HRESULT>,
     /// Find matches by line while the find widget is open, and the one selected.
     pub find_hits: HashMap<usize, Vec<std::ops::Range<usize>>>,
     pub find_current: Option<(usize, std::ops::Range<usize>)>,
@@ -874,6 +878,8 @@ impl View {
                 links_gen: 0,
                 colors: (LIGHT, DARK),
                 spelling: HashMap::new(),
+                #[cfg(test)]
+                draw_error: None,
                 find_hits: HashMap::new(),
                 find_current: None,
                 folds: HashSet::new(),
@@ -2670,7 +2676,12 @@ impl View {
                 self.paint_palette(&rt, p);
             }
 
-            if let Err(e) = rt.EndDraw(None, None)
+            let drawn = rt.EndDraw(None, None);
+            #[cfg(test)]
+            {
+                self.draw_error = drawn.as_ref().err().map(|e| e.code());
+            }
+            if let Err(e) = drawn
                 && e.code() == D2DERR_RECREATE_TARGET
             {
                 self.rt = None;
