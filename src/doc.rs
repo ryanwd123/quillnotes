@@ -234,6 +234,10 @@ impl Document {
         match &mut self.open {
             Some(g) => g.edits.push(edit),
             None => {
+                // As in commit: a saved state among the undone steps is gone.
+                if self.saved_depth.is_some_and(|d| d > self.undo.len()) {
+                    self.saved_depth = None;
+                }
                 self.undo.push(Group {
                     edits: vec![edit],
                     before: (a, b),
@@ -478,8 +482,22 @@ pub fn word_at(s: &str, i: usize) -> (usize, usize) {
 }
 
 #[cfg(test)]
+mod model;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edit_after_undoing_past_the_save_is_dirty() {
+        let (mut d, _) = Document::from_bytes(b"a", None);
+        d.replace(Pos::new(0, 1), Pos::new(0, 1), "b");
+        d.mark_saved();
+        d.undo();
+        d.replace(Pos::new(0, 1), Pos::new(0, 1), "c");
+        assert_eq!(d.text(), "ac");
+        assert!(d.is_dirty());
+    }
 
     #[test]
     fn replace_and_undo() {
