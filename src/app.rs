@@ -310,18 +310,18 @@ pub struct App {
 }
 
 fn ctrl_down() -> bool {
-    key_down(VK_CONTROL, platform::sandbox::mods().0)
+    key_down(VK_CONTROL, |m| m.0)
 }
 fn shift_down() -> bool {
-    key_down(VK_SHIFT, platform::sandbox::mods().1)
+    key_down(VK_SHIFT, |m| m.1)
 }
 fn alt_down() -> bool {
-    key_down(VK_MENU, platform::sandbox::mods().2)
+    key_down(VK_MENU, |m| m.2)
 }
-/// Whether `vk` is held; in tests, `held` (what the test set) instead.
-fn key_down(vk: VIRTUAL_KEY, held: bool) -> bool {
+/// Whether `vk` is held; in tests, whether the test holds it.
+fn key_down(vk: VIRTUAL_KEY, in_test: fn((bool, bool, bool)) -> bool) -> bool {
     if cfg!(test) {
-        return held;
+        return in_test(platform::sandbox::mods());
     }
     unsafe { GetKeyState(vk.0 as i32) < 0 }
 }
