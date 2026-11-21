@@ -2593,7 +2593,8 @@ impl App {
         } else if p.kind.finds() {
             self.find_query = p.text.clone();
             let (a, c, _) = p.origin;
-            let start = a.min(c);
+            // Clamped: the file may have been reloaded shorter since the prompt opened.
+            let start = self.doc.clamp(a.min(c));
             self.anchor = start;
             self.cursor = start;
             self.find(true);
@@ -5661,6 +5662,23 @@ mod tests {
         // Tests share one settings file; another test may have saved View mode.
         a.mode = ViewMode::default();
         a
+    }
+
+    #[test]
+    fn find_after_the_file_shrinks_on_disk_keeps_the_caret_in_it() {
+        let path =
+            std::env::temp_dir().join(format!("quillnotes-shrink-{}.md", std::process::id()));
+        std::fs::write(&path, "one\ntwo three").unwrap();
+        let mut a = app("");
+        a.read_path(&path);
+        a.set_sel(Pos::new(1, 5), Pos::new(1, 5));
+        a.open_prompt(PromptKind::Find);
+        std::fs::write(&path, "").unwrap();
+        a.check_disk();
+        a.on_char(b't' as u16);
+        assert_eq!(a.doc.lines, [""]);
+        assert_eq!((a.anchor, a.cursor), (Pos::new(0, 0), Pos::new(0, 0)));
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

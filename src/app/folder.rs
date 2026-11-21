@@ -332,7 +332,10 @@ impl App {
             self.doc = doc;
         }
         o.previewing = false;
-        (self.anchor, self.cursor, self.scroll) = (o.anchor, o.cursor, o.scroll);
+        let (anchor, cursor, scroll) = (o.anchor, o.cursor, o.scroll);
+        // Clamped: the file may have changed on disk since the search opened.
+        self.set_sel(anchor, cursor);
+        self.scroll = scroll;
         self.clamp_scroll();
         self.update_title();
         self.invalidate();
