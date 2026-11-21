@@ -3377,7 +3377,10 @@ impl App {
         }
         let info = self.info(c.line);
         let line = &self.doc.lines[c.line];
-        if &line[c.col - 2..c.col] != "[[" || matches!(info.kind, Kind::Code | Kind::Fence) {
+        // Bytes, not a str slice: the char before `[[` may be several bytes long.
+        if !line.as_bytes()[..c.col].ends_with(b"[[")
+            || matches!(info.kind, Kind::Code | Kind::Fence)
+        {
             return;
         }
         let notes = workspace::note_links(&root, &self.entries, self.doc.path.as_deref());
@@ -5709,6 +5712,16 @@ mod tests {
         a.navigate(true);
         assert_eq!(a.doc.path.as_deref(), Some(first.as_path()));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bracket_after_a_multibyte_char_does_not_panic() {
+        let mut a = app("");
+        a.folder = Some(std::env::temp_dir());
+        for c in "e\u{301}[\u{e9}[[".encode_utf16() {
+            a.on_char(c);
+        }
+        assert_eq!(a.doc.lines[0], "e\u{301}[\u{e9}[[");
     }
 
     #[test]
