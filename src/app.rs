@@ -3728,6 +3728,10 @@ impl App {
     /// Puts the caret on the heading on line `l`, at the top of the view.
     fn show_heading(&mut self, l: usize) {
         self.infos();
+        // A heading list made before the file was reloaded shorter.
+        if l >= self.infos.len() {
+            return;
+        }
         let p = Pos::new(l, self.infos[l].content);
         self.set_sel(p, p);
         self.ensure_layout();
@@ -4936,6 +4940,11 @@ impl App {
     /// Mouse back / forward buttons, Alt+Left / Alt+Right: the previous or next file
     /// in this window's history, at the position it was left.
     pub fn navigate(&mut self, back: bool) {
+        // The mouse's back / forward buttons work over an open palette, whose
+        // items (headings, matches) belong to the file being left.
+        if self.palette.is_some() {
+            self.close_palette(true);
+        }
         let entry = loop {
             let stack = if back {
                 &mut self.back
@@ -5740,6 +5749,32 @@ mod tests {
         assert_eq!(name("Console"), "Console.md");
         assert_eq!(name("COM10"), "COM10.md");
         assert_eq!(name(""), "Untitled.md");
+    }
+
+    #[test]
+    fn go_to_heading_survives_the_file_shrinking_and_closes_on_back() {
+        let root =
+            std::env::temp_dir().join(format!("quillnotes-headings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (first, second) = (root.join("a.md"), root.join("b.md"));
+        std::fs::write(&first, "a").unwrap();
+        std::fs::write(&second, "# A\n\n## B\n\ntext\n\n# Done").unwrap();
+        let mut a = app("");
+        a.open_path(&first);
+        a.open_path(&second);
+        a.go_to_heading("");
+        // The file is reloaded shorter while its headings are listed.
+        std::fs::write(&second, "x").unwrap();
+        a.check_disk();
+        a.on_char(b'd' as u16);
+        assert_eq!(a.doc.lines, ["x"]);
+        assert_eq!(a.cursor, Pos::new(0, 0));
+        // Back (the mouse button works over the palette) closes it first.
+        a.navigate(true);
+        assert!(a.palette.is_none());
+        assert_eq!(a.doc.path.as_deref(), Some(first.as_path()));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
