@@ -5,6 +5,8 @@ mod attach;
 mod command;
 mod doc;
 mod dragdrop;
+#[cfg(test)]
+mod fuzz;
 mod highlight;
 mod html;
 mod keymap;
