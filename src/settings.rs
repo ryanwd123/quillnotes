@@ -20,7 +20,16 @@ pub fn dir() -> Option<PathBuf> {
 /// settings, keymap or theme files.
 #[cfg(test)]
 pub fn dir() -> Option<PathBuf> {
-    Some(std::env::temp_dir().join(format!("quillnotes-settings-{}", std::process::id())))
+    TEST_DIR.with(|d| d.borrow().clone()).or_else(|| {
+        Some(std::env::temp_dir().join(format!("quillnotes-settings-{}", std::process::id())))
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own settings folder, for one that changes settings freely (the
+    /// chaos test) without disturbing tests running beside it.
+    pub static TEST_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn path() -> Option<PathBuf> {

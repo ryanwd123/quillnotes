@@ -304,13 +304,20 @@ pub struct App {
 }
 
 fn ctrl_down() -> bool {
-    unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 }
+    key_down(VK_CONTROL, platform::sandbox::mods().0)
 }
 fn shift_down() -> bool {
-    unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }
+    key_down(VK_SHIFT, platform::sandbox::mods().1)
 }
 fn alt_down() -> bool {
-    unsafe { GetKeyState(VK_MENU.0 as i32) < 0 }
+    key_down(VK_MENU, platform::sandbox::mods().2)
+}
+/// Whether `vk` is held; in tests, `held` (what the test set) instead.
+fn key_down(vk: VIRTUAL_KEY, held: bool) -> bool {
+    if cfg!(test) {
+        return held;
+    }
+    unsafe { GetKeyState(vk.0 as i32) < 0 }
 }
 
 fn rfind_ci(hay: &str, needle: &str, before: usize) -> Option<usize> {
@@ -5276,6 +5283,10 @@ impl App {
     }
 
     fn new_window(&mut self) {
+        // In tests the exe is the test runner.
+        if cfg!(test) {
+            return;
+        }
         if let Ok(exe) = std::env::current_exe() {
             let _ = std::process::Command::new(exe).arg("--new").spawn();
         }

@@ -28,6 +28,53 @@ thread_local! {
     pub static IN_MODAL: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Test stand-ins: under `cargo test` the clipboard is a thread-local string,
+/// modifier keys are what the test sets, and dialogs, menus, the shell and new
+/// processes never open, so tests never block on a dialog, touch the user's
+/// clipboard or windows, or start programs. Chaos tests also get random answers
+/// to message boxes and menus. Outside tests none of this is reached.
+pub mod sandbox {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        pub static CLIPBOARD: RefCell<Option<String>> = const { RefCell::new(None) };
+        /// Held modifiers: 1 Ctrl, 2 Shift, 4 Alt.
+        static MODS: Cell<u8> = const { Cell::new(0) };
+        /// Random state for answers to dialogs and menus; 0 outside chaos tests.
+        static ANSWERS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    #[cfg(test)]
+    pub fn set_mods(ctrl: bool, shift: bool, alt: bool) {
+        MODS.with(|m| m.set(ctrl as u8 | (shift as u8) << 1 | (alt as u8) << 2));
+    }
+
+    pub fn mods() -> (bool, bool, bool) {
+        let m = MODS.with(|m| m.get());
+        (m & 1 != 0, m & 2 != 0, m & 4 != 0)
+    }
+
+    #[cfg(test)]
+    pub fn answer_randomly(seed: u64) {
+        ANSWERS.with(|a| a.set(seed | 1));
+    }
+
+    /// A random choice below `n` in a chaos test, else None.
+    pub fn pick(n: usize) -> Option<usize> {
+        ANSWERS.with(|a| {
+            let mut x = a.get();
+            if x == 0 || n == 0 {
+                return None;
+            }
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            a.set(x);
+            Some((x % n as u64) as usize)
+        })
+    }
+}
+
 /// Runs a dialog's message loop. Paints are skipped while it is open (the window
 /// procedure can't reach the app then), so the window repaints once it closes.
 fn modal<T>(hwnd: HWND, f: impl FnOnce() -> T) -> T {
@@ -43,6 +90,9 @@ fn modal<T>(hwnd: HWND, f: impl FnOnce() -> T) -> T {
 }
 
 pub fn get_clipboard(hwnd: HWND) -> Option<String> {
+    if cfg!(test) {
+        return sandbox::CLIPBOARD.with(|c| c.borrow().clone());
+    }
     unsafe {
         OpenClipboard(Some(hwnd)).ok()?;
         let text = (|| {
@@ -66,6 +116,9 @@ pub fn get_clipboard(hwnd: HWND) -> Option<String> {
 }
 
 pub fn set_clipboard(hwnd: HWND, text: &str) {
+    if cfg!(test) {
+        return sandbox::CLIPBOARD.with(|c| *c.borrow_mut() = Some(text.to_string()));
+    }
     unsafe {
         if OpenClipboard(Some(hwnd)).is_err() {
             return;
@@ -79,6 +132,9 @@ pub fn set_clipboard(hwnd: HWND, text: &str) {
 /// Puts an HTML fragment on the clipboard as "HTML Format" (what rich editors
 /// paste), with `text` as the plain text.
 pub fn set_clipboard_html(hwnd: HWND, html: &str, text: &str) {
+    if cfg!(test) {
+        return set_clipboard(hwnd, text);
+    }
     unsafe {
         let format = RegisterClipboardFormatW(w!("HTML Format"));
         if format == 0 || OpenClipboard(Some(hwnd)).is_err() {
@@ -138,6 +194,9 @@ unsafe fn put_bytes(format: u32, data: &[u8]) {
 }
 
 pub fn clipboard_has_text() -> bool {
+    if cfg!(test) {
+        return sandbox::CLIPBOARD.with(|c| c.borrow().is_some());
+    }
     unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() }
 }
 
@@ -158,6 +217,9 @@ pub fn hdrop_paths(hdrop: HDROP) -> Vec<PathBuf> {
 
 /// Files copied in File Explorer.
 pub fn clipboard_files(hwnd: HWND) -> Vec<PathBuf> {
+    if cfg!(test) {
+        return Vec::new();
+    }
     unsafe {
         if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_err()
             || OpenClipboard(Some(hwnd)).is_err()
@@ -194,6 +256,9 @@ unsafe fn clipboard_bytes(format: u32) -> Option<Vec<u8>> {
 }
 
 pub fn clipboard_image(hwnd: HWND) -> Option<ClipImage> {
+    if cfg!(test) {
+        return None;
+    }
     unsafe {
         let png = RegisterClipboardFormatW(w!("PNG"));
         let has = |f: u32| f != 0 && IsClipboardFormatAvailable(f).is_ok();
@@ -267,6 +332,9 @@ pub fn expand_env(s: &str) -> String {
 /// Starts the command line `line` in `cwd`: console programs get a new console, or
 /// none when `hidden`. Returns the process handle.
 pub fn spawn(line: &str, cwd: &Path, hidden: bool) -> std::result::Result<HANDLE, String> {
+    if cfg!(test) {
+        return Err("programs are not started in tests".into());
+    }
     use windows::Win32::System::Threading::*;
     let mut cmd: Vec<u16> = line.encode_utf16().chain([0]).collect();
     let si = STARTUPINFOW {
@@ -307,6 +375,10 @@ pub fn close_handle(h: HANDLE) {
 /// Asks every QuillNotes window, in every process, to close; each one saves or asks
 /// about unsaved changes as it would for its own close.
 pub fn close_all_windows() {
+    // A test must never close the user's own QuillNotes windows.
+    if cfg!(test) {
+        return;
+    }
     unsafe extern "system" fn close(hwnd: HWND, _: LPARAM) -> BOOL {
         let mut name = [0u16; 32];
         let n = unsafe { GetClassNameW(hwnd, &mut name) } as usize;
@@ -374,6 +446,9 @@ unsafe fn result_path(item: &IShellItem) -> Option<PathBuf> {
 }
 
 pub fn open_dialog(hwnd: HWND, dir: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
     modal(hwnd, || unsafe {
         let dlg: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -395,6 +470,9 @@ pub fn save_dialog(
     dir: Option<&Path>,
     suggested: &str,
 ) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
     modal(hwnd, || unsafe {
         let dlg: IFileSaveDialog =
             CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -417,6 +495,9 @@ pub fn save_dialog(
 }
 
 pub fn folder_dialog(hwnd: HWND, start: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
     modal(hwnd, || unsafe {
         let dlg: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -435,6 +516,9 @@ pub fn folder_dialog(hwnd: HWND, start: Option<&Path>) -> Option<PathBuf> {
 
 /// Moves a file or folder to the Recycle Bin. Returns false on failure.
 pub fn recycle(hwnd: HWND, path: &Path) -> bool {
+    if cfg!(test) {
+        return false;
+    }
     // pFrom is a list of paths, each null-terminated, ending with an extra null.
     let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
     let mut op = SHFILEOPSTRUCTW {
@@ -451,6 +535,9 @@ pub fn recycle(hwnd: HWND, path: &Path) -> bool {
 
 /// Opens File Explorer with `path` selected.
 pub fn reveal(hwnd: HWND, path: &Path) {
+    if cfg!(test) {
+        return;
+    }
     let args = format!("/select,\"{}\"", path.display());
     unsafe {
         ShellExecuteW(
@@ -470,9 +557,18 @@ pub fn message_box(
     caption: &str,
     style: MESSAGEBOX_STYLE,
 ) -> MESSAGEBOX_RESULT {
-    // A dialog would wait for a click and hold up the test run.
+    // A dialog would wait for a click and hold up the test run. Chaos tests
+    // answer at random; any other test must not reach one.
     if cfg!(test) {
-        panic!("message box in a test: {text}");
+        let answers: &[MESSAGEBOX_RESULT] = match style.0 & 0xF {
+            3 => &[IDYES, IDNO, IDCANCEL],
+            4 => &[IDYES, IDNO],
+            _ => &[IDOK],
+        };
+        return match sandbox::pick(answers.len()) {
+            Some(i) => answers[i],
+            None => panic!("message box in a test: {text}"),
+        };
     }
     modal(hwnd, || unsafe {
         MessageBoxW(
@@ -496,6 +592,19 @@ pub enum MenuItem<'a> {
 
 /// Shows a context menu at client pixel (x, y); returns the chosen item's id.
 pub fn popup_menu(hwnd: HWND, items: &[MenuItem], x: i32, y: i32) -> Option<u32> {
+    if cfg!(test) {
+        // Chaos tests pick an enabled item, or dismiss the menu.
+        let ids: Vec<u32> = items
+            .iter()
+            .filter_map(|i| match i {
+                MenuItem::Item {
+                    id, enabled: true, ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        return sandbox::pick(ids.len() + 1).and_then(|i| ids.get(i).copied());
+    }
     unsafe {
         let menu = CreatePopupMenu().ok()?;
         for item in items {
@@ -537,6 +646,9 @@ pub fn popup_menu(hwnd: HWND, items: &[MenuItem], x: i32, y: i32) -> Option<u32>
 }
 
 pub fn shell_open(hwnd: HWND, target: &str) {
+    if cfg!(test) {
+        return;
+    }
     unsafe {
         ShellExecuteW(
             Some(hwnd),
