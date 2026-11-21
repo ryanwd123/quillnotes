@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use crate::markdown::{Align, delim_row, split_cells};
+use crate::markdown::{Align, delim_row, floor_char, split_cells};
 
 /// Table actions offered by the right-click menu and the command palette.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,7 +90,7 @@ impl Grid {
     /// Parses a table's lines (delimiter row second); `qend` is the prefix length.
     pub fn parse(lines: &[&str], qend: usize) -> Grid {
         let texts = |line: &str| -> Vec<String> {
-            split_cells(line, qend.min(line.len()))
+            split_cells(line, qend)
                 .into_iter()
                 .map(|r| line[r].to_string())
                 .collect()
@@ -103,7 +103,7 @@ impl Grid {
         };
         let mut aligns = lines
             .get(1)
-            .and_then(|l| delim_row(&l[qend.min(l.len())..]))
+            .and_then(|l| delim_row(&l[floor_char(l, qend)..]))
             .unwrap_or_default();
         aligns.resize(cols, Align::Left);
         let mut rows = vec![fit(header)];

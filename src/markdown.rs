@@ -273,10 +273,40 @@ pub fn delim_row(s: &str) -> Option<Vec<Align>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// `i` moved back to a char boundary of `s`, and no further than its end. A table
+/// reads every row past its header's quote prefix, which another row may not share.
+pub fn floor_char(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Whether `rest` has a run of exactly `run` backticks, closing a code span.
+fn closes_code(rest: &[u8], run: usize) -> bool {
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            // Escapes are skipped as split_cells skips them.
+            b'\\' => i += 2,
+            b'`' => {
+                let n = rest[i..].iter().take_while(|&&c| c == b'`').count();
+                if n == run {
+                    return true;
+                }
+                i += n;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 /// Byte ranges (absolute in `line`) of each trimmed table cell, starting at `start`.
 pub fn split_cells(line: &str, start: usize) -> Vec<Range<usize>> {
     let b = line.as_bytes();
-    let mut i = start;
+    let mut i = floor_char(line, start);
     while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
         i += 1;
     }
@@ -285,12 +315,24 @@ pub fn split_cells(line: &str, start: usize) -> Vec<Range<usize>> {
     }
     let mut cells = Vec::new();
     let mut cell_start = i;
-    let mut in_code = false;
+    // Length of the backtick run that opened the code span we are in, or 0.
+    let mut in_code = 0;
     while i < b.len() {
         match b[i] {
             b'\\' => i += 1,
-            b'`' => in_code = !in_code,
-            b'|' if !in_code => {
+            b'`' => {
+                let run = b[i..].iter().take_while(|&&c| c == b'`').count();
+                if in_code == run {
+                    in_code = 0;
+                } else if in_code == 0 && closes_code(&b[i + run..], run) {
+                    // A backtick with no matching run after it is literal, so it
+                    // does not hide the pipes after it.
+                    in_code = run;
+                }
+                i += run;
+                continue;
+            }
+            b'|' if in_code == 0 => {
                 cells.push(cell_start..i);
                 cell_start = i + 1;
             }
@@ -310,7 +352,8 @@ pub fn split_cells(line: &str, start: usize) -> Vec<Range<usize>> {
             let trail = s.len() - s.trim_end().len();
             if lead + trail >= s.len() {
                 // Empty cell: an empty range just inside its padding, where typing goes.
-                let at = r.start + s.len().min(1);
+                // One char in, which may be a multi-byte space such as U+00A0.
+                let at = r.start + s.chars().next().map_or(0, char::len_utf8);
                 at..at
             } else {
                 r.start + lead..r.end - trail
@@ -1488,6 +1531,24 @@ mod tests {
                 task: Some(true)
             }
         );
+    }
+
+    #[test]
+    fn unclosed_backticks_do_not_hide_cell_pipes() {
+        let cells = |l: &'static str| -> Vec<&'static str> {
+            split_cells(l, 0).into_iter().map(|r| &l[r]).collect()
+        };
+        assert_eq!(cells("| `a | b |"), vec!["`a", "b"]);
+        assert_eq!(cells("| ``a` | b ``|"), vec!["``a` | b ``"]);
+        assert_eq!(cells(r"| ``|\`` |"), vec!["``", r"\``"]);
+    }
+
+    #[test]
+    fn odd_cells_stay_on_char_boundaries() {
+        // An empty cell padded with a no-break space, and a row whose quote prefix
+        // is shorter than the header's.
+        assert_eq!(split_cells("|\u{a0}| b |", 0)[0], 3..3);
+        assert_eq!(split_cells(">\u{e9}|", 2), vec![1..3]);
     }
 
     #[test]
