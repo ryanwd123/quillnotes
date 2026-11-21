@@ -910,6 +910,10 @@ impl App {
                 }
             }
         }
+        // A caret inside the replaced text keeps its offset, which may now fall
+        // inside a multi-byte character.
+        self.anchor = self.doc.clamp(self.anchor);
+        self.cursor = self.doc.clamp(self.cursor);
     }
 
     fn type_text(&mut self, text: &str) {
@@ -2182,7 +2186,8 @@ impl App {
         }
         let commented = |s: &str| {
             let t = s.trim();
-            t.starts_with("<!--") && t.ends_with("-->")
+            // At least 7 bytes, so the markers don't overlap as in `<!-->`.
+            t.len() >= 7 && t.starts_with("<!--") && t.ends_with("-->")
         };
         let all = lines.iter().all(|&l| commented(&self.doc.lines[l]));
         self.begin(EditKind::Other);
@@ -5664,6 +5669,22 @@ mod tests {
         // Tests share one settings file; another test may have saved View mode.
         a.mode = ViewMode::default();
         a
+    }
+
+    #[test]
+    fn toggle_comment_keeps_the_caret_on_a_char_and_skips_overlapping_markers() {
+        // The caret just before 日 lands inside 本 once "<!-- " is removed.
+        let mut a = app("<!-- \u{65e5}\u{672c} -->");
+        a.set_sel(Pos::new(0, 5), Pos::new(0, 5));
+        a.toggle_comment();
+        assert_eq!(a.doc.lines, ["\u{65e5}\u{672c}"]);
+        assert_eq!(a.cursor, Pos::new(0, 3));
+        // `<!-->` starts and ends like a comment, but its markers overlap.
+        for line in ["<!-->", "<!--->"] {
+            let mut a = app(line);
+            a.toggle_comment();
+            assert_eq!(a.doc.lines, [format!("<!-- {line} -->")]);
+        }
     }
 
     #[test]
