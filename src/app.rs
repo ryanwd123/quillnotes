@@ -1574,10 +1574,16 @@ impl App {
                 self.move_to(p, shift);
             }
             VK_END => {
+                // Like VS Code: in a wrapped line, End goes to the end of the visual
+                // line first, and to the end of the whole line when already there.
                 let p = if ctrl {
                     self.doc.end()
                 } else {
-                    Pos::new(c.line, line.len())
+                    self.ensure_layout();
+                    match self.view.wrap_end_col(c) {
+                        Some(col) if col > c.col => Pos::new(c.line, col),
+                        _ => Pos::new(c.line, line.len()),
+                    }
                 };
                 self.move_to(p, shift);
             }

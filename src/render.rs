@@ -375,6 +375,24 @@ impl TextBox {
         (idx, out)
     }
 
+    /// Layout index at the end of the wrapped visual line containing index `i`,
+    /// before the whitespace it wrapped at, or None on the last visual line.
+    fn wrap_end(&self, i: u32) -> Option<u32> {
+        let n = self.pre_len();
+        let i = i.saturating_sub(n);
+        let buf = line_metrics(&self.layout);
+        let mut start = 0u32;
+        for m in &buf[..buf.len().saturating_sub(1)] {
+            if i < start + m.length {
+                // An index right after the trailing whitespace would draw at the
+                // start of the next visual line, so stop before it.
+                return Some(n + start + m.length - m.trailingWhitespaceLength);
+            }
+            start += m.length;
+        }
+        None
+    }
+
     fn hit(&self, x: f32, y: f32) -> (usize, Option<&(u32, u32, String, String)>) {
         // Left of the content on its first visual line: in the prefix.
         if let Some(p) = &self.pre
@@ -2441,6 +2459,15 @@ impl View {
         Some(row.y + row.top + top + h / 2.0)
     }
 
+    /// Source column at the end of the caret's visual line in a wrapped row, or
+    /// None when the caret is on the row's last visual line.
+    pub fn wrap_end_col(&self, p: Pos) -> Option<usize> {
+        let row = self.rows.get(p.line)?;
+        let Vis::Text(tb) = &row.vis else { return None };
+        let i = tb.wrap_end(tb.s2d(p.col))?;
+        Some(tb.d2s[i as usize] as usize)
+    }
+
     /// y inside the first (or last) visual line of row `i`.
     pub fn row_probe_y(&self, i: usize, last: bool) -> f32 {
         let row = &self.rows[i];
@@ -4094,5 +4121,40 @@ fn callout_ink(first: &str) -> Ink {
         "caution" | "danger" | "error" | "bug" | "failure" => Ink::Danger,
         "important" | "question" | "example" => Ink::Important,
         _ => Ink::Quote,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_end_stops_before_the_space_a_line_wrapped_at() {
+        let mut v = View::new(false).unwrap();
+        let text = "one two three four five six seven eight nine ten";
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let f = v.format(Family::Body, 16.0, 400);
+        let layout = unsafe { v.dw.CreateTextLayout(&wide, &f, 120.0, 1.0e6) }.unwrap();
+        let tb = TextBox {
+            layout,
+            d2s: (0..=wide.len() as u32).collect(),
+            width: Cell::new(120.0),
+            height: Cell::new(0.0),
+            bgs: vec![],
+            links: vec![],
+            pre: None,
+            bullet: None,
+            marker: None,
+            baseline: 0.0,
+            ink: Ink::Text,
+        };
+        let end = tb.wrap_end(0).unwrap();
+        assert!(end > 0 && (end as usize) < text.len(), "{end}");
+        assert_eq!(&text[end as usize..end as usize + 1], " ");
+        // The caret there draws on the first visual line.
+        assert_eq!(tb.caret(end).1, tb.caret(0).1);
+        // Already at that end, it stays put; on the last visual line there is none.
+        assert_eq!(tb.wrap_end(end), Some(end));
+        assert_eq!(tb.wrap_end(text.len() as u32), None);
     }
 }
