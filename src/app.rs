@@ -1556,8 +1556,17 @@ impl App {
             }
             VK_HOME => {
                 let floor = self.caret_floor(c.line);
+                // Like End: the start of the visual line first in a wrapped line.
+                let wrap = if ctrl {
+                    None
+                } else {
+                    self.ensure_layout();
+                    self.view.wrap_start_col(c)
+                };
                 let p = if ctrl {
                     Pos::default()
+                } else if let Some(col) = wrap.filter(|&col| col < c.col) {
+                    Pos::new(c.line, col)
                 } else if floor > 0 {
                     Pos::new(c.line, floor)
                 } else {

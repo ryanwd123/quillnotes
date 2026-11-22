@@ -393,6 +393,22 @@ impl TextBox {
         None
     }
 
+    /// Layout index at the start of the wrapped visual line containing index `i`,
+    /// or None on the first visual line.
+    fn wrap_start(&self, i: u32) -> Option<u32> {
+        let n = self.pre_len();
+        let i = i.saturating_sub(n);
+        let buf = line_metrics(&self.layout);
+        let mut start = 0u32;
+        for (k, m) in buf.iter().enumerate() {
+            if i < start + m.length || k + 1 == buf.len() {
+                return (k > 0).then_some(n + start);
+            }
+            start += m.length;
+        }
+        None
+    }
+
     fn hit(&self, x: f32, y: f32) -> (usize, Option<&(u32, u32, String, String)>) {
         // Left of the content on its first visual line: in the prefix.
         if let Some(p) = &self.pre
@@ -2468,6 +2484,15 @@ impl View {
         Some(tb.d2s[i as usize] as usize)
     }
 
+    /// Source column at the start of the caret's visual line in a wrapped row, or
+    /// None when the caret is on the row's first visual line.
+    pub fn wrap_start_col(&self, p: Pos) -> Option<usize> {
+        let row = self.rows.get(p.line)?;
+        let Vis::Text(tb) = &row.vis else { return None };
+        let i = tb.wrap_start(tb.s2d(p.col))?;
+        Some(tb.d2s[i as usize] as usize)
+    }
+
     /// y inside the first (or last) visual line of row `i`.
     pub fn row_probe_y(&self, i: usize, last: bool) -> f32 {
         let row = &self.rows[i];
@@ -4156,5 +4181,12 @@ mod tests {
         // Already at that end, it stays put; on the last visual line there is none.
         assert_eq!(tb.wrap_end(end), Some(end));
         assert_eq!(tb.wrap_end(text.len() as u32), None);
+        // Home's counterpart: the second visual line starts after that space.
+        let last = text.len() as u32;
+        let start = tb.wrap_start(last).unwrap();
+        assert!(start > end && text[..start as usize].ends_with(' '), "{start}");
+        assert_eq!(tb.wrap_start(start), Some(start));
+        assert_eq!(tb.caret(start).1, tb.caret(start + 1).1);
+        assert_eq!(tb.wrap_start(end), None);
     }
 }
