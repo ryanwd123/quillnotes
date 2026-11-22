@@ -1,10 +1,10 @@
+![QuillNotes icon](https://raw.githubusercontent.com/ryanwd123/quillnotes/main/assets/icon.png)
 # QuillNotes
 A native note taking app, markdown editor, and viewer
 
-Why? I couldn't find one that had the features that I wanted that was not built with Electron or another bloated design. 
+It is a single native executable (about 1000 KB) built on Win32, Direct2D and DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs).
 
-It is a single native executable (about 900 KB) built on Win32, Direct2D and
-DirectWrite through [`windows-rs`](https://github.com/microsoft/windows-rs).
+![QuillNotes screenshot](https://raw.githubusercontent.com/ryanwd123/quillnotes/main/assets/screenshot.png)
 
 ## Install
 Currently Windows only. 
